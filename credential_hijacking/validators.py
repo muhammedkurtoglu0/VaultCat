@@ -1,5 +1,3 @@
-import requests
-
 from core.report import add_finding
 from credential_hijacking.file_secret_scanner import mask_value
 from credential_hijacking.impact_analyzer import analyze_token_metadata
@@ -185,6 +183,11 @@ def _approle_pairs(matches):
 
 
 def _request(method, url, **kwargs):
+    try:
+        import requests
+    except ImportError:
+        return None
+
     try:
         return requests.request(method, url, timeout=TIMEOUT, **kwargs)
     except requests.exceptions.RequestException:

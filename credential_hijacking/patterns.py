@@ -52,6 +52,15 @@ PATTERNS = {
         r"\bSUPERUSER\b|\bCREATEDB\b|\bCREATEROLE\b)",
         re.IGNORECASE,
     ),
+    "vault_database_destructive_statement": re.compile(
+        r"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE|ROLE|USER)|"
+        r"TRUNCATE\s+TABLE|ALTER\s+SYSTEM|COPY\s+.+\s+PROGRAM|"
+        r"pg_read_file|pg_write_file|pg_execute_server_program|"
+        r"CREATE\s+EXTENSION\s+dblink|dblink_connect|"
+        r"GRANT\s+.+(?:pg_read_server_files|pg_write_server_files|"
+        r"pg_execute_server_program))\b",
+        re.IGNORECASE,
+    ),
     "vault_database_revocation_statements": re.compile(
         r"\b(?:revocation_statements|revocation-statements)[ \t]*[:=][ \t]*[\"']?([^\"'\n\r]+)",
         re.IGNORECASE,
@@ -80,6 +89,14 @@ PATTERNS = {
         r"\bv-(?:token|approle|userpass|ldap|jwt|oidc|github|kubernetes)-"
         r"[A-Za-z0-9._-]+-[A-Za-z0-9._-]{6,}\b",
         re.IGNORECASE,
+    ),
+    "vault_policy_database_role_admin_path": re.compile(
+        r"path\s+\"[^\"]*database/(?:roles|static-roles|config)/[^\"]*\"\s*\{",
+        re.IGNORECASE,
+    ),
+    "vault_policy_write_capabilities": re.compile(
+        r"capabilities\s*=\s*\[[^\]]*\"(?:create|update|delete|sudo)\"[^\]]*\]",
+        re.IGNORECASE | re.DOTALL,
     ),
     "approle_login": re.compile(r"(?:/v1/)?auth/approle/login\b", re.IGNORECASE),
     "approle_cli_login": re.compile(r"\bvault\s+login\s+-method=approle\b", re.IGNORECASE),
@@ -249,6 +266,12 @@ FINDING_METADATA = {
         "description": "A database role statement appears to grant broad privileges to a generated or configured database user.",
         "recommendation": "Avoid broad grants such as GRANT ALL, SUPERUSER, CREATEDB, or CREATEROLE for Vault-generated database users.",
     },
+    "vault_database_destructive_statement": {
+        "severity": "HIGH",
+        "title": "Potentially destructive SQL in Vault database role template",
+        "description": "A Vault database role statement appears to contain destructive or high-risk SQL.",
+        "recommendation": "Remove destructive SQL from Vault database role templates and restrict who can update database role definitions.",
+    },
     "vault_database_revocation_statements": {
         "severity": "INFO",
         "title": "Vault database revocation statement discovered",
@@ -284,6 +307,18 @@ FINDING_METADATA = {
         "title": "Vault-generated dynamic database username observed",
         "description": "A username resembling a Vault-generated dynamic database credential was discovered.",
         "recommendation": "Use this as evidence that dynamic database credentials may be generated or logged; avoid logging generated usernames and passwords together.",
+    },
+    "vault_policy_database_role_admin_path": {
+        "severity": "INFO",
+        "title": "Vault policy references database role administration path",
+        "description": "A Vault policy path references database role, static role, or database connection administration.",
+        "recommendation": "Confirm only trusted administrators can create, update, delete, or sudo database role and config paths.",
+    },
+    "vault_policy_write_capabilities": {
+        "severity": "INFO",
+        "title": "Vault policy write capability observed",
+        "description": "A Vault policy capability block includes create, update, delete, or sudo.",
+        "recommendation": "Correlate this capability with sensitive Vault paths and enforce least privilege.",
     },
     "aws_iam_login": {
         "severity": "INFO",

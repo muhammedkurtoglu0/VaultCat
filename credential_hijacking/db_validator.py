@@ -1,5 +1,3 @@
-import requests
-
 from core.report import add_finding
 
 
@@ -75,6 +73,13 @@ def _validate_database_mount(vault_addr, token, mount_path):
             module=MODULE_NAME,
             target=vault_addr,
         )
+        for config_name in configs:
+            _inspect_capabilities(
+                vault_addr,
+                token,
+                f"{base}/config/{config_name}",
+                "database connection configuration",
+            )
 
     if roles is not None:
         add_finding(
@@ -87,6 +92,12 @@ def _validate_database_mount(vault_addr, token, mount_path):
             target=vault_addr,
         )
         for role_name in roles:
+            _inspect_capabilities(
+                vault_addr,
+                token,
+                f"{base}/roles/{role_name}",
+                "database dynamic role",
+            )
             _inspect_dynamic_role(vault_addr, token, base, role_name)
 
     if static_roles is not None:
@@ -99,6 +110,13 @@ def _validate_database_mount(vault_addr, token, mount_path):
             module=MODULE_NAME,
             target=vault_addr,
         )
+        for role_name in static_roles:
+            _inspect_capabilities(
+                vault_addr,
+                token,
+                f"{base}/static-roles/{role_name}",
+                "database static role",
+            )
 
 
 def _inspect_dynamic_role(vault_addr, token, base, role_name):
@@ -159,6 +177,60 @@ def _inspect_dynamic_role(vault_addr, token, base, role_name):
         )
 
 
+def _inspect_capabilities(vault_addr, token, path, path_type):
+    capabilities = _capabilities_self(vault_addr, token, path)
+    if capabilities is None:
+        return
+
+    dangerous_capabilities = [
+        capability
+        for capability in capabilities
+        if capability in ("create", "update", "delete", "sudo")
+    ]
+    if not dangerous_capabilities:
+        return
+
+    add_finding(
+        "HIGH",
+        "Token can modify Vault database role or config path",
+        "The provided token has write-level capabilities on a Vault database role, static role, or config path.",
+        recommendation="Remove create, update, delete, and sudo capabilities from application or low-trust tokens for database role/config paths.",
+        evidence=(
+            f"path: {path}, type: {path_type}, "
+            f"capabilities: {','.join(dangerous_capabilities)}"
+        ),
+        module=MODULE_NAME,
+        target=vault_addr,
+    )
+
+
+def _capabilities_self(vault_addr, token, path):
+    response = _request(
+        "POST",
+        vault_addr,
+        token,
+        "/v1/sys/capabilities-self",
+        json={"paths": [path]},
+    )
+    if response is None or response.status_code != 200:
+        return None
+
+    try:
+        data = response.json().get("data", {})
+    except ValueError:
+        return None
+
+    capabilities = data.get(path)
+    if isinstance(capabilities, list):
+        return capabilities
+
+    capabilities = data.get("capabilities")
+    if isinstance(capabilities, list):
+        return capabilities
+
+    return None
+
+
 def _database_mounts(mounts):
     data = mounts.get("data", mounts)
     return {
@@ -195,11 +267,16 @@ def _get_json(vault_addr, token, path):
         return None
 
 
-def _request(method, vault_addr, token, path):
+def _request(method, vault_addr, token, path, **kwargs):
+    try:
+        import requests
+    except ImportError:
+        return None
+
     headers = {"X-Vault-Token": token}
     url = vault_addr.rstrip("/") + path
     try:
-        return requests.request(method, url, headers=headers, timeout=TIMEOUT)
+        return requests.request(method, url, headers=headers, timeout=TIMEOUT, **kwargs)
     except requests.exceptions.RequestException:
         return None
 

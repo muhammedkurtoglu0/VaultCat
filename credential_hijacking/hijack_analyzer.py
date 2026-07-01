@@ -56,6 +56,9 @@ def analyze_hijack_findings(matches):
         has_database_static_user = "database_static_username" in material_patterns
         has_database_static_password = "database_static_password" in material_patterns
         has_dynamic_db_username = "dynamic_database_username" in patterns
+        has_database_destructive_sql = "vault_database_destructive_statement" in patterns
+        has_database_admin_policy_path = "vault_policy_database_role_admin_path" in patterns
+        has_policy_write_capability = "vault_policy_write_capabilities" in patterns
 
         if has_role_id and has_secret_id:
             add_finding(
@@ -210,6 +213,39 @@ def analyze_hijack_findings(matches):
                 target=file_path,
             )
 
+        if has_database_role and has_database_destructive_sql:
+            add_finding(
+                "HIGH",
+                "Destructive SQL observed in Vault database role template",
+                "A Vault database role template appears to include destructive or high-risk SQL that would run when credentials are generated.",
+                recommendation="Remove destructive SQL from database role templates and restrict role update permissions to trusted administrators.",
+                evidence=f"file: {file_path}, database_role: present, destructive_sql: present",
+                module=MODULE_NAME,
+                target=file_path,
+            )
+
+        if has_database_admin_policy_path and has_policy_write_capability:
+            add_finding(
+                "HIGH",
+                "Vault policy can modify database role or config definitions",
+                "A Vault policy appears to grant write-level capability on database role, static role, or connection configuration paths.",
+                recommendation="Restrict create, update, delete, and sudo on database/roles, database/static-roles, and database/config paths to tightly controlled administrators.",
+                evidence=f"file: {file_path}, database_admin_path: present, write_capability: present",
+                module=MODULE_NAME,
+                target=file_path,
+            )
+
+        if has_database_admin_policy_path and has_database_destructive_sql:
+            add_finding(
+                "HIGH",
+                "Database role tampering scenario observed in artifacts",
+                "Artifacts include both database role administration context and destructive SQL indicators.",
+                recommendation="Review whether any token or policy can update the affected database role templates and enforce change control.",
+                evidence=f"file: {file_path}, database_admin_path: present, destructive_sql: present",
+                module=MODULE_NAME,
+                target=file_path,
+            )
+
         if has_database_creation and not has_database_revocation:
             add_finding(
                 "LOW",
@@ -299,6 +335,9 @@ def _analyze_cross_file_chains(matches):
     } & patterns)
     has_database_static_password = "database_static_password" in material_patterns
     has_database_static_user = "database_static_username" in material_patterns
+    has_database_destructive_sql = "vault_database_destructive_statement" in patterns
+    has_database_admin_policy_path = "vault_policy_database_role_admin_path" in patterns
+    has_policy_write_capability = "vault_policy_write_capabilities" in patterns
 
     if has_vault_addr and has_approle_pair:
         add_finding(
@@ -340,6 +379,28 @@ def _analyze_cross_file_chains(matches):
             "Static database credentials and Vault database secrets engine context were discovered within the scanned scope.",
             recommendation="Review whether the static credential is the Vault database plugin user and enforce least privilege.",
             evidence="scope: scanned path, database_context: present, db_username: present, db_password: present",
+            module=MODULE_NAME,
+            target="scanned-scope",
+        )
+
+    if has_database_context and has_database_destructive_sql:
+        add_finding(
+            "HIGH",
+            "Cross-file destructive Vault database role template risk discovered",
+            "Database secrets engine context and destructive SQL indicators were discovered within the scanned scope.",
+            recommendation="Review database role templates before credential generation and restrict role update permissions.",
+            evidence="scope: scanned path, database_context: present, destructive_sql: present",
+            module=MODULE_NAME,
+            target="scanned-scope",
+        )
+
+    if has_database_admin_policy_path and has_policy_write_capability and has_database_context:
+        add_finding(
+            "HIGH",
+            "Cross-file Vault database role tampering path discovered",
+            "Vault database role/config context and policy write capabilities were discovered within the scanned scope.",
+            recommendation="Confirm that no application or low-trust token can create, update, delete, or sudo Vault database role/config paths.",
+            evidence="scope: scanned path, database_context: present, database_admin_path: present, write_capability: present",
             module=MODULE_NAME,
             target="scanned-scope",
         )
