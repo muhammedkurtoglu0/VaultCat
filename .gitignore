@@ -1,4 +1,19 @@
-venv/
-.vscode/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+
+# Virtual Environment
+venv/
+.venv/
+
+# VS Code
+.vscode/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Generated reports and downloaded public labs
+reports/
+public-labs/

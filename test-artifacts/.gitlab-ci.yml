@@ -1,0 +1,4 @@
+deploy:
+  script:
+    - export VAULT_ADDR=http://ci-vault.example.local:8200
+    - echo "Using /v1/auth/approle/login during deployment"
