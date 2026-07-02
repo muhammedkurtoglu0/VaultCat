@@ -69,6 +69,14 @@ This runs safe checks for:
 - HTTP security headers
 - A small curated list of known unauthenticated Vault endpoints
 
+Async health, seal, and leader metadata collection:
+
+```bash
+python main.py --target http://localhost:8200 --vault-recon
+```
+
+`--vault-recon` queries `/v1/sys/health`, `/v1/sys/seal-status`, and `/v1/sys/leader` without a token and returns sealed state, cluster metadata, version, and leader metadata for authorized vulnerability management and version tracking.
+
 ## Authenticated Assessment
 
 Authenticated checks only run when a token is supplied.
@@ -89,6 +97,25 @@ Optional secret path and policy checks:
 python main.py --target http://localhost:8200 --token YOUR_TOKEN --secret-path secret/data/myapp --policy default
 ```
 
+Over-privileged token blast-radius audit:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --capability-audit
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --capability-audit --capability-path "sys/*" --capability-path "auth/*" --capability-path "database/roles/*" --capability-path "database/config/*"
+```
+
+`--capability-audit` uses Vault's `sys/capabilities-self` endpoint to report whether the supplied token has `sudo` or write-like capabilities on the audited paths. It also flags least-privilege violations when those capabilities appear on critical paths such as `sys/*`, `auth/*`, identity paths, or database role/config paths. It does not read secrets, generate dynamic credentials, update roles, or modify Vault state.
+
+KV path enumeration for authorized inventory:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --kv-enum --kv-path secret/ --kv-version 2
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --kv-enum --kv-path kv/app --kv-max-depth 5 --kv-concurrency 3
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --kv-enum --kv-path secret/ --kv-no-read
+```
+
+`--kv-enum` recursively lists accessible KV directories and secret paths. By default it reads only leaf metadata or key names to confirm readability and build an access map; it does not print or export secret values. Use `--kv-no-read` for list-only enumeration.
+
 ## Local Token Discovery
 
 Local discovery is for post-exploitation or local assessment scenarios, not default external recon:
@@ -104,7 +131,10 @@ python main.py --env-scan
 - `reconnaissance/ui_scanner.py`
 - `reconnaissance/header_scanner.py`
 - `reconnaissance/endpoint_scanner.py`
+- `reconnaissance/vault_recon.py`
 - `scanners/token_scanner.py`
+- `scanners/capability_scanner.py`
+- `scanners/kv_enumerator.py`
 - `scanners/secret_scanner.py`
 - `scanners/policy_scanner.py`
 - `scanners/env_scanner.py`
@@ -132,6 +162,15 @@ Opt-in validation, only in authorized environments:
 python main.py --hijack-path ./test-artifacts --validate-token --target http://localhost:8207
 python main.py --hijack-path ./test-artifacts --validate-approle --target http://localhost:8207
 ```
+
+Direct AppRole validation and blast-radius analysis:
+
+```bash
+python main.py --target http://localhost:8200 --validate-approle --role-id ROLE_ID --secret-id SECRET_ID
+python main.py --target http://localhost:8200 --validate-approle --role-id ROLE_ID --secret-id SECRET_ID --capability-path "database/roles/*" --capability-path "database/config/*" --capability-path "sys/*"
+```
+
+This performs an AppRole login with the supplied pair, analyzes the returned client token TTL, policy hints, renewability, and then uses `sys/capabilities-self` to identify audited paths where the token has `sudo` or write-like capabilities. It does not read secrets, generate database credentials, update database roles, or modify Vault state.
 
 Production triage examples:
 

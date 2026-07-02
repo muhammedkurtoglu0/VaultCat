@@ -8,7 +8,10 @@ from core.report import (
     set_report_min_severity,
 )
 from credential_hijacking.hijack_analyzer import run_hijack_scan
+from credential_hijacking.validators import validate_approle_credentials
 
+from scanners.capability_scanner import audit_token_capabilities
+from scanners.kv_enumerator import scan_kv_tree
 from scanners.token_scanner import check_token, analyze_token
 from scanners.secret_scanner import test_secret_read
 from scanners.policy_scanner import read_policy, analyze_policy
@@ -23,6 +26,7 @@ from reconnaissance.health_scanner import scan_health
 from reconnaissance.tls_scanner import scan_tls
 from reconnaissance.ui_scanner import scan_ui
 from reconnaissance.version_risk_scanner import scan_version_risk
+from reconnaissance.vault_recon import scan_vault_recon
 
 
 def run_unauthenticated_recon(target):
@@ -81,6 +85,12 @@ def main():
     )
 
     parser.add_argument(
+        "--vault-recon",
+        action="store_true",
+        help="Run async unauthenticated Vault health/seal/leader recon only"
+    )
+
+    parser.add_argument(
         "--env-scan",
         action="store_true",
         help="Scan local environment for Vault-related variables"
@@ -115,13 +125,85 @@ def main():
     parser.add_argument(
         "--validate-approle",
         action="store_true",
-        help="Validate discovered AppRole pairs against --target without reading secrets"
+        help="Validate discovered or supplied AppRole pairs against --target without reading secrets"
+    )
+
+    parser.add_argument(
+        "--role-id",
+        help="Role ID for direct authorized AppRole validation"
+    )
+
+    parser.add_argument(
+        "--secret-id",
+        help="Secret ID for direct authorized AppRole validation"
+    )
+
+    parser.add_argument(
+        "--approle-mount",
+        default="approle",
+        help="AppRole auth mount path for direct validation"
     )
 
     parser.add_argument(
         "--validate-db",
         action="store_true",
         help="Validate Vault database secrets engine metadata with --target and --token without generating credentials"
+    )
+
+    parser.add_argument(
+        "--capability-audit",
+        action="store_true",
+        help="Audit the supplied token with sys/capabilities-self without reading or modifying secrets"
+    )
+
+    parser.add_argument(
+        "--capability-path",
+        action="append",
+        default=None,
+        help="Vault path to check with --capability-audit; can be used multiple times"
+    )
+
+    parser.add_argument(
+        "--kv-enum",
+        action="store_true",
+        help="Enumerate accessible KV secret paths with list/read metadata operations"
+    )
+
+    parser.add_argument(
+        "--kv-path",
+        help="KV start path for --kv-enum, example: secret/ or kv/app"
+    )
+
+    parser.add_argument(
+        "--kv-version",
+        type=int,
+        choices=[1, 2],
+        help="KV engine version for --kv-enum; defaults to autodetect then KV v2"
+    )
+
+    parser.add_argument(
+        "--kv-max-depth",
+        type=int,
+        default=10,
+        help="Maximum recursive depth for --kv-enum"
+    )
+
+    parser.add_argument(
+        "--kv-concurrency",
+        type=int,
+        default=5,
+        help="Maximum concurrent KV list/read metadata operations"
+    )
+
+    parser.add_argument(
+        "--kv-no-read",
+        action="store_true",
+        help="Only list KV paths during --kv-enum; do not read leaf metadata or key names"
+    )
+
+    parser.add_argument(
+        "--namespace",
+        help="Vault namespace to use for authenticated validation, capability audit, and KV enumeration"
     )
 
     parser.add_argument(
@@ -155,8 +237,11 @@ def main():
     vault_addr = args.target or args.addr
     hijack_path = args.hijack_path or (args.path if args.command == "hijack" else None)
 
-    if args.target and not hijack_path:
+    if args.target and not hijack_path and not args.vault_recon:
         run_unauthenticated_recon(args.target)
+
+    if args.target and args.vault_recon:
+        scan_vault_recon(args.target)
 
     if hijack_path:
         run_hijack_scan(
@@ -175,7 +260,37 @@ def main():
         scan_environment()
         scan_vault_token_file()
 
-    if vault_addr and args.token:
+    if vault_addr and args.token and args.capability_audit:
+        audit_token_capabilities(
+            vault_addr,
+            args.token,
+            paths=args.capability_path,
+            namespace=args.namespace,
+        )
+
+    if vault_addr and args.token and args.kv_enum:
+        scan_kv_tree(
+            vault_addr,
+            args.token,
+            args.kv_path,
+            kv_version=args.kv_version,
+            namespace=args.namespace,
+            max_depth=args.kv_max_depth,
+            concurrency=args.kv_concurrency,
+            read_leaves=not args.kv_no_read,
+        )
+
+    if vault_addr and args.validate_approle and args.role_id and args.secret_id:
+        validate_approle_credentials(
+            args.role_id,
+            args.secret_id,
+            vault_addr,
+            mount_point=args.approle_mount,
+            capability_paths=args.capability_path,
+            namespace=args.namespace,
+        )
+
+    if vault_addr and args.token and not args.capability_audit and not args.kv_enum:
         client = VaultClient(vault_addr, args.token)
 
         token_data = check_token(client)
