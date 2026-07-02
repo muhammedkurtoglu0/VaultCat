@@ -331,9 +331,17 @@ def test_version_cve_matcher_flags_cve_2023_6337_range():
         target="http://vault.test",
     )
 
-    assert [match["cve_id"] for match in matches] == ["CVE-2023-6337"]
+    assert {match["cve_id"] for match in matches} == {
+        "CVE-2024-2048",
+        "CVE-2023-6337",
+    }
     assert "Vault version matches known advisory: CVE-2023-6337" in finding_titles()
-    assert report.findings[0]["severity"] == "HIGH"
+    severities_by_title = {
+        finding["title"]: finding["severity"]
+        for finding in report.findings
+    }
+    assert severities_by_title["Vault version matches known advisory: CVE-2024-2048"] == "CRITICAL"
+    assert severities_by_title["Vault version matches known advisory: CVE-2023-6337"] == "HIGH"
 
 
 def test_version_cve_matcher_does_not_report_fixed_version():
