@@ -43,7 +43,6 @@ def analyze_hijack_findings(matches):
             "aws_bound_iam_principal",
             "vault_aws_iam_server_id",
         } & patterns)
-        has_aws_auth_ref = "vault_aws_auth_reference" in patterns
         has_aws_key = "aws_access_key_id" in material_patterns
         has_aws_secret = "aws_secret_access_key" in material_patterns
         has_aws_session = "aws_session_token" in material_patterns
@@ -55,8 +54,6 @@ def analyze_hijack_findings(matches):
         has_database_connection = "vault_database_connection_url" in patterns
         has_database_creation = "vault_database_creation_statements" in patterns
         has_database_revocation = "vault_database_revocation_statements" in patterns
-        has_database_default_ttl = "vault_database_default_ttl" in patterns
-        has_database_max_ttl = "vault_database_max_ttl" in patterns
         has_database_static_user = "database_static_username" in material_patterns
         has_database_static_password = "database_static_password" in material_patterns
         has_dynamic_db_username = "dynamic_database_username" in patterns
