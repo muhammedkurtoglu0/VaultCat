@@ -2,6 +2,9 @@ import re
 
 
 PATTERNS = {
+    "vault_response_wrapped_token": re.compile(
+        r"\bhvs\.CAES[A-Za-z0-9._=-]{12,}\b"
+    ),
     "vault_token_value": re.compile(r"\b(?:hvs|hvc)\.[A-Za-z0-9._-]{8,}\b"),
     "vault_token_assignment": re.compile(
         r"\b(?:VAULT_TOKEN|vault_token)[ \t]*[:=][ \t]*[\"']?([^\s\"']+)",
@@ -158,6 +161,12 @@ PATTERNS = {
 
 
 FINDING_METADATA = {
+    "vault_response_wrapped_token": {
+        "severity": "HIGH",
+        "title": "Potential Vault response-wrapped token exposure",
+        "description": "A Vault response-wrapped token-like value was discovered in an accessible file.",
+        "recommendation": "Treat wrapped tokens as sensitive, verify whether they were unwrapped, and rotate or revoke affected credentials where appropriate.",
+    },
     "vault_token_value": {
         "severity": "HIGH",
         "title": "Potential Vault token exposure",

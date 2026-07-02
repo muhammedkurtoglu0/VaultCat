@@ -1,6 +1,7 @@
 import asyncio
 
 from core.report import add_finding
+from reconnaissance.version_cve_matcher import match_vault_version_cves
 
 
 MODULE_NAME = "vault_recon"
@@ -86,6 +87,8 @@ def scan_vault_recon(target, timeout=DEFAULT_TIMEOUT):
 
     _print_recon_result(result)
     _add_recon_findings(result)
+    if result.get("version"):
+        match_vault_version_cves(result["version"], target=result["target"])
     return result
 
 
@@ -94,7 +97,17 @@ async def _fetch_json(session, url, aiohttp):
         async with session.get(url) as response:
             content_type = response.headers.get("content-type", "")
             if "application/json" in content_type:
-                data = await response.json()
+                try:
+                    data = await response.json()
+                except ValueError:
+                    text = await response.text()
+                    return {
+                        "ok": False,
+                        "status_code": response.status,
+                        "data": {"raw_body": text[:500]},
+                        "error": "invalid json response",
+                        "url": url,
+                    }
             else:
                 text = await response.text()
                 data = {"raw_body": text[:500]}

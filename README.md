@@ -77,6 +77,8 @@ python main.py --target http://localhost:8200 --vault-recon
 
 `--vault-recon` queries `/v1/sys/health`, `/v1/sys/seal-status`, and `/v1/sys/leader` without a token and returns sealed state, cluster metadata, version, and leader metadata for authorized vulnerability management and version tracking.
 
+When a Vault version is observed, the recon workflow also compares it against a small local advisory table for known Vault CVE ranges. This check does not query the internet at runtime.
+
 ## Authenticated Assessment
 
 Authenticated checks only run when a token is supplied.
@@ -106,6 +108,32 @@ python main.py --target http://localhost:8200 --token YOUR_TOKEN --capability-au
 
 `--capability-audit` uses Vault's `sys/capabilities-self` endpoint to report whether the supplied token has `sudo` or write-like capabilities on the audited paths. It also flags least-privilege violations when those capabilities appear on critical paths such as `sys/*`, `auth/*`, identity paths, or database role/config paths. It does not read secrets, generate dynamic credentials, update roles, or modify Vault state.
 
+Privilege escalation simulation:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --priv-esc-audit
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --priv-esc-audit --token-policy app-policy
+```
+
+`--priv-esc-audit` uses `sys/capabilities-self` to safely simulate whether the active token can update its ACL policy path or create new tokens through `auth/token/create`. It does not modify policies or create tokens.
+
+External auth configuration audit:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --auth-config-audit
+```
+
+`--auth-config-audit` reads Kubernetes, AWS, and LDAP auth method configuration metadata when authorized. It checks for broad Kubernetes service account bindings, wildcard AWS IAM principal bindings, and observable LDAP lockout/rate-limit settings. It does not attempt logins or modify auth configuration.
+
+TTL governance audit:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --ttl-audit
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --ttl-audit --max-mount-ttl-seconds 2592000 --max-pki-cert-ttl-seconds 7776000
+```
+
+`--ttl-audit` reads secrets engine mount metadata from `sys/mounts` and checks `max_lease_ttl` against policy thresholds. For PKI mounts, it lists roles and reviews `ttl` and `max_ttl` values to identify weak certificate lifecycle controls. It does not generate certificates or read secret values.
+
 KV path enumeration for authorized inventory:
 
 ```bash
@@ -132,9 +160,12 @@ python main.py --env-scan
 - `reconnaissance/header_scanner.py`
 - `reconnaissance/endpoint_scanner.py`
 - `reconnaissance/vault_recon.py`
+- `reconnaissance/version_cve_matcher.py`
 - `scanners/token_scanner.py`
+- `scanners/auth_config_scanner.py`
 - `scanners/capability_scanner.py`
 - `scanners/kv_enumerator.py`
+- `scanners/ttl_scanner.py`
 - `scanners/secret_scanner.py`
 - `scanners/policy_scanner.py`
 - `scanners/env_scanner.py`
@@ -189,7 +220,7 @@ python main.py --hijack-path C:\path\to\repo --validate-db --target https://vaul
 
 The hijack scanner currently looks for:
 
-- Vault tokens: `hvs.*`, `hvc.*`, `VAULT_TOKEN`, `vault_token`
+- Vault tokens and response-wrapped tokens: `hvs.*`, `hvc.*`, `hvs.CAES...`, `VAULT_TOKEN`, `vault_token`
 - AppRole material: `VAULT_ROLE_ID`, `VAULT_SECRET_ID`, `role_id`, `secret_id`, `roleId`, `secretId`
 - AppRole flow clues: `auth/approle/login`, role-id retrieval paths, Secret ID generation paths, CLI AppRole login examples
 - Vault addresses and namespaces: `VAULT_ADDR`, `vault_addr`, `:8200`, `VAULT_NAMESPACE`

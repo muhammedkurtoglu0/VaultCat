@@ -22,7 +22,11 @@ def analyze_hijack_findings(matches):
 
         has_role_id = "vault_role_id" in material_patterns
         has_secret_id = "vault_secret_id" in material_patterns
-        has_token = bool({"vault_token_value", "vault_token_assignment"} & material_patterns)
+        has_token = bool({
+            "vault_response_wrapped_token",
+            "vault_token_value",
+            "vault_token_assignment",
+        } & material_patterns)
         has_addr = bool({"vault_addr_assignment", "vault_8200_url"} & patterns)
         has_approle_flow = bool({
             "approle_login",

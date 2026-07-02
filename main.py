@@ -11,7 +11,14 @@ from credential_hijacking.hijack_analyzer import run_hijack_scan
 from credential_hijacking.validators import validate_approle_credentials
 
 from scanners.capability_scanner import audit_token_capabilities
+from scanners.auth_config_scanner import scan_auth_config_security
 from scanners.kv_enumerator import scan_kv_tree
+from scanners.privilege_escalation_scanner import scan_privilege_escalation
+from scanners.ttl_scanner import (
+    DEFAULT_MAX_MOUNT_TTL_SECONDS,
+    DEFAULT_MAX_PKI_CERT_TTL_SECONDS,
+    scan_ttl_governance,
+)
 from scanners.token_scanner import check_token, analyze_token
 from scanners.secret_scanner import test_secret_read
 from scanners.policy_scanner import read_policy, analyze_policy
@@ -164,6 +171,45 @@ def main():
     )
 
     parser.add_argument(
+        "--priv-esc-audit",
+        action="store_true",
+        help="Safely simulate token privilege escalation risk with sys/capabilities-self"
+    )
+
+    parser.add_argument(
+        "--auth-config-audit",
+        action="store_true",
+        help="Audit Kubernetes, AWS, and LDAP auth method configuration safety"
+    )
+
+    parser.add_argument(
+        "--ttl-audit",
+        action="store_true",
+        help="Audit secrets engine mount TTL and PKI certificate role TTL governance"
+    )
+
+    parser.add_argument(
+        "--max-mount-ttl-seconds",
+        type=int,
+        default=DEFAULT_MAX_MOUNT_TTL_SECONDS,
+        help="Maximum allowed secrets engine max_lease_ttl in seconds for --ttl-audit"
+    )
+
+    parser.add_argument(
+        "--max-pki-cert-ttl-seconds",
+        type=int,
+        default=DEFAULT_MAX_PKI_CERT_TTL_SECONDS,
+        help="Maximum allowed PKI certificate role ttl/max_ttl in seconds for --ttl-audit"
+    )
+
+    parser.add_argument(
+        "--token-policy",
+        action="append",
+        default=None,
+        help="Policy name to include in --priv-esc-audit; can be used multiple times"
+    )
+
+    parser.add_argument(
         "--kv-enum",
         action="store_true",
         help="Enumerate accessible KV secret paths with list/read metadata operations"
@@ -268,6 +314,30 @@ def main():
             namespace=args.namespace,
         )
 
+    if vault_addr and args.token and args.priv_esc_audit:
+        scan_privilege_escalation(
+            vault_addr,
+            args.token,
+            policy_names=args.token_policy,
+            namespace=args.namespace,
+        )
+
+    if vault_addr and args.token and args.auth_config_audit:
+        scan_auth_config_security(
+            vault_addr,
+            args.token,
+            namespace=args.namespace,
+        )
+
+    if vault_addr and args.token and args.ttl_audit:
+        scan_ttl_governance(
+            vault_addr,
+            args.token,
+            namespace=args.namespace,
+            max_mount_ttl_seconds=args.max_mount_ttl_seconds,
+            max_pki_cert_ttl_seconds=args.max_pki_cert_ttl_seconds,
+        )
+
     if vault_addr and args.token and args.kv_enum:
         scan_kv_tree(
             vault_addr,
@@ -290,7 +360,15 @@ def main():
             namespace=args.namespace,
         )
 
-    if vault_addr and args.token and not args.capability_audit and not args.kv_enum:
+    if (
+        vault_addr
+        and args.token
+        and not args.capability_audit
+        and not args.kv_enum
+        and not args.priv_esc_audit
+        and not args.auth_config_audit
+        and not args.ttl_audit
+    ):
         client = VaultClient(vault_addr, args.token)
 
         token_data = check_token(client)

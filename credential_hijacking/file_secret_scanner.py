@@ -387,6 +387,8 @@ def _matched_value(match):
 
 
 def _should_skip_generic_match(pattern_name, value):
+    if pattern_name in ("vault_token_value", "vault_token_assignment") and value.startswith("hvs.CAES"):
+        return True
     if pattern_name == "vault_api_path" and "auth/approle/login" in value.lower():
         return True
     if pattern_name == "vault_api_path" and "auth/aws/login" in value.lower():
@@ -444,6 +446,9 @@ def _confidence_for_match(pattern_name, file_path, line_text):
             return "HIGH"
         return "MEDIUM"
 
+    if pattern_name == "vault_response_wrapped_token":
+        return "HIGH"
+
     if pattern_name == "vault_token_value":
         if "vault" in lowered_line or "token" in lowered_line:
             return "HIGH"
@@ -489,6 +494,7 @@ def _confidence_for_match(pattern_name, file_path, line_text):
 
 def _is_sensitive_material_pattern(pattern_name):
     return pattern_name in {
+        "vault_response_wrapped_token",
         "vault_token_value",
         "vault_token_assignment",
         "vault_role_id",
