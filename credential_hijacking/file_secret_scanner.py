@@ -175,8 +175,10 @@ def _scan_text(file_path, text, line_offset=0):
             if _should_skip_generic_match(pattern_name, value):
                 continue
             line_number = line_offset + text.count("\n", 0, match.start()) + 1
-            masked_value = mask_value(value)
             line_text = _line_for_match(text, match.start())
+            if _should_skip_context_match(pattern_name, file_path, line_text):
+                continue
+            masked_value = mask_value(value)
             confidence = _confidence_for_match(pattern_name, file_path, line_text)
             is_material = _is_material_value(pattern_name, value)
 
@@ -412,6 +414,34 @@ def _should_skip_generic_match(pattern_name, value):
         return True
 
     return False
+
+
+def _should_skip_context_match(pattern_name, file_path, line_text):
+    if not _is_sensitive_material_pattern(pattern_name):
+        return False
+
+    if not _is_code_file_path(file_path):
+        return False
+
+    lowered_line = line_text.lower()
+    validation_markers = (
+        "joi.",
+        "validator.",
+        "schema",
+        "z.string(",
+        "zod.",
+    )
+    return any(marker in lowered_line for marker in validation_markers)
+
+
+def _is_code_file_path(file_path):
+    path_text = str(file_path).lower()
+    if path_text.startswith("archive:"):
+        path_text = path_text.rsplit("::", 1)[-1]
+    if path_text.startswith("git:"):
+        path_text = path_text.split(":", 2)[-1]
+
+    return any(path_text.endswith(suffix) for suffix in (".js", ".ts", ".py"))
 
 
 def _line_for_match(text, position):

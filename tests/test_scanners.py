@@ -187,6 +187,39 @@ def test_database_password_patterns_focus_on_infrastructure_variables(tmp_path):
     assert "oauth-client-password" not in db_password_values
 
 
+def test_code_validation_schema_lines_do_not_emit_secret_findings(tmp_path):
+    source = tmp_path / "validation.js"
+    source.write_text(
+        "\n".join([
+            "const schema = Joi.object({ DB_PASSWORD: Joi.string().required() });",
+            "const parser = z.object({ VAULT_TOKEN: z.string().optional() });",
+            "Validator.isLength(req.body.client_password, { min: 8 });",
+        ]),
+        encoding="utf-8",
+    )
+
+    matches = _scan_text(source, source.read_text(encoding="utf-8"))
+
+    assert matches == []
+    assert report.findings == []
+
+
+def test_non_code_config_passwords_are_not_skipped_by_schema_words(tmp_path):
+    source = tmp_path / "application.yml"
+    source.write_text(
+        "schema: public\nDB_PASSWORD=db-secret-1\n",
+        encoding="utf-8",
+    )
+
+    matches = _scan_text(source, source.read_text(encoding="utf-8"))
+
+    assert any(
+        match["pattern"] == "database_static_password"
+        and match["value"] == "db-secret-1"
+        for match in matches
+    )
+
+
 def test_scan_files_skips_binary_large_and_unsupported_files(tmp_path):
     (tmp_path / ".env").write_text("VAULT_SECRET_ID=fake-secret-id-456\n", encoding="utf-8")
     (tmp_path / "binary.log").write_bytes(b"VAULT_TOKEN=hvs.aaaaaaaaaaaaaaaa\x00\x00")
