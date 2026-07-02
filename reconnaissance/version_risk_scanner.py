@@ -14,12 +14,12 @@ RECOMMENDATION = (
 )
 
 
-def scan_version_risk(target):
+def scan_version_risk(target, context=None):
     findings = []
 
     print("\n[+] Assessing Vault version risk...")
 
-    response = safe_request("GET", target, "/v1/sys/health")
+    response = context.fetch_health_once() if context else safe_request("GET", target, "/v1/sys/health")
     if not isinstance(response, Response):
         return findings
 
@@ -94,4 +94,3 @@ def _build_evidence(version, enterprise):
         evidence_parts.append(f"enterprise: {enterprise}")
 
     return ", ".join(evidence_parts)
-

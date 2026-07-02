@@ -7,14 +7,17 @@ from reconnaissance.http_utils import safe_request
 MODULE_NAME = "ui_scanner"
 
 
-def scan_ui(target):
+def scan_ui(target, context=None):
     findings = []
     ui_reachable = False
 
     print("\n[+] Checking Vault UI exposure...")
 
     for path in ("/ui/", "/ui"):
-        response = safe_request("GET", target, path, allow_redirects=False)
+        response = (
+            context.request_once("GET", path, allow_redirects=False)
+            if context else safe_request("GET", target, path, allow_redirects=False)
+        )
 
         if not isinstance(response, Response):
             print(f"[-] {path} request failed: {response}")
@@ -53,7 +56,10 @@ def scan_ui(target):
             ))
             break
 
-    login_response = safe_request("GET", target, "/ui/vault/auth", allow_redirects=False)
+    login_response = (
+        context.request_once("GET", "/ui/vault/auth", allow_redirects=False)
+        if context else safe_request("GET", target, "/ui/vault/auth", allow_redirects=False)
+    )
     if isinstance(login_response, Response):
         print(f"/ui/vault/auth -> HTTP {login_response.status_code}")
         if login_response.status_code == 200:

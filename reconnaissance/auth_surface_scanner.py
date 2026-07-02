@@ -24,14 +24,17 @@ AUTH_ENDPOINTS = (
 )
 
 
-def scan_auth_surface(target):
+def scan_auth_surface(target, context=None):
     findings = []
     detected_mounts = {}
 
     print("\n[+] Scanning authentication surface...")
 
     for endpoint in AUTH_ENDPOINTS:
-        response = safe_request("GET", target, endpoint)
+        response = (
+            context.request_once("GET", endpoint)
+            if context else safe_request("GET", target, endpoint)
+        )
 
         if not isinstance(response, Response):
             print(f"[-] {endpoint} request failed: {response}")

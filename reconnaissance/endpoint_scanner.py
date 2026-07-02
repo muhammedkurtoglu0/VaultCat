@@ -14,13 +14,18 @@ ENDPOINTS = (
 )
 
 
-def scan_endpoints(target):
+def scan_endpoints(target, context=None):
     findings = []
 
     print("\n[+] Probing curated unauthenticated Vault endpoints...")
 
     for path, label in ENDPOINTS:
-        response = safe_request("GET", target, path, allow_redirects=False)
+        if context and path == "/v1/sys/health":
+            response = context.fetch_health_once()
+        elif context:
+            response = context.request_once("GET", path, allow_redirects=False)
+        else:
+            response = safe_request("GET", target, path, allow_redirects=False)
 
         if not isinstance(response, Response):
             findings.append(add_finding(

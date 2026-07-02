@@ -14,18 +14,21 @@ DEVELOPMENT_PHRASES = (
 )
 
 
-def scan_deployment(target):
+def scan_deployment(target, context=None):
     findings = []
 
     print("\n[+] Assessing deployment-level security indicators...")
 
-    health_response = safe_request("GET", target, "/v1/sys/health")
+    health_response = context.fetch_health_once() if context else safe_request("GET", target, "/v1/sys/health")
     if isinstance(health_response, Response):
         print(f"/v1/sys/health -> HTTP {health_response.status_code}")
         _check_reverse_proxy_headers(findings, target, health_response)
         _check_development_indicators(findings, target, health_response, "/v1/sys/health")
 
-    ui_response = safe_request("GET", target, "/ui/", allow_redirects=False)
+    ui_response = (
+        context.request_once("GET", "/ui/", allow_redirects=False)
+        if context else safe_request("GET", target, "/ui/", allow_redirects=False)
+    )
     if isinstance(ui_response, Response):
         print(f"/ui/ -> HTTP {ui_response.status_code}")
         _check_development_indicators(findings, target, ui_response, "/ui/")

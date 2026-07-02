@@ -8,18 +8,21 @@ MODULE_NAME = "cors_scanner"
 ENDPOINT = "/v1/sys/health"
 
 
-def scan_cors(target):
+def scan_cors(target, context=None):
     findings = []
 
     print("\n[+] Analyzing CORS behavior...")
 
-    response = safe_request("GET", target, ENDPOINT)
+    response = context.fetch_health_once() if context else safe_request("GET", target, ENDPOINT)
     if not isinstance(response, Response):
         return findings
 
     findings.extend(_analyze_cors_headers(target, response, "GET"))
 
-    options_response = safe_request("OPTIONS", target, ENDPOINT)
+    options_response = (
+        context.request_once("OPTIONS", ENDPOINT)
+        if context else safe_request("OPTIONS", target, ENDPOINT)
+    )
     if isinstance(options_response, Response):
         print(f"OPTIONS {ENDPOINT} -> HTTP {options_response.status_code}")
         if options_response.status_code in (200, 204):

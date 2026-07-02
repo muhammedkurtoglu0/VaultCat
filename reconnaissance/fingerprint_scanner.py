@@ -7,13 +7,13 @@ from reconnaissance.http_utils import safe_request
 MODULE_NAME = "fingerprint_scanner"
 
 
-def scan_fingerprint(target):
+def scan_fingerprint(target, context=None):
     findings = []
     signals = []
 
     print("\n[+] Fingerprinting target...")
 
-    health_response = safe_request("GET", target, "/v1/sys/health")
+    health_response = context.fetch_health_once() if context else safe_request("GET", target, "/v1/sys/health")
     if isinstance(health_response, Response):
         try:
             data = health_response.json()
@@ -39,7 +39,10 @@ def scan_fingerprint(target):
         if health_response.headers.get("X-Vault-Index"):
             signals.append("X-Vault-Index response header present")
 
-    mounts_response = safe_request("GET", target, "/v1/sys/internal/ui/mounts")
+    mounts_response = (
+        context.request_once("GET", "/v1/sys/internal/ui/mounts")
+        if context else safe_request("GET", target, "/v1/sys/internal/ui/mounts")
+    )
     if isinstance(mounts_response, Response):
         if mounts_response.status_code in (200, 403):
             signals.append(
@@ -52,7 +55,10 @@ def scan_fingerprint(target):
         except ValueError:
             pass
 
-    ui_response = safe_request("GET", target, "/ui/", allow_redirects=False)
+    ui_response = (
+        context.request_once("GET", "/ui/", allow_redirects=False)
+        if context else safe_request("GET", target, "/ui/", allow_redirects=False)
+    )
     if isinstance(ui_response, Response):
         location = ui_response.headers.get("Location", "")
         if ui_response.status_code in (200, 301, 302, 307, 308) and "/ui" in location.lower():
@@ -87,4 +93,3 @@ def scan_fingerprint(target):
         ))
 
     return findings
-

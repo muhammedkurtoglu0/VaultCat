@@ -7,12 +7,12 @@ from reconnaissance.http_utils import safe_request
 MODULE_NAME = "header_scanner"
 
 
-def scan_headers(target):
+def scan_headers(target, context=None):
     findings = []
 
     print("\n[+] Analyzing HTTP response headers...")
 
-    response = safe_request("GET", target, "/v1/sys/health")
+    response = context.fetch_health_once() if context else safe_request("GET", target, "/v1/sys/health")
     if not isinstance(response, Response):
         findings.append(add_finding(
             "INFO",
@@ -83,4 +83,3 @@ def scan_headers(target):
         ))
 
     return findings
-

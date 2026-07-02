@@ -30,6 +30,7 @@ from reconnaissance.endpoint_scanner import scan_endpoints
 from reconnaissance.fingerprint_scanner import scan_fingerprint
 from reconnaissance.header_scanner import scan_headers
 from reconnaissance.health_scanner import scan_health
+from reconnaissance.recon_context import ReconContext
 from reconnaissance.tls_scanner import scan_tls
 from reconnaissance.ui_scanner import scan_ui
 from reconnaissance.version_risk_scanner import scan_version_risk
@@ -41,16 +42,19 @@ def run_unauthenticated_recon(target):
     print("Unauthenticated Vault Reconnaissance")
     print("======================================")
 
+    context = ReconContext(target)
+    context.fetch_health_once()
+
     scan_tls(target)
-    scan_health(target)
-    scan_version_risk(target)
-    scan_fingerprint(target)
-    scan_ui(target)
-    scan_auth_surface(target)
-    scan_deployment(target)
-    scan_cors(target)
-    scan_headers(target)
-    scan_endpoints(target)
+    scan_health(target, context=context)
+    scan_version_risk(target, context=context)
+    scan_fingerprint(target, context=context)
+    scan_ui(target, context=context)
+    scan_auth_surface(target, context=context)
+    scan_deployment(target, context=context)
+    scan_cors(target, context=context)
+    scan_headers(target, context=context)
+    scan_endpoints(target, context=context)
 
 
 def main():

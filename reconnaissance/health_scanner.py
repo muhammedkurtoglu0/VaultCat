@@ -1,26 +1,33 @@
 import requests
+from requests import Response
 from core.report import add_finding
 
 
 MODULE_NAME = "health_scanner"
 
 
-def scan_health(target):
+def scan_health(target, context=None):
     findings = []
     print("\n[+] Scanning Vault health endpoint...")
 
     url = target.rstrip("/") + "/v1/sys/health"
 
-    try:
-        response = requests.get(url, timeout=5)
-    except requests.exceptions.RequestException as error:
-        print(f"[-] Could not connect to health endpoint: {error}")
+    if context:
+        response = context.fetch_health_once()
+    else:
+        try:
+            response = requests.get(url, timeout=5)
+        except requests.exceptions.RequestException as error:
+            response = error
+
+    if not isinstance(response, Response):
+        print(f"[-] Could not connect to health endpoint: {response}")
         findings.append(add_finding(
             "HIGH",
             "Vault health endpoint unreachable",
             "The target did not respond to /v1/sys/health.",
             recommendation="Confirm the target URL, network route, and whether Vault is externally reachable.",
-            evidence=str(error),
+            evidence=str(response),
             module=MODULE_NAME,
             target=target
         ))

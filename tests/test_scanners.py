@@ -14,8 +14,9 @@ from credential_hijacking.file_secret_scanner import (
 )
 from credential_hijacking.hijack_analyzer import analyze_hijack_findings
 from credential_hijacking.patterns import PATTERNS
-from reconnaissance import auth_surface_scanner, cors_scanner, version_cve_matcher, version_risk_scanner
+from reconnaissance import auth_surface_scanner, cors_scanner, recon_context, version_cve_matcher, version_risk_scanner
 from reconnaissance.health_scanner import scan_health
+from reconnaissance.recon_context import ReconContext
 from scanners import capability_scanner, kv_enumerator, policy_scanner
 
 
@@ -73,6 +74,24 @@ def test_patterns_detect_vault_material_and_database_risk():
     assert PATTERNS["vault_database_role_path"].search(text)
     assert PATTERNS["vault_database_destructive_statement"].search(text)
     assert PATTERNS["vault_database_default_ttl"].search(text).group(1) == "2h"
+
+
+def test_recon_context_fetches_health_once(monkeypatch):
+    calls = []
+    response = make_response(200, json_data={"initialized": True})
+
+    def fake_safe_request(method, target, path, allow_redirects=True):
+        calls.append((method, target, path, allow_redirects))
+        return response
+
+    monkeypatch.setattr(recon_context, "safe_request", fake_safe_request)
+
+    context = ReconContext("http://vault.test")
+
+    assert context.fetch_health_once() is response
+    assert context.fetch_health_once() is response
+    assert context.request_once("GET", "/v1/sys/health") is response
+    assert calls == [("GET", "http://vault.test", "/v1/sys/health", True)]
 
 
 def test_placeholder_values_are_context_not_material():
