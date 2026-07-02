@@ -32,9 +32,13 @@ class FakeAiohttpResponse:
 
 
 class FakeAiohttpSession:
-    def __init__(self, responses):
+    def __init__(self, responses, **kwargs):
         self.responses = responses
+        self.kwargs = kwargs
+        self.headers = kwargs.get("headers") or {}
+        self.timeout = kwargs.get("timeout")
         self.requested_urls = []
+        self.requests = []
 
     async def __aenter__(self):
         return self
@@ -42,15 +46,22 @@ class FakeAiohttpSession:
     async def __aexit__(self, exc_type, exc, traceback):
         return False
 
-    def get(self, url):
+    def get(self, url, **kwargs):
         self.requested_urls.append(url)
+        self.requests.append({"method": "GET", "url": url, "kwargs": kwargs})
         response = self.responses[url]
         if isinstance(response, Exception):
             raise response
         return response
 
-    def post(self, url, json=None):
+    def post(self, url, json=None, **kwargs):
         self.requested_urls.append(url)
+        self.requests.append({
+            "method": "POST",
+            "url": url,
+            "json": json,
+            "kwargs": kwargs,
+        })
         response = self.responses[url]
         if isinstance(response, Exception):
             raise response
@@ -78,8 +89,8 @@ class FakeRequestsResponse:
 def install_fake_aiohttp(monkeypatch, responses):
     sessions = []
 
-    def client_session_factory(timeout=None):
-        session = FakeAiohttpSession(responses)
+    def client_session_factory(**kwargs):
+        session = FakeAiohttpSession(responses, **kwargs)
         sessions.append(session)
         return session
 
