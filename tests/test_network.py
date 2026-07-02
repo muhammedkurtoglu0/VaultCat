@@ -348,7 +348,8 @@ def test_auth_config_audit_flags_kubernetes_aws_and_ldap_risks(monkeypatch):
 
     result = auth_config_scanner.scan_auth_config_security(target, "hvs.fake-token")
 
-    assert result["risk_score"] == 100
+    assert result["risk_score"] == 90
+    assert sorted(check["risk_score"] for check in result["checks"]) == [25, 25, 40]
     titles = [finding["title"] for finding in report.findings]
     assert "Kubernetes auth role allows all service accounts" in titles
     assert "AWS auth role uses wildcard IAM principal binding" in titles
@@ -444,7 +445,8 @@ def test_ttl_governance_flags_unlimited_mount_and_long_pki_role(monkeypatch):
         max_pki_cert_ttl_seconds=90 * 24 * 60 * 60,
     )
 
-    assert result["risk_score"] == 70
+    assert result["risk_score"] == 55
+    assert sorted(check["risk_score"] for check in result["checks"]) == [10, 10, 10, 25]
     titles = [finding["title"] for finding in report.findings]
     assert "Secrets engine max lease TTL appears unlimited" in titles
     assert "Secrets engine max lease TTL exceeds policy threshold" in titles
