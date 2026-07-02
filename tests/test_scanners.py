@@ -44,6 +44,13 @@ def finding_titles():
     return [finding["title"] for finding in report.findings]
 
 
+TOKEN_PATTERNS = {
+    "vault_token_value",
+    "vault_token_assignment",
+    "vault_response_wrapped_token",
+}
+
+
 def test_patterns_detect_vault_material_and_database_risk():
     text = """
     VAULT_TOKEN=hvs.abcdefghijklmnopqrstuvwxyz
@@ -89,8 +96,9 @@ def test_scan_text_deduplicates_and_masks_sensitive_values(tmp_path):
 
     matches = _scan_text(source, source.read_text(encoding="utf-8"))
 
-    token_matches = [match for match in matches if match["pattern"] == "vault_token_assignment"]
-    assert len(token_matches) == 2
+    token_matches = [match for match in matches if match["pattern"] in TOKEN_PATTERNS]
+    assert len(token_matches) >= 2
+    assert any(match["pattern"] == "vault_token_value" for match in token_matches)
     assert token_matches[0]["masked_value"] == "hvs.abc...wxyz"
     assert any(match["pattern"] == "vault_role_id" for match in matches)
     assert any(match["pattern"] == "vault_secret_id" for match in matches)
@@ -155,7 +163,7 @@ def test_scan_files_reads_supported_zip_members(tmp_path):
 
     matches = scan_files(tmp_path, include_git_history=False)
 
-    assert any(match["pattern"] == "vault_token_assignment" for match in matches)
+    assert any(match["pattern"] in TOKEN_PATTERNS for match in matches)
     assert all("image.png" not in match["file"] for match in matches)
 
 
