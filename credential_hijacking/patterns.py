@@ -83,9 +83,17 @@ PATTERNS = {
         re.IGNORECASE,
     ),
     "database_static_password": re.compile(
-        r"\b(?:DB_PASSWORD|DATABASE_PASSWORD|POSTGRES_PASSWORD|MYSQL_PASSWORD|"
-        r"MYSQL_ROOT_PASSWORD|MSSQL_PASSWORD|PGPASSWORD|db_password|"
-        r"database_password|password)[ \t]*[:=][ \t]*[\"']?([^\s\"',}]+)",
+        r"\b(?:"
+        r"DB_PASSWORD|DB_PASS|DATABASE_PASSWORD|DATABASE_PASS|"
+        r"POSTGRES_PASSWORD|POSTGRES_PASS|POSTGRESQL_PASSWORD|POSTGRESQL_PASS|"
+        r"PGPASSWORD|PG_PASSWORD|PG_PASS|"
+        r"MYSQL_PASSWORD|MYSQL_PASS|MYSQL_ROOT_PASSWORD|MYSQL_ROOT_PASS|"
+        r"MSSQL_PASSWORD|MSSQL_PASS|SQLSERVER_PASSWORD|SQLSERVER_PASS|"
+        r"db_password|db_pass|database_password|database_pass|"
+        r"postgres_password|postgres_pass|postgresql_password|postgresql_pass|"
+        r"pg_password|pg_pass|mysql_password|mysql_pass|mysql_root_password|"
+        r"mysql_root_pass|mssql_password|mssql_pass|sqlserver_password|sqlserver_pass"
+        r")[ \t]*[:=][ \t]*[\"']?([^\s\"',}]+)",
         re.IGNORECASE,
     ),
     "dynamic_database_username": re.compile(

@@ -323,8 +323,10 @@ def _scan_git_history(root):
         r"database/creds|database/config|database/roles|database/static-roles|"
         r"creation_statements|revocation_statements|default_ttl|max_ttl|"
         r"connection_url|database-plugin|GRANT ALL|ALL PRIVILEGES|SUPERUSER|"
-        r"CREATEDB|CREATEROLE|DB_PASSWORD|POSTGRES_PASSWORD|MYSQL_PASSWORD|"
-        r"PGPASSWORD|:8200"
+        r"CREATEDB|CREATEROLE|DB_PASSWORD|DB_PASS|DATABASE_PASSWORD|"
+        r"DATABASE_PASS|POSTGRES_PASSWORD|POSTGRES_PASS|MYSQL_PASSWORD|"
+        r"MYSQL_PASS|PGPASSWORD|PG_PASSWORD|PG_PASS|db_password|db_pass|"
+        r"database_password|database_pass|pg_password|mysql_password|:8200"
     )
 
     for commit in commits.splitlines():

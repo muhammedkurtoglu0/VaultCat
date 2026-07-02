@@ -155,6 +155,38 @@ def test_wrapped_token_detection_is_specific_and_masked(tmp_path):
     assert all(wrapped_token not in finding.get("evidence", "") for finding in report.findings)
 
 
+def test_database_password_patterns_focus_on_infrastructure_variables(tmp_path):
+    source = tmp_path / "application.yml"
+    source.write_text(
+        "\n".join([
+            "DB_PASSWORD=db-secret-1",
+            "DATABASE_PASS=db-secret-2",
+            "db_password=db-secret-3",
+            "pg_password=db-secret-4",
+            "mysql_password=db-secret-5",
+            "user_password=domain-user-password",
+            "client_password=oauth-client-password",
+        ]),
+        encoding="utf-8",
+    )
+
+    matches = _scan_text(source, source.read_text(encoding="utf-8"))
+    db_password_values = [
+        match["value"] for match in matches
+        if match["pattern"] == "database_static_password"
+    ]
+
+    assert db_password_values == [
+        "db-secret-1",
+        "db-secret-2",
+        "db-secret-3",
+        "db-secret-4",
+        "db-secret-5",
+    ]
+    assert "domain-user-password" not in db_password_values
+    assert "oauth-client-password" not in db_password_values
+
+
 def test_scan_files_skips_binary_large_and_unsupported_files(tmp_path):
     (tmp_path / ".env").write_text("VAULT_SECRET_ID=fake-secret-id-456\n", encoding="utf-8")
     (tmp_path / "binary.log").write_bytes(b"VAULT_TOKEN=hvs.aaaaaaaaaaaaaaaa\x00\x00")

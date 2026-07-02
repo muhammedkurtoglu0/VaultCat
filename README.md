@@ -226,7 +226,7 @@ The hijack scanner currently looks for:
 - Vault addresses and namespaces: `VAULT_ADDR`, `vault_addr`, `:8200`, `VAULT_NAMESPACE`
 - AWS IAM Vault auth clues: `auth/aws/login`, `auth/aws/role/*`, AWS credential environment variables, role ARNs, bound IAM principal ARNs, `X-Vault-AWS-IAM-Server-ID`
 - Vault Database Secrets Engine clues: `database/config/*`, `database/roles/*`, `database/creds/*`, database plugins, connection URLs, `creation_statements`, `revocation_statements`, `default_ttl`, `max_ttl`
-- Static DB credential clues: `DB_USERNAME`, `DB_PASSWORD`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD`, `PGUSER`, `PGPASSWORD`
+- Static DB credential clues: `DB_USERNAME`, `DB_PASSWORD`, `DATABASE_PASS`, `db_password`, `pg_password`, `mysql_password`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD`, `PGUSER`, `PGPASSWORD`
 - Vault Agent clues: `auto_auth` and file token sinks
 
 Noise and scope controls:
