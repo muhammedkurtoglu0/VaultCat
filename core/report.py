@@ -47,8 +47,6 @@ def add_finding(
         "description": description
     }
 
-    if recommendation:
-        finding["recommendation"] = recommendation
     if evidence:
         finding["evidence"] = evidence
     if module:
@@ -93,8 +91,6 @@ def print_report():
     for finding in visible_findings:
         print(f"\n[{finding['severity']}] {finding['title']}")
         print(f"Description: {finding['description']}")
-        if finding.get("recommendation"):
-            print(f"Recommendation: {finding['recommendation']}")
         if finding.get("evidence"):
             print(f"Evidence: {finding['evidence']}")
         if finding.get("module"):
@@ -194,7 +190,6 @@ def export_markdown_report(output_path, target=None):
                 f"- Module: `{finding.get('module', '')}`",
                 f"- Target: `{finding.get('target', '')}`",
                 f"- Description: {finding.get('description', '')}",
-                f"- Recommendation: {finding.get('recommendation', '')}",
                 f"- Evidence: `{finding.get('evidence', '')}`",
                 "",
             ])

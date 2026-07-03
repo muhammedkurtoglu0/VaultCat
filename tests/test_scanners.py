@@ -45,6 +45,25 @@ def finding_titles():
     return [finding["title"] for finding in report.findings]
 
 
+def test_report_omits_recommendation_text(capsys):
+    report.add_finding(
+        "LOW",
+        "Example finding",
+        "Example description.",
+        recommendation="This should not be shown.",
+        evidence="example evidence",
+        module="test",
+        target="unit-test",
+    )
+
+    report.print_report()
+    output = capsys.readouterr().out
+
+    assert "recommendation" not in report.findings[0]
+    assert "Recommendation:" not in output
+    assert "This should not be shown." not in output
+
+
 TOKEN_PATTERNS = {
     "vault_token_value",
     "vault_token_assignment",
