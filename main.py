@@ -102,6 +102,12 @@ def main():
     )
 
     parser.add_argument(
+        "--skip-recon",
+        action="store_true",
+        help="Skip the default unauthenticated recon when running targeted validation or authenticated audits"
+    )
+
+    parser.add_argument(
         "--env-scan",
         action="store_true",
         help="Scan local environment for Vault-related variables"
@@ -287,7 +293,7 @@ def main():
     vault_addr = args.target or args.addr
     hijack_path = args.hijack_path or (args.path if args.command == "hijack" else None)
 
-    if args.target and not hijack_path and not args.vault_recon:
+    if args.target and not hijack_path and not args.vault_recon and not args.skip_recon:
         run_unauthenticated_recon(args.target)
 
     if args.target and args.vault_recon:

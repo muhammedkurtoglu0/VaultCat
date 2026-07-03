@@ -79,6 +79,13 @@ python main.py --target http://localhost:8200 --vault-recon
 
 When a Vault version is observed, the recon workflow also compares it against a small local advisory table for known Vault CVE ranges. This check does not query the internet at runtime.
 
+To run targeted authenticated checks without repeating the default unauthenticated recon output, add `--skip-recon`:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --validate-token --skip-recon
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --capability-audit --skip-recon
+```
+
 ## Authenticated Assessment
 
 Authenticated checks only run when a token is supplied.
