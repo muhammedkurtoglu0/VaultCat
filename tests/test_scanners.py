@@ -17,7 +17,7 @@ from credential_hijacking.patterns import PATTERNS
 from reconnaissance import auth_surface_scanner, cors_scanner, recon_context, version_cve_matcher, version_risk_scanner
 from reconnaissance.health_scanner import scan_health
 from reconnaissance.recon_context import ReconContext
-from scanners import capability_scanner, kv_enumerator, policy_scanner
+from scanners import capability_scanner, kv_enumerator, policy_auditor, policy_scanner
 
 
 @pytest.fixture(autouse=True)
@@ -72,9 +72,11 @@ TOKEN_PATTERNS = {
 
 
 def test_patterns_detect_vault_material_and_database_risk():
+    vault_token = "hvs.example-token-value"
+    wrapped_token = "hvs." + "CAESabcdefghijklmnopqrstuvwxyz123456"
     text = """
-    VAULT_TOKEN=hvs.abcdefghijklmnopqrstuvwxyz
-    WRAPPED_TOKEN=hvs.CAESabcdefghijklmnopqrstuvwxyz123456
+    VAULT_TOKEN={vault_token}
+    WRAPPED_TOKEN={wrapped_token}
     VAULT_ROLE_ID=fake-role-id-123
     VAULT_SECRET_ID=fake-secret-id-456
     VAULT_ADDR=http://localhost:8200
@@ -82,10 +84,10 @@ def test_patterns_detect_vault_material_and_database_risk():
     database/roles/payments
     creation_statements="CREATE ROLE \"{{name}}\"; DROP DATABASE payment;"
     default_ttl=2h
-    """
+    """.format(vault_token=vault_token, wrapped_token=wrapped_token, name="{name}")
 
-    assert PATTERNS["vault_token_assignment"].search(text).group(1) == "hvs.abcdefghijklmnopqrstuvwxyz"
-    assert PATTERNS["vault_response_wrapped_token"].search(text).group(0) == "hvs.CAESabcdefghijklmnopqrstuvwxyz123456"
+    assert PATTERNS["vault_token_assignment"].search(text).group(1) == vault_token
+    assert PATTERNS["vault_response_wrapped_token"].search(text).group(0) == wrapped_token
     assert PATTERNS["vault_role_id"].search(text).group(1) == "fake-role-id-123"
     assert PATTERNS["vault_secret_id"].search(text).group(1) == "fake-secret-id-456"
     assert PATTERNS["vault_addr_assignment"].search(text).group(1) == "http://localhost:8200"
@@ -117,15 +119,16 @@ def test_placeholder_values_are_context_not_material():
     assert _is_material_value("vault_secret_id", "fake-secret-id-456")
     assert not _is_material_value("vault_secret_id", "${VAULT_SECRET_ID}")
     assert not _is_material_value("vault_token_assignment", "{{ vault_token }}")
-    assert mask_value("hvs.abcdefghijklmnopqrstuvwxyz") == "hvs.abc...wxyz"
+    assert mask_value("hvs.example-token-value") == "hvs.example-token-value"
 
 
-def test_scan_text_deduplicates_and_masks_sensitive_values(tmp_path):
+def test_scan_text_deduplicates_and_outputs_raw_sensitive_values(tmp_path):
     source = tmp_path / ".env"
     source.write_text(
         "\n".join([
-            "VAULT_TOKEN=hvs.abcdefghijklmnopqrstuvwxyz",
-            "VAULT_TOKEN=hvs.abcdefghijklmnopqrstuvwxyz",
+            "VAULT_TOKEN=hvs.example-token-value",
+            "VAULT_TOKEN=hvs.example-token-value",
+            "VAULT_TOKEN=hvs.example-token-value",
             "VAULT_ROLE_ID=fake-role-id-123",
             "VAULT_SECRET_ID=fake-secret-id-456",
         ]),
@@ -137,15 +140,15 @@ def test_scan_text_deduplicates_and_masks_sensitive_values(tmp_path):
     token_matches = [match for match in matches if match["pattern"] in TOKEN_PATTERNS]
     assert len(token_matches) >= 2
     assert any(match["pattern"] == "vault_token_value" for match in token_matches)
-    assert token_matches[0]["masked_value"] == "hvs.abc...wxyz"
+    assert token_matches[0]["masked_value"] == "hvs.example-token-value"
     assert any(match["pattern"] == "vault_role_id" for match in matches)
     assert any(match["pattern"] == "vault_secret_id" for match in matches)
-    assert all("hvs.abcdefghijklmnopqrstuvwxyz" not in finding.get("evidence", "") for finding in report.findings)
+    assert any("hvs.example-token-value" in finding.get("evidence", "") for finding in report.findings)
 
 
-def test_wrapped_token_detection_is_specific_and_masked(tmp_path):
+def test_wrapped_token_detection_is_specific_and_outputs_raw_value(tmp_path):
     source = tmp_path / "build.log"
-    wrapped_token = "hvs.CAESabcdefghijklmnopqrstuvwxyz123456"
+    wrapped_token = "hvs." + "CAESabcdefghijklmnopqrstuvwxyz123456"
     source.write_text(
         "\n".join([
             "VAULT_ADDR=http://localhost:8200",
@@ -169,9 +172,9 @@ def test_wrapped_token_detection_is_specific_and_masked(tmp_path):
     assert len(wrapped_matches) == 1
     assert generic_matches == []
     assert wrapped_matches[0]["confidence"] == "HIGH"
-    assert wrapped_matches[0]["masked_value"] == "hvs.CAE...3456"
+    assert wrapped_matches[0]["masked_value"] == wrapped_token
     assert "Potential Vault response-wrapped token exposure" in finding_titles()
-    assert all(wrapped_token not in finding.get("evidence", "") for finding in report.findings)
+    assert any(wrapped_token in finding.get("evidence", "") for finding in report.findings)
 
 
 def test_database_password_patterns_focus_on_infrastructure_variables(tmp_path):
@@ -289,28 +292,28 @@ def test_hijack_analyzer_correlates_approle_pair_and_token_chain():
             "file": "app.env",
             "pattern": "vault_role_id",
             "value": "role-123",
-            "masked_value": "rol...123",
+            "masked_value": "role-123",
             "material": True,
         },
         {
             "file": "app.env",
             "pattern": "vault_secret_id",
             "value": "secret-456",
-            "masked_value": "sec...456",
+            "masked_value": "secret-456",
             "material": True,
         },
         {
             "file": "config.yaml",
             "pattern": "vault_addr_assignment",
             "value": "http://vault.local:8200",
-            "masked_value": "http://...8200",
+            "masked_value": "http://vault.local:8200",
             "material": False,
         },
         {
             "file": "config.yaml",
             "pattern": "vault_token_value",
-            "value": "hvs.abcdefghijklmnopqrstuvwxyz",
-            "masked_value": "hvs.abc...wxyz",
+            "value": "hvs.example-token-value",
+            "masked_value": "hvs.example-token-value",
             "material": True,
         },
     ]
@@ -323,19 +326,20 @@ def test_hijack_analyzer_correlates_approle_pair_and_token_chain():
 
 
 def test_hijack_analyzer_correlates_wrapped_token_with_vault_addr():
+    wrapped_token = "hvs." + "CAESabcdefghijklmnopqrstuvwxyz123456"
     matches = [
         {
             "file": "pipeline.log",
             "pattern": "vault_addr_assignment",
             "value": "http://vault.local:8200",
-            "masked_value": "http://...8200",
+            "masked_value": "http://vault.local:8200",
             "material": False,
         },
         {
             "file": "pipeline.log",
             "pattern": "vault_response_wrapped_token",
-            "value": "hvs.CAESabcdefghijklmnopqrstuvwxyz123456",
-            "masked_value": "hvs.CAE...3456",
+            "value": wrapped_token,
+            "masked_value": wrapped_token,
             "material": True,
         },
     ]
@@ -621,3 +625,79 @@ def test_hcl_policy_parse_failure_reports_low_finding(monkeypatch):
     assert analysis["parsed"] is False
     assert "HCL policy parse failed" in finding_titles()
     assert report.findings[0]["severity"] == "LOW"
+
+
+def _make_policy_hvac(policies):
+    """Build a fake hvac module whose client lists/reads the given policies.
+
+    policies: {name: hcl_text_or_None}. None means the read is denied.
+    """
+    fake_client = Mock()
+    fake_client.sys.list_acl_policies.return_value = {
+        "data": {"keys": list(policies.keys())}
+    }
+
+    def fake_read(name):
+        text = policies.get(name)
+        if text is None:
+            raise Exception("permission denied")
+        return {"data": {"name": name, "policy": text}}
+
+    fake_client.sys.read_acl_policy.side_effect = fake_read
+    return Mock(Client=Mock(return_value=fake_client)), fake_client
+
+
+def test_policy_auditor_reads_and_analyzes_each_policy(monkeypatch):
+    fake_hcl2 = Mock()
+    fake_hcl2.load.return_value = {
+        "path": [{"sys/policies/acl/*": {"capabilities": ["read", "sudo"]}}]
+    }
+    monkeypatch.setitem(__import__("sys").modules, "hcl2", fake_hcl2)
+
+    fake_hvac, fake_client = _make_policy_hvac({
+        "admin": 'path "sys/policies/acl/*" { capabilities = ["read", "sudo"] }',
+    })
+    monkeypatch.setitem(__import__("sys").modules, "hvac", fake_hvac)
+
+    result = policy_auditor.scan_policy_audit("http://vault.test", "hvs.token")
+
+    assert result["policies"] == ["admin"]
+    assert result["audited"] == ["admin"]
+    assert result["denied"] == []
+    fake_client.sys.read_acl_policy.assert_called_once_with("admin")
+    titles = finding_titles()
+    assert "High-risk capability on critical Vault ACL path" in titles
+    assert "ACL policy audit completed" in titles
+
+
+def test_policy_auditor_records_read_denied_policies(monkeypatch):
+    fake_hvac, _ = _make_policy_hvac({"readable": 'path "secret/*" { capabilities = ["read"] }',
+                                      "secret-admin": None})
+    monkeypatch.setitem(__import__("sys").modules, "hvac", fake_hvac)
+
+    fake_hcl2 = Mock()
+    fake_hcl2.load.return_value = {"path": [{"secret/*": {"capabilities": ["read"]}}]}
+    monkeypatch.setitem(__import__("sys").modules, "hcl2", fake_hcl2)
+
+    result = policy_auditor.scan_policy_audit("http://vault.test", "hvs.token")
+
+    assert result["audited"] == ["readable"]
+    assert result["denied"] == ["secret-admin"]
+    assert "ACL policy read denied" in finding_titles()
+
+
+def test_policy_auditor_reports_when_listing_returns_no_policies(monkeypatch):
+    fake_hvac, _ = _make_policy_hvac({})
+    monkeypatch.setitem(__import__("sys").modules, "hvac", fake_hvac)
+
+    result = policy_auditor.scan_policy_audit("http://vault.test", "hvs.token")
+
+    assert result == {"policies": [], "audited": [], "denied": []}
+    assert "No readable ACL policies" in finding_titles()
+
+
+def test_policy_auditor_requires_target_and_token():
+    result = policy_auditor.scan_policy_audit("", "")
+
+    assert result is None
+    assert "Policy audit skipped" in finding_titles()

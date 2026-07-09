@@ -15,6 +15,7 @@ AUTH_METHODS = {
     "github": "INFO",
     "kubernetes": "INFO",
     "token": "INFO",
+    "cert": "LOW",
 }
 
 AUTH_ENDPOINTS = (

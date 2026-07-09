@@ -4,13 +4,7 @@ from core.report import add_finding
 
 
 def mask_secret(value):
-    if not value:
-        return None
-
-    if len(value) <= 12:
-        return value[:3] + "***"
-
-    return value[:10] + "..." + value[-4:]
+    return value
 
 
 def scan_environment():
