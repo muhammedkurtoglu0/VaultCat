@@ -618,7 +618,4 @@ def mask_value(value):
     if not value:
         return "<empty>"
 
-    if len(value) <= 8:
-        return value[:2] + "..." + value[-2:]
-
-    return value[:7] + "..." + value[-4:]
+    return value

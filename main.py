@@ -1,7 +1,21 @@
 import argparse
 
+from active_execution.context import ExecutionContext
+from active_execution.engine import ActiveExecutionEngine
+from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+from active_execution.modules.secret_exfiltration import SecretExfiltrationModule
+from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
+from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
+from active_execution.registry import (
+    ActiveExecutionRegistry,
+    RiskLevel,
+    risk_level_allowed,
+)
+from ai_core.chat_ui import start_chat_session
+from ai_core.mcp_server import start_mcp_service
 from core.client import VaultClient
 from core.report import (
+    add_finding,
     export_json_report,
     export_markdown_report,
     print_report,
@@ -37,6 +51,15 @@ from reconnaissance.version_risk_scanner import scan_version_risk
 from reconnaissance.vault_recon import scan_vault_recon
 
 
+def build_active_execution_registry():
+    registry = ActiveExecutionRegistry()
+    registry.register(PrivilegeEscalationModule())
+    registry.register(SecretExfiltrationModule())
+    registry.register(DatabaseCredentialHarvestModule())
+    registry.register(CloudKeyExfiltrationModule())
+    return registry
+
+
 def run_unauthenticated_recon(target):
     print("\n======================================")
     print("Unauthenticated Vault Reconnaissance")
@@ -65,8 +88,8 @@ def main():
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["hijack", "recon"],
-        help="Optional command: hijack or recon"
+        choices=["hijack", "recon", "chat", "mcp"],
+        help="Optional command: hijack, recon, chat, or mcp"
     )
 
     parser.add_argument(
@@ -199,6 +222,45 @@ def main():
     )
 
     parser.add_argument(
+        "--active-auto",
+        action="store_true",
+        help="Run default-enabled active execution modules within --active-max-risk"
+    )
+
+    parser.add_argument(
+        "--active-max-risk",
+        choices=[level.value for level in RiskLevel],
+        default=RiskLevel.READ_ONLY.value,
+        help="Maximum active execution risk level allowed by --active-auto"
+    )
+
+    parser.add_argument(
+        "--confirm-active",
+        action="store_true",
+        help="Explicitly confirm state-changing active execution modules"
+    )
+
+    parser.add_argument(
+        "--active-policy",
+        action="append",
+        default=None,
+        help="Policy to request during --active-auto token creation; can be used multiple times"
+    )
+
+    parser.add_argument(
+        "--active-ttl",
+        default="30m",
+        help="TTL to request during --active-auto token creation"
+    )
+
+    parser.add_argument(
+        "--active-exfil-max-depth",
+        type=int,
+        default=5,
+        help="Maximum KV recursion depth for active secret exfiltration"
+    )
+
+    parser.add_argument(
         "--max-mount-ttl-seconds",
         type=int,
         default=DEFAULT_MAX_MOUNT_TTL_SECONDS,
@@ -289,6 +351,15 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.command == "chat":
+        start_chat_session()
+        return
+
+    if args.command == "mcp":
+        start_mcp_service()
+        return
+
     set_report_min_severity(args.min_severity)
     vault_addr = args.target or args.addr
     hijack_path = args.hijack_path or (args.path if args.command == "hijack" else None)
@@ -360,6 +431,56 @@ def main():
             read_leaves=not args.kv_no_read,
         )
 
+    if args.active_auto:
+        registry = build_active_execution_registry()
+        engine = ActiveExecutionEngine(registry)
+        context = ExecutionContext(
+            vault_addr=vault_addr,
+            token=args.token,
+            namespace=args.namespace,
+        )
+        max_risk = RiskLevel(args.active_max_risk)
+        auto_steps = []
+
+        for module_instance in registry.list_modules():
+            if (
+                getattr(module_instance, "default_enabled", False)
+                and risk_level_allowed(module_instance.risk_level, max_risk)
+            ):
+                params = {
+                    "ttl": args.active_ttl,
+                    "namespace": args.namespace,
+                    "max_depth": args.active_exfil_max_depth,
+                }
+                if args.active_policy:
+                    params["policies"] = args.active_policy
+
+                auto_steps.append({
+                    "module_id": module_instance.module_id,
+                    "reason": "Automated active testing via auto-pilot execution engine.",
+                    "params": params,
+                })
+
+        if auto_steps:
+            print(f"[*] Auto-pilot active execution initiated. Total tasks: {len(auto_steps)}")
+            engine.execute_plan(
+                auto_steps,
+                context,
+                max_risk=max_risk,
+                confirm_state_changing=args.confirm_active,
+            )
+            for finding in context.findings:
+                add_finding(
+                    finding["severity"],
+                    finding["title"],
+                    finding["description"],
+                    evidence=finding.get("evidence"),
+                    module="active_execution",
+                    target=vault_addr,
+                )
+        else:
+            print("[-] No suitable active modules found for the current risk level.")
+
     if vault_addr and args.validate_approle and args.role_id and args.secret_id:
         validate_approle_credentials(
             args.role_id,
@@ -378,6 +499,7 @@ def main():
         and not args.priv_esc_audit
         and not args.auth_config_audit
         and not args.ttl_audit
+        and not args.active_auto
     ):
         client = VaultClient(vault_addr, args.token)
 

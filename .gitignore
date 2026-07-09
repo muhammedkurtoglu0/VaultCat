@@ -8,6 +8,7 @@ venv/
 .venv/
 /Lib/
 /Scripts/
+.codex_deps/
 
 # VS Code
 .vscode/

@@ -225,9 +225,27 @@ python main.py --hijack-path C:\path\to\repo --validate-db --target https://vaul
 
 `--validate-db` checks only Vault metadata and hardening signals such as visible database mounts, listable roles, role TTLs, visible creation statements, and broad privilege patterns. It does not read `database/creds/<role>`, does not generate dynamic database users, and does not modify Vault or the database.
 
+## Active Execution
+
+Active execution modules are intended for controlled, authorized lab or red-team use after passive and read-only checks have established a clear path. They are not part of the default recon workflow.
+
+Read-only active modules can be selected with:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --active-auto
+```
+
+State-changing modules, such as token creation attempts, require both an explicit risk level and confirmation:
+
+```bash
+python main.py --target http://localhost:8200 --token YOUR_TOKEN --active-auto --active-max-risk state_changing --confirm-active
+```
+
+The active execution engine blocks modules above the selected risk level, requires explicit confirmation for state-changing modules, and converts module failures into structured execution results.
+
 The hijack scanner currently looks for:
 
-- Vault tokens and response-wrapped tokens: `hvs.*`, `hvc.*`, `hvs.CAES...`, `VAULT_TOKEN`, `vault_token`
+- Vault tokens and response-wrapped tokens: `hvs.*`, `hvc.*`, wrapped-token examples, `VAULT_TOKEN`, `vault_token`
 - AppRole material: `VAULT_ROLE_ID`, `VAULT_SECRET_ID`, `role_id`, `secret_id`, `roleId`, `secretId`
 - AppRole flow clues: `auth/approle/login`, role-id retrieval paths, Secret ID generation paths, CLI AppRole login examples
 - Vault addresses and namespaces: `VAULT_ADDR`, `vault_addr`, `:8200`, `VAULT_NAMESPACE`
