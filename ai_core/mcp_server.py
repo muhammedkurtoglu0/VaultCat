@@ -51,12 +51,12 @@ pentest_context: dict[str, Any] = {
 
 
 def build_active_registry() -> ActiveExecutionRegistry:
-    registry = ActiveExecutionRegistry()
-    registry.register(PrivilegeEscalationModule())
-    registry.register(SecretExfiltrationModule())
-    registry.register(DatabaseCredentialHarvestModule())
-    registry.register(CloudKeyExfiltrationModule())
-    return registry
+    """
+    Registry oluşturmak için main'deki fonksiyonu çağır.
+    Döngüsel import'u önlemek için import fonksiyon içinde yapılıyor.
+    """
+    from main import build_active_execution_registry
+    return build_active_execution_registry()
 
 
 def _module_metadata(module: Any) -> dict[str, Any]:
@@ -65,7 +65,7 @@ def _module_metadata(module: Any) -> dict[str, Any]:
         "title": module.title,
         "description": module.description,
         "risk_level": module.risk_level.value,
-        "default_enabled": module.default_enabled,
+        "default_enabled": getattr(module, "default_enabled", False),
     }
 
 
@@ -85,7 +85,6 @@ def _execution_context(
 
 
 def _safe_module_filter(module_name: str) -> list[dict]:
-    """Belirtilen modüle ait bulgulari döndürür."""
     return [f for f in report_findings if f.get("module") == module_name]
 
 
@@ -451,7 +450,7 @@ async def get_findings() -> str:
             "risk_grade": risk["grade"],
             "findings": report_findings,
         },
-        ensure_ascii=False,
+            ensure_ascii=False,
     )
 
 

