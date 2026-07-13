@@ -20,3 +20,6 @@ Thumbs.db
 # Generated reports and downloaded public labs
 reports/
 public-labs/
+
+# Continue dev config
+.continue/

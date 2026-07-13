@@ -12,7 +12,6 @@ from active_execution.registry import (
     risk_level_allowed,
 )
 from ai_core.chat_ui import start_chat_session
-from ai_core.mcp_server import start_mcp_service
 from core.client import VaultClient
 from core.report import (
     add_finding,
@@ -52,11 +51,49 @@ from reconnaissance.vault_recon import scan_vault_recon
 
 
 def build_active_execution_registry():
+    from active_execution.modules import get_default_registry
+
+    return get_default_registry()
+
     registry = ActiveExecutionRegistry()
+
+    # Mevcut modüller
     registry.register(PrivilegeEscalationModule())
     registry.register(SecretExfiltrationModule())
     registry.register(DatabaseCredentialHarvestModule())
     registry.register(CloudKeyExfiltrationModule())
+
+    # Yeni modüller
+    from active_execution.modules.token_exploit import TokenExploitModule
+    from active_execution.modules.policy_exploit import PolicyExploitModule
+    from active_execution.modules.audit_backdoor import AuditBackdoorModule
+    from active_execution.modules.cve_scanner import CVEScannerModule
+    from active_execution.modules.database_pivot import DatabasePivotModule
+    from active_execution.modules.cloud_pivot import CloudPivotModule
+    from active_execution.modules.persistence import PersistenceModule
+    from active_execution.modules.raft_storage_exploit import RaftStorageExploitModule
+    from active_execution.modules.unseal_key_exfiltration import UnsealKeyExfiltrationModule
+    from active_execution.modules.database_exploit import DatabaseExploitModule
+    from active_execution.modules.cloud_exploit import CloudExploitModule
+    from active_execution.modules.multi_persistence import MultiPersistenceModule
+    from active_execution.modules.payload_module import PayloadModule
+    from active_execution.modules.unauthenticated_attack import UnauthenticatedAttackModule
+
+    registry.register(TokenExploitModule())
+    registry.register(PolicyExploitModule())
+    registry.register(AuditBackdoorModule())
+    registry.register(CVEScannerModule())
+    registry.register(DatabasePivotModule())
+    registry.register(CloudPivotModule())
+    registry.register(PersistenceModule())
+    registry.register(RaftStorageExploitModule())
+    registry.register(UnsealKeyExfiltrationModule())
+    registry.register(DatabaseExploitModule())
+    registry.register(CloudExploitModule())
+    registry.register(MultiPersistenceModule())
+    registry.register(PayloadModule())
+    registry.register(UnauthenticatedAttackModule())
+
     return registry
 
 
@@ -350,13 +387,117 @@ def main():
         help="Only show/export findings at or above this severity"
     )
 
+    # Yeni argümanlar
+    parser.add_argument(
+        "--db-pivot",
+        action="store_true",
+        help="Enable database pivot module"
+    )
+
+    parser.add_argument(
+        "--cloud-pivot",
+        action="store_true",
+        help="Enable cloud pivot module"
+    )
+
+    parser.add_argument(
+        "--persistence",
+        action="store_true",
+        help="Enable persistence module"
+    )
+
+    parser.add_argument(
+        "--module",
+        choices=[
+            "privilege_escalation.token_abuse",
+            "secret_exfiltration.kv_dump",
+            "database_credential_harvest.dynamic_creds",
+            "cloud_key_exfiltration.iam_creds",
+            "token_exploit.creation",
+            "policy_exploit.modification",
+            "audit_backdoor.disable",
+            "cve_scanner.scan",
+            "database_pivot.exploit",
+            "cloud_pivot.exploit",
+            "persistence.backdoor",
+            "raft_storage.exploit",
+            "unseal_key.exfiltration",
+            "database_exploit.exploit",
+            "cloud_exploit.exploit",
+            "multi_persistence.backdoor",
+            "payload_module.reverse_shell",
+            "unauthenticated.attack"
+        ],
+        help="Run a single specific module"
+    )
+
+    parser.add_argument(
+        "--provider",
+        choices=["aws", "azure", "gcp"],
+        help="Cloud provider for cloud_pivot module"
+    )
+
+    parser.add_argument(
+        "--region",
+        default="us-east-1",
+        help="AWS region for cloud_pivot"
+    )
+
+    parser.add_argument(
+        "--subscription-id",
+        help="Azure subscription ID for cloud_pivot"
+    )
+
+    parser.add_argument(
+        "--db-type",
+        choices=["postgres", "mysql", "mssql"],
+        default="postgres",
+        help="Database type for database_pivot module"
+    )
+
+    parser.add_argument(
+        "--db-host",
+        help="Database host for database_pivot module"
+    )
+
+    parser.add_argument(
+        "--db-port",
+        type=int,
+        help="Database port for database_pivot module"
+    )
+
+    parser.add_argument(
+        "--db-name",
+        default="postgres",
+        help="Database name for database_pivot module"
+    )
+
+    parser.add_argument(
+        "--auth-path",
+        default="approle-backdoor",
+        help="Auth path for persistence module"
+    )
+
+    parser.add_argument(
+        "--role-name",
+        default="backdoor-role",
+        help="Role name for persistence module"
+    )
+
+    parser.add_argument(
+        "--token-ttl",
+        default="0",
+        help="Token TTL for persistence module (0 = infinite)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "chat":
-        start_chat_session()
+        start_chat_session(vault_addr=args.target or args.addr, token=args.token)
         return
 
     if args.command == "mcp":
+        from ai_core.mcp_server import start_mcp_service
         start_mcp_service()
         return
 
@@ -431,6 +572,77 @@ def main():
             read_leaves=not args.kv_no_read,
         )
 
+    # Tekil modül çalıştırma
+    requested_modules = []
+    if args.module:
+        requested_modules.append(args.module)
+    if args.db_pivot:
+        requested_modules.append("database_pivot.exploit")
+    if args.cloud_pivot:
+        requested_modules.append("cloud_pivot.exploit")
+    if args.persistence:
+        requested_modules.append("persistence.backdoor")
+    requested_modules = list(dict.fromkeys(requested_modules))
+
+    if requested_modules:
+        registry = build_active_execution_registry()
+        engine = ActiveExecutionEngine(registry)
+        context = ExecutionContext(
+            vault_addr=vault_addr,
+            token=args.token,
+            namespace=args.namespace,
+        )
+
+        for module_id in requested_modules:
+            module = registry.get(module_id)
+            if not module:
+                print(f"[-] Module not found: {module_id}")
+                continue
+
+            max_risk = RiskLevel(args.active_max_risk)
+            if not risk_level_allowed(module.risk_level, max_risk):
+                print(f"[-] Module risk '{module.risk_level.value}' exceeds max_risk '{max_risk.value}'")
+                continue
+            elif module.risk_level != RiskLevel.READ_ONLY and not args.confirm_active:
+                print(f"[-] Module requires --confirm-active for risk level: {module.risk_level.value}")
+                continue
+            else:
+                params = {
+                    "ttl": args.active_ttl,
+                    "namespace": args.namespace,
+                    "max_depth": args.active_exfil_max_depth,
+                    "search_path": hijack_path or ".",
+                    "provider": args.provider,
+                    "region": args.region,
+                    "subscription_id": args.subscription_id,
+                    "db_type": args.db_type,
+                    "db_host": args.db_host,
+                    "db_port": args.db_port,
+                    "db_name": args.db_name,
+                    "auth_path": args.auth_path,
+                    "role_name": args.role_name,
+                    "token_ttl": args.token_ttl,
+                }
+                if args.active_policy:
+                    params["policies"] = args.active_policy
+
+                engine.execute_plan(
+                    [{"module_id": module_id, "params": params}],
+                    context,
+                    max_risk=max_risk,
+                    confirm_state_changing=args.confirm_active,
+                )
+        for finding in context.findings:
+            add_finding(
+                finding["severity"],
+                finding["title"],
+                finding["description"],
+                evidence=finding.get("evidence"),
+                module="active_execution",
+                target=vault_addr,
+            )
+
+    # Active auto - tüm default_enabled modülleri çalıştır
     if args.active_auto:
         registry = build_active_execution_registry()
         engine = ActiveExecutionEngine(registry)
@@ -500,6 +712,7 @@ def main():
         and not args.auth_config_audit
         and not args.ttl_audit
         and not args.active_auto
+        and not requested_modules
     ):
         client = VaultClient(vault_addr, args.token)
 

