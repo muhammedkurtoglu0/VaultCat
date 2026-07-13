@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from core import report
+from core.report import clear_findings
 from reconnaissance import vault_recon
 from scanners import auth_config_scanner, capability_scanner, privilege_escalation_scanner, ttl_scanner
 
@@ -170,7 +171,7 @@ def test_async_vault_recon_handles_failed_and_invalid_json(monkeypatch):
 
 
 def test_capabilities_self_success_response_is_reported_without_live_vault(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     fake_client = Mock()
     fake_client.sys.get_capabilities.return_value = {
         "data": {
@@ -199,11 +200,11 @@ def test_capabilities_self_success_response_is_reported_without_live_vault(monke
         finding["title"] == "Over-privileged token capability on critical Vault path"
         for finding in report.findings
     )
-    report.findings.clear()
+    clear_findings()
 
 
 def test_capabilities_self_failure_response_is_reported_without_live_vault(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     fake_client = Mock()
     fake_client.sys.get_capabilities.side_effect = RuntimeError("permission denied")
     fake_hvac = Mock(Client=Mock(return_value=fake_client))
@@ -221,11 +222,11 @@ def test_capabilities_self_failure_response_is_reported_without_live_vault(monke
         and "permission denied" in finding["evidence"]
         for finding in report.findings
     )
-    report.findings.clear()
+    clear_findings()
 
 
 def test_privilege_escalation_audit_flags_policy_and_token_create_risk(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     target = "http://vault.test"
     responses = {
         f"{target}/v1/auth/token/lookup-self": FakeAiohttpResponse(
@@ -262,11 +263,11 @@ def test_privilege_escalation_audit_flags_policy_and_token_create_risk(monkeypat
         and "sys/policies/acl/app-admin" in finding["evidence"]
         for finding in report.findings
     )
-    report.findings.clear()
+    clear_findings()
 
 
 def test_privilege_escalation_audit_passes_when_no_risky_capabilities(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     target = "http://vault.test"
     responses = {
         f"{target}/v1/sys/capabilities-self": FakeAiohttpResponse(
@@ -295,11 +296,11 @@ def test_privilege_escalation_audit_passes_when_no_risky_capabilities(monkeypatc
         finding["title"] == "No token privilege escalation capability observed"
         for finding in report.findings
     )
-    report.findings.clear()
+    clear_findings()
 
 
 def test_auth_config_audit_flags_kubernetes_aws_and_ldap_risks(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     target = "http://vault.test"
     responses = {
         ("GET", f"{target}/v1/sys/auth"): FakeRequestsResponse(
@@ -354,11 +355,11 @@ def test_auth_config_audit_flags_kubernetes_aws_and_ldap_risks(monkeypatch):
     assert "Kubernetes auth role allows all service accounts" in titles
     assert "AWS auth role uses wildcard IAM principal binding" in titles
     assert "LDAP user lockout appears disabled" in titles
-    report.findings.clear()
+    clear_findings()
 
 
 def test_auth_config_audit_reports_pass_for_scoped_external_auth(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     target = "http://vault.test"
     responses = {
         ("GET", f"{target}/v1/sys/auth"): FakeRequestsResponse(
@@ -409,11 +410,11 @@ def test_auth_config_audit_reports_pass_for_scoped_external_auth(monkeypatch):
 
     assert result["risk_score"] == 0
     assert all(finding["severity"] == "PASS" for finding in report.findings)
-    report.findings.clear()
+    clear_findings()
 
 
 def test_ttl_governance_flags_unlimited_mount_and_long_pki_role(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     target = "http://vault.test"
     responses = {
         ("GET", f"{target}/v1/sys/mounts"): FakeRequestsResponse(
@@ -451,11 +452,11 @@ def test_ttl_governance_flags_unlimited_mount_and_long_pki_role(monkeypatch):
     assert "Secrets engine max lease TTL appears unlimited" in titles
     assert "Secrets engine max lease TTL exceeds policy threshold" in titles
     assert "PKI certificate role TTL exceeds policy threshold" in titles
-    report.findings.clear()
+    clear_findings()
 
 
 def test_ttl_governance_passes_when_mounts_and_pki_roles_are_within_policy(monkeypatch):
-    report.findings.clear()
+    clear_findings()
     target = "http://vault.test"
     responses = {
         ("GET", f"{target}/v1/sys/mounts"): FakeRequestsResponse(
@@ -486,7 +487,7 @@ def test_ttl_governance_passes_when_mounts_and_pki_roles_are_within_policy(monke
         finding["title"] == "No secrets engine TTL findings observed"
         for finding in report.findings
     )
-    report.findings.clear()
+    clear_findings()
 
 
 def test_ttl_duration_parser_supports_common_vault_duration_formats():

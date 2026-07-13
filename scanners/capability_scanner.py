@@ -1,4 +1,5 @@
 from core.report import add_finding
+from core.tls_config import get_verify
 
 
 MODULE = "capability_scanner"
@@ -68,6 +69,7 @@ def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, time
             token=token,
             namespace=namespace,
             timeout=timeout,
+            verify=get_verify(),
         )
         response = _query_capabilities_self(client, audit_paths)
     except Exception as error:

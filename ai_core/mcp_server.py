@@ -9,7 +9,7 @@ from active_execution.modules.secret_exfiltration import SecretExfiltrationModul
 from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
 from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
 from active_execution.registry import ActiveExecutionRegistry, RiskLevel, risk_level_allowed
-from core.report import findings as report_findings
+from core.report import clear_findings, findings as report_findings
 from core.risk_score import calculate_risk
 from scanners.capability_scanner import audit_token_capabilities
 from scanners.auth_config_scanner import scan_auth_config_security
@@ -106,6 +106,7 @@ def _new_findings_since(start_index: int, modules: set[str] | None = None) -> li
     ),
 )
 async def run_unauthenticated_recon(vault_addr: str) -> str:
+    clear_findings()
     try:
         start_index = len(report_findings)
         context = ReconContext(vault_addr)
@@ -159,6 +160,7 @@ async def run_hijack_scan(
     include_git_history: bool = True,
     max_file_size_mb: int = 5,
 ) -> str:
+    clear_findings()
     try:
         _run_hijack_scan_impl(
             path,
@@ -196,6 +198,7 @@ async def run_hijack_scan(
     ),
 )
 async def run_env_scan() -> str:
+    clear_findings()
     try:
         scan_environment()
         scan_vault_token_file()
@@ -228,6 +231,7 @@ async def run_capability_audit(
     paths: Optional[list[str]] = None,
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     try:
         audit_token_capabilities(vault_addr, token, paths=paths, namespace=namespace)
         cap_findings = _safe_module_filter("capability_scanner")
@@ -262,7 +266,9 @@ async def run_kv_enumeration(
     max_depth: int = 5,
     concurrency: int = 5,
     read_leaves: bool = False,
+    blind_brute: bool = False,
 ) -> str:
+    clear_findings()
     try:
         scan_kv_tree(
             vault_addr,
@@ -273,6 +279,7 @@ async def run_kv_enumeration(
             max_depth=max_depth,
             concurrency=concurrency,
             read_leaves=read_leaves,
+            blind_brute=blind_brute,
         )
         kv_findings = _safe_module_filter("kv_enumerator")
         return json.dumps(
@@ -303,6 +310,7 @@ async def run_ttl_audit(
     max_mount_ttl_seconds: int = DEFAULT_MAX_MOUNT_TTL_SECONDS,
     max_pki_cert_ttl_seconds: int = DEFAULT_MAX_PKI_CERT_TTL_SECONDS,
 ) -> str:
+    clear_findings()
     try:
         scan_ttl_governance(
             vault_addr,
@@ -341,6 +349,7 @@ async def run_priv_esc_scan(
     policy_names: Optional[list[str]] = None,
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     try:
         scan_privilege_escalation(
             vault_addr,
@@ -376,6 +385,7 @@ async def run_auth_config_audit(
     token: str,
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     try:
         scan_auth_config_security(vault_addr, token, namespace=namespace)
         auth_findings = _safe_module_filter("auth_config_scanner")
@@ -407,6 +417,7 @@ async def run_policy_auditor(
     token: str,
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     try:
         result = scan_policy_audit(vault_addr, token, namespace=namespace)
         policy_findings = _safe_module_filter("policy_auditor") + _safe_module_filter("policy_scanner")
@@ -466,6 +477,49 @@ async def get_risk_score() -> str:
     return json.dumps(risk, ensure_ascii=False)
 
 
+# ─── NVD CVE Cache Management ────────────────────────────────────────────
+
+@mcp_server.tool(
+    name="refresh_nvd_cache",
+    description=(
+        "NVD (National Vulnerability Database) API'sinden HashiCorp Vault CVE'lerini ceker "
+        "ve yerel onbellege kaydeder. Bu cache daha sonra version_cve_matcher tarafindan "
+        "kullanilir. API anahtari icin NVD_API_KEY cevre degiskeni desteklenir "
+        "(anahtarsiz: 5 istek/30sn, anahtarla: 50 istek/30sn)."
+    ),
+)
+async def refresh_nvd_cache() -> str:
+    try:
+        from reconnaissance.nvd_client import (
+            _load_cache,
+            fetch_vault_cves_from_nvd,
+        )
+
+        cves = fetch_vault_cves_from_nvd(force_refresh=True)
+        cache = _load_cache()
+        return json.dumps(
+            {
+                "status": "completed",
+                "cve_count": len(cves),
+                "last_fetched": cache.get("last_fetched"),
+                "sample": [
+                    f"{c['cve_id']} [{c['severity']}]" for c in cves[:10]
+                ],
+            },
+            ensure_ascii=False,
+        )
+    except ImportError:
+        return json.dumps(
+            {"status": "error", "message": "NVD client dependency missing."},
+            ensure_ascii=False,
+        )
+    except Exception as error:
+        return json.dumps(
+            {"status": "error", "message": str(error)},
+            ensure_ascii=False,
+        )
+
+
 # ─── Active Execution: Privilege Escalation ───────────────────────────────
 
 @mcp_server.tool(
@@ -483,6 +537,7 @@ async def run_privilege_escalation(
     ttl: str = "30m",
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     context = ExecutionContext(
         vault_addr=vault_addr.rstrip("/"),
         token=token,
@@ -530,6 +585,7 @@ async def run_secret_exfiltration(
     max_depth: int = 3,
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     active_token = token or pentest_context.get("captured_token")
     if not active_token:
         return json.dumps(
@@ -589,6 +645,7 @@ async def run_database_credential_harvest(
     mount_path: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     active_token = token or pentest_context.get("captured_token")
     if not active_token:
         return json.dumps(
@@ -663,6 +720,7 @@ async def run_cloud_key_exfiltration(
     mount_path: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     active_token = token or pentest_context.get("captured_token")
     if not active_token:
         return json.dumps(
@@ -749,6 +807,7 @@ async def run_active_module(
     max_risk: str = "state_changing",
     namespace: Optional[str] = None,
 ) -> str:
+    clear_findings()
     registry = build_active_registry()
     module = registry.get(module_id)
     if not module:

@@ -77,7 +77,7 @@ python main.py --target http://localhost:8200 --vault-recon
 
 `--vault-recon` queries `/v1/sys/health`, `/v1/sys/seal-status`, and `/v1/sys/leader` without a token and returns sealed state, cluster metadata, version, and leader metadata for authorized vulnerability management and version tracking.
 
-When a Vault version is observed, the recon workflow also compares it against a small local advisory table for known Vault CVE ranges. This check does not query the internet at runtime.
+When a Vault version is observed, the recon workflow also compares it against a bundled offline CVE table (8 static CVEs covering Vault 1.12–1.19) and, when network is available, also queries the **NVD API 2.0** for live CVE data. Results are cached locally for 24 hours. Use `--nvd-refresh` to force-refresh, or set `NVD_API_KEY` env var to raise the rate limit.
 
 To run targeted authenticated checks without repeating the default unauthenticated recon output, add `--skip-recon`:
 

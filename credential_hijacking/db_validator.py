@@ -1,4 +1,5 @@
 from core.report import add_finding
+from core.tls_config import get_verify
 
 
 MODULE_NAME = "db_secrets_validator"
@@ -276,7 +277,7 @@ def _request(method, vault_addr, token, path, **kwargs):
     headers = {"X-Vault-Token": token}
     url = vault_addr.rstrip("/") + path
     try:
-        return requests.request(method, url, headers=headers, timeout=TIMEOUT, **kwargs)
+        return requests.request(method, url, headers=headers, timeout=TIMEOUT, verify=get_verify(), **kwargs)
     except requests.exceptions.RequestException:
         return None
 

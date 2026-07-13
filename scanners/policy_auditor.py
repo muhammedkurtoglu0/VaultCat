@@ -1,4 +1,5 @@
 from core.report import add_finding
+from core.tls_config import get_verify
 from scanners.policy_scanner import analyze_hcl_policy
 
 
@@ -47,6 +48,7 @@ def scan_policy_audit(vault_addr, token, namespace=None, timeout=TIMEOUT):
             token=token,
             namespace=namespace,
             timeout=timeout,
+            verify=get_verify(),
         )
         policy_names = _list_acl_policies(client)
     except Exception as error:

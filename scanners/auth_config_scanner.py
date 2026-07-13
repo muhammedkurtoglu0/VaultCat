@@ -1,6 +1,7 @@
 import requests
 
 from core.report import add_finding
+from core.tls_config import get_verify
 
 
 MODULE = "auth_config_scanner"
@@ -352,6 +353,7 @@ def _vault_request(method, vault_addr, path, token, namespace=None):
             f"{vault_addr.rstrip('/')}/v1/{path.lstrip('/')}",
             headers=headers,
             timeout=TIMEOUT,
+            verify=get_verify(),
         )
     except requests.exceptions.RequestException as error:
         return error

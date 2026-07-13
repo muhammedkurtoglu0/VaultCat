@@ -15,6 +15,7 @@ from ai_core.chat_ui import start_chat_session
 from core.client import VaultClient
 from core.report import (
     add_finding,
+    clear_findings,
     export_json_report,
     export_markdown_report,
     print_report,
@@ -165,6 +166,12 @@ def main():
         "--skip-recon",
         action="store_true",
         help="Skip the default unauthenticated recon when running targeted validation or authenticated audits"
+    )
+
+    parser.add_argument(
+        "--skip-tls-verify",
+        action="store_true",
+        help="Disable TLS certificate verification (for self-signed lab certs)"
     )
 
     parser.add_argument(
@@ -319,6 +326,12 @@ def main():
     )
 
     parser.add_argument(
+        "--nvd-refresh",
+        action="store_true",
+        help="Force refresh of NVD CVE cache (fetches latest HashiCorp Vault CVEs from NVD API)"
+    )
+
+    parser.add_argument(
         "--kv-enum",
         action="store_true",
         help="Enumerate accessible KV secret paths with list/read metadata operations"
@@ -354,6 +367,12 @@ def main():
         "--kv-no-read",
         action="store_true",
         help="Only list KV paths during --kv-enum; do not read leaf metadata or key names"
+    )
+
+    parser.add_argument(
+        "--kv-blind",
+        action="store_true",
+        help="When LIST fails (403), brute-force common secret names via direct GET (blind enumeration)"
     )
 
     parser.add_argument(
@@ -412,7 +431,7 @@ def main():
             "privilege_escalation.token_abuse",
             "secret_exfiltration.kv_dump",
             "database_credential_harvest.dynamic_creds",
-            "cloud_key_exfiltration.iam_creds",
+            "cloud_key_exfiltration.key_dump",
             "token_exploit.creation",
             "policy_exploit.modification",
             "audit_backdoor.disable",
@@ -433,8 +452,13 @@ def main():
 
     parser.add_argument(
         "--provider",
-        choices=["aws", "azure", "gcp"],
-        help="Cloud provider for cloud_pivot module"
+        choices=["aws", "azure", "gcp", "ollama", "openai", "anthropic", "deepseek"],
+        help="Cloud provider for cloud_pivot, or LLM provider for chat"
+    )
+
+    parser.add_argument(
+        "--model",
+        help="LLM model for chat (e.g. llama3.1:8b, gpt-4o-mini, claude-sonnet-4-20250514)"
     )
 
     parser.add_argument(
@@ -492,8 +516,23 @@ def main():
 
     args = parser.parse_args()
 
+    # Her CLI çalıştırmasında temiz bir rapor durumu
+    clear_findings()
+
+    # TLS doğrulama kontrolü
+    if args.skip_tls_verify:
+        from core.tls_config import set_insecure_mode
+        set_insecure_mode()
+        print("[*] TLS certificate verification disabled")
+
     if args.command == "chat":
-        start_chat_session(vault_addr=args.target or args.addr, token=args.token)
+        llm_provider = args.provider if args.provider in ("ollama", "openai", "anthropic") else None
+        start_chat_session(
+            vault_addr=args.target or args.addr,
+            token=args.token,
+            provider=llm_provider,
+            model=args.model,
+        )
         return
 
     if args.command == "mcp":
@@ -510,6 +549,23 @@ def main():
 
     if args.target and args.vault_recon:
         scan_vault_recon(args.target)
+
+    if args.nvd_refresh:
+        print("\n[+] Refreshing NVD CVE cache...")
+        try:
+            from reconnaissance.nvd_client import fetch_vault_cves_from_nvd
+
+            cves = fetch_vault_cves_from_nvd(force_refresh=True)
+            print(f"[+] Cached {len(cves)} Vault-related CVEs from NVD.")
+            if cves:
+                for cve in cves[:10]:
+                    print(f"    - {cve['cve_id']} [{cve['severity']}] {cve['summary'][:80]}...")
+                if len(cves) > 10:
+                    print(f"    ... and {len(cves) - 10} more")
+        except ImportError:
+            print("[-] NVD client unavailable — install project dependencies.")
+        except Exception as error:
+            print(f"[-] NVD refresh failed: {error}")
 
     if hijack_path:
         run_hijack_scan(
@@ -570,6 +626,7 @@ def main():
             max_depth=args.kv_max_depth,
             concurrency=args.kv_concurrency,
             read_leaves=not args.kv_no_read,
+            blind_brute=args.kv_blind,
         )
 
     # Tekil modül çalıştırma

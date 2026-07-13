@@ -5,6 +5,7 @@ import pytest
 from requests import Response
 
 from core import report
+from core.report import clear_findings
 from credential_hijacking.file_secret_scanner import (
     _is_material_value,
     _parse_git_grep_line,
@@ -21,10 +22,10 @@ from scanners import capability_scanner, kv_enumerator, policy_auditor, policy_s
 
 
 @pytest.fixture(autouse=True)
-def clear_findings():
-    report.findings.clear()
+def clear_findings_fixture():
+    clear_findings()
     yield
-    report.findings.clear()
+    clear_findings()
 
 
 def make_response(status_code=200, json_data=None, text="", headers=None, json_error=False):
@@ -422,26 +423,34 @@ def test_version_risk_handles_invalid_version(monkeypatch):
 
 
 def test_version_cve_matcher_flags_cve_2024_2048_range():
+    # v1.14.9 should match CVE-2024-2048 + any other CVE with broad null-introduced range
     matches = version_cve_matcher.match_vault_version_cves(
         "1.14.9",
         target="http://vault.test",
+        use_nvd=False,
     )
 
-    assert [match["cve_id"] for match in matches] == ["CVE-2024-2048"]
+    matched_ids = {match["cve_id"] for match in matches}
+    # CVE-2024-2048 affected: introduced=None, fixed=1.14.10 — 1.14.9 is below
+    assert "CVE-2024-2048" in matched_ids
+    # CVE-2024-8184 / CVE-2025-2065 also have broad null-introduced ranges
+    assert "CVE-2024-8184" in matched_ids
+    assert "CVE-2025-2065" in matched_ids
     assert "Vault version matches known advisory: CVE-2024-2048" in finding_titles()
     assert report.findings[0]["severity"] == "CRITICAL"
 
 
 def test_version_cve_matcher_flags_cve_2023_6337_range():
+    # v1.15.3 is inside 1.15.0-1.15.5 (CVE-2024-2048) and 1.15.0-1.15.4 (CVE-2023-6337)
     matches = version_cve_matcher.match_vault_version_cves(
         "1.15.3",
         target="http://vault.test",
+        use_nvd=False,
     )
 
-    assert {match["cve_id"] for match in matches} == {
-        "CVE-2024-2048",
-        "CVE-2023-6337",
-    }
+    matched_ids = {match["cve_id"] for match in matches}
+    assert "CVE-2024-2048" in matched_ids
+    assert "CVE-2023-6337" in matched_ids
     assert "Vault version matches known advisory: CVE-2023-6337" in finding_titles()
     severities_by_title = {
         finding["title"]: finding["severity"]
@@ -452,9 +461,11 @@ def test_version_cve_matcher_flags_cve_2023_6337_range():
 
 
 def test_version_cve_matcher_does_not_report_fixed_version():
+    # v1.19.2 is the fixed version for CVE-2025-2065 — nothing should match
     matches = version_cve_matcher.match_vault_version_cves(
-        "1.15.5",
+        "1.19.2",
         target="http://vault.test",
+        use_nvd=False,
     )
 
     assert matches == []

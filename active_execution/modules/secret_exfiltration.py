@@ -8,10 +8,7 @@ from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
 
 TIMEOUT = 10
 DEFAULT_MAX_DEPTH = 5
-FALLBACK_KV_MOUNTS = {
-    "secret/": {"type": "kv", "options": {"version": "2"}},
-    "kv/": {"type": "kv", "options": {"version": "2"}},
-}
+FALLBACK_KV_MOUNTS: dict = {}
 
 
 class SecretExfiltrationModule(BaseExecutionModule):
@@ -31,17 +28,17 @@ class SecretExfiltrationModule(BaseExecutionModule):
     def can_run(self, context: ExecutionContext) -> bool:
         return bool(
             getattr(context, "vault_addr", None)
-            and _captured_token(context)
+            and _any_token(context)
         )
 
     def execute(self, context: ExecutionContext, params: Optional[dict] = None) -> ExecutionResult:
         params = params or {}
-        token = _captured_token(context)
+        token = _any_token(context)
         if not token:
             return ExecutionResult(
                 status="skipped",
-                message="Secret exfiltration requires a captured token from a previous active step.",
-                evidence={"missing": ["captured_token"]},
+                message="Secret exfiltration requires a token. Provide --token or run privilege escalation first.",
+                evidence={"missing": ["token"]},
             )
 
         base_url = context.vault_addr.rstrip("/")
@@ -170,6 +167,11 @@ def _captured_token(context):
         getattr(context, "captured_token", None)
         or getattr(context, "escalated_token", None)
     )
+
+
+def _any_token(context):
+    """Return captured token if available, otherwise the original token."""
+    return _captured_token(context) or getattr(context, "token", None)
 
 
 # ─── KV ──────────────────────────────────────────────────────────────────────

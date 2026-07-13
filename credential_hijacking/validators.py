@@ -1,4 +1,5 @@
 from core.report import add_finding
+from core.tls_config import get_verify
 from credential_hijacking.file_secret_scanner import mask_value
 from credential_hijacking.impact_analyzer import analyze_token_metadata
 from scanners.capability_scanner import audit_token_capabilities
@@ -186,6 +187,7 @@ def validate_approle_credentials(
             url=vault_addr.rstrip("/"),
             namespace=namespace,
             timeout=TIMEOUT,
+            verify=get_verify(),
         )
         response = client.auth.approle.login(
             role_id=role_id,
@@ -304,7 +306,7 @@ def _request(method, url, **kwargs):
         return None
 
     try:
-        return requests.request(method, url, timeout=TIMEOUT, **kwargs)
+        return requests.request(method, url, timeout=TIMEOUT, verify=get_verify(), **kwargs)
     except requests.exceptions.RequestException:
         return None
 

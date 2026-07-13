@@ -1,11 +1,40 @@
 import asyncio
 
 from core.report import add_finding
+from core.tls_config import get_verify
 
 
 MODULE = "kv_enumerator"
 DEFAULT_MAX_DEPTH = 10
 DEFAULT_CONCURRENCY = 5
+
+# Common secret path names for blind enumeration when LIST is denied (403)
+BLIND_WORDLIST = [
+    "app_config", "appconfig", "app-config",
+    "db_password", "dbpassword", "db-password", "database_password",
+    "db_username", "db_user", "database_user",
+    "aws_keys", "aws_access", "aws_secret", "aws_config",
+    "api_key", "apikey", "api-key", "api_secret", "api-token",
+    "prod_db", "staging_db", "dev_db", "prod-db",
+    "redis_password", "redis_config",
+    "postgresql", "postgres_config", "pg_password",
+    "mysql_config", "mssql_config",
+    "mongodb_uri", "mongo_uri",
+    "jwt_secret", "jwt_private", "jwt_public",
+    "encryption_key", "signing_key", "master_key",
+    "tls_cert", "tls_key", "ssl_cert", "ssl_key",
+    "smtp_password", "smtp_config",
+    "ldap_password", "ldap_config",
+    "oauth_client_id", "oauth_secret", "oidc_secret",
+    "root_password", "admin_password", "backup_password",
+    "secret", "password", "credentials", "config",
+    "web_config", "app_secret", "service_password",
+    "storage_key", "backup_key",
+    "monitoring_token", "alert_token",
+    "pagerduty_key", "slack_webhook", "datadog_api_key",
+    "splunk_token", "grafana_token",
+    "vault_token", "vault_unseal", "vault_root_token",
+]
 
 
 async def enumerate_kv_tree(
@@ -17,6 +46,7 @@ async def enumerate_kv_tree(
     max_depth=DEFAULT_MAX_DEPTH,
     concurrency=DEFAULT_CONCURRENCY,
     read_leaves=True,
+    blind_brute=False,
 ):
     """Recursively map accessible KV paths without printing secret values."""
     try:
@@ -29,6 +59,7 @@ async def enumerate_kv_tree(
         url=vault_addr.rstrip("/"),
         token=token,
         namespace=namespace,
+        verify=get_verify(),
     )
     resolved_version = kv_version or await _detect_kv_version(client, mount_point)
     tree = {
@@ -70,6 +101,15 @@ async def enumerate_kv_tree(
                     )
 
                 if error:
+                    # Blind enumeration: LIST failed but we can try common names
+                    is_403 = "403" in str(error).lower() or "denied" in str(error).lower()
+                    if blind_brute and is_403 and depth < max_depth:
+                        await _blind_brute_path(
+                            client, mount_point, current_path,
+                            resolved_version, tree, seen_secrets,
+                            semaphore, queue, depth,
+                        )
+
                     if read_leaves:
                         await _record_leaf_if_readable(
                             client,
@@ -143,6 +183,7 @@ def scan_kv_tree(
     max_depth=DEFAULT_MAX_DEPTH,
     concurrency=DEFAULT_CONCURRENCY,
     read_leaves=True,
+    blind_brute=False,
 ):
     print("\n[+] Enumerating accessible KV secret paths...")
 
@@ -168,6 +209,7 @@ def scan_kv_tree(
             max_depth=max_depth,
             concurrency=concurrency,
             read_leaves=read_leaves,
+            blind_brute=blind_brute,
         ))
     except Exception as error:
         add_finding(
@@ -292,6 +334,125 @@ async def _read_leaf_metadata(client, mount_point, path, kv_version):
         return False, [], str(error)
 
 
+async def _blind_read_secret(client, mount_point, path, kv_version):
+    """Read secret DATA directly — tries BOTH KV v1 and v2 path formats.
+
+    During blind enumeration we cannot trust auto-detected KV version.
+    A ``secret-v1`` mount may actually be KV v1 (no /data/ subpath) or
+    KV v2 (with /data/).  We try both and return the first success.
+    """
+    from hvac.exceptions import VaultError
+
+    v1_attempt = None
+    v2_attempt = None
+
+    # ---- KV v1 path (direct) ----
+    try:
+        response = await asyncio.to_thread(
+            client.secrets.kv.v1.read_secret,
+            path=path,
+            mount_point=mount_point,
+        )
+        data = response.get("data", {}) if isinstance(response, dict) else {}
+        if data:
+            v1_attempt = sorted([str(k) for k in data.keys()])
+    except VaultError:
+        pass
+    except Exception:
+        pass
+
+    # ---- KV v2 path (/data/ subpath) ----
+    try:
+        response = await asyncio.to_thread(
+            client.secrets.kv.v2.read_secret_version,
+            path=path,
+            mount_point=mount_point,
+            raise_on_deleted_version=False,
+        )
+        data = response.get("data", {}).get("data", {}) if isinstance(response, dict) else {}
+        if data:
+            v2_attempt = sorted([str(k) for k in data.keys()])
+    except VaultError:
+        pass
+    except Exception:
+        pass
+
+    if v1_attempt is not None:
+        return True, v1_attempt, None
+    if v2_attempt is not None:
+        return True, v2_attempt, None
+
+    return False, [], "blind read: both v1 and v2 attempts failed"
+
+
+async def _blind_brute_path(
+    client, mount_point, current_path, kv_version,
+    tree, seen_secrets, semaphore, queue, depth,
+):
+    """When LIST is denied (403), try common secret names via direct GET.
+
+    For each wordlist entry, attempt:
+    1. <current_path>/<name> as a leaf secret (direct read)
+    2. <current_path>/<name>/ as a subdirectory (enqueue for recursion)
+
+    Successful hits are recorded as readable secrets or queued directories.
+    """
+    from asyncio import as_completed
+
+    display_dir = _display_path(mount_point, current_path)
+
+    async def try_one(name: str):
+        results = {}
+
+        # Try as leaf: read DATA directly (not metadata — we're blind).
+        # Policy may grant "read" on secret path without "read" on metadata/.
+        leaf_path = _join_kv_path(current_path, name)
+        display = _display_path(mount_point, leaf_path)
+
+        async with semaphore:
+            readable, keys, _err = await _blind_read_secret(
+                client, mount_point, leaf_path, kv_version,
+            )
+        if readable and display not in seen_secrets:
+            seen_secrets.add(display)
+            tree["secrets"].append({
+                "path": display,
+                "readable": True,
+                "key_count": len(keys),
+                "keys": keys,
+            })
+            results["leaf"] = display
+
+        # Try as subdirectory: LIST mount_point/metadata/<current_path>/<name>/
+        subdir_path = _join_kv_path(current_path, name) + "/"
+        async with semaphore:
+            sub_keys, sub_err = await _list_path(
+                client, mount_point, subdir_path.rstrip("/"), kv_version,
+            )
+        if not sub_err and sub_keys:
+            await queue.put((subdir_path.rstrip("/"), depth + 1))
+            results["subdir"] = _display_path(mount_point, subdir_path)
+
+        return name, results
+
+    tasks = [try_one(name) for name in BLIND_WORDLIST]
+    hit_count = 0
+    for coro in as_completed(tasks):
+        name, results = await coro
+        if results:
+            hit_count += 1
+            if "leaf" in results:
+                tree.setdefault("blind_hits", []).append(results["leaf"])
+            if "subdir" in results:
+                tree.setdefault("blind_hits", []).append(results["subdir"] + " [dir]")
+
+    if hit_count > 0:
+        tree.setdefault("blind_hits_note", []).append(
+            f"{display_dir}: {hit_count} hit(s) via blind enumeration "
+            f"({len(BLIND_WORDLIST)} names tried)"
+        )
+
+
 def _print_tree(tree):
     print(f"Mount      : {tree['mount']}")
     print(f"KV Version : {tree['kv_version']}")
@@ -299,6 +460,15 @@ def _print_tree(tree):
     print("\nAccessible KV Tree")
     print("------------------")
     _print_nested_tree(tree["mount"], tree.get("tree", {}))
+
+    if tree.get("blind_hits"):
+        print("\nBlind Enumeration Hits (LIST denied, brute-forced common names)")
+        print("---------------------------------------------------------------")
+        for hit in tree["blind_hits"]:
+            print(f"  {hit}")
+    if tree.get("blind_hits_note"):
+        for note in tree["blind_hits_note"]:
+            print(f"  [{note}]")
 
     if tree["errors"]:
         print("\nEnumeration Notes")
@@ -390,6 +560,25 @@ def _add_tree_findings(tree, target):
             "The supplied token could read metadata or key names for enumerated KV secrets.",
             recommendation="Confirm that read access is required and scoped to the smallest necessary KV paths.",
             evidence=f"readable_secret_paths: {readable_count}",
+            module=MODULE,
+            target=target,
+        )
+
+    blind_hits = tree.get("blind_hits", [])
+    if blind_hits:
+        add_finding(
+            "MEDIUM",
+            "Blind enumeration discovered readable secrets without list permission",
+            (
+                "The token could not LIST directory contents, but direct GET requests "
+                "for common secret names succeeded. This is a classic Vault policy gap: "
+                "read without list allows blind brute-force discovery."
+            ),
+            recommendation=(
+                "Either grant list permission alongside read, or use unpredictable "
+                "secret path names that cannot be guessed."
+            ),
+            evidence=f"blind_hits: {len(blind_hits)}, paths: {', '.join(blind_hits[:10])}",
             module=MODULE,
             target=target,
         )
