@@ -44,6 +44,7 @@ from reconnaissance.tls_scanner import scan_tls
 from reconnaissance.ui_scanner import scan_ui
 from reconnaissance.version_risk_scanner import scan_version_risk
 from reconnaissance.vault_recon import scan_vault_recon
+from reconnaissance.nvd_client import fetch_vault_cves_from_nvd
 
 
 def build_active_execution_registry():
@@ -506,8 +507,6 @@ def main():
     if args.nvd_refresh:
         print("\n[+] Refreshing NVD CVE cache...")
         try:
-            from reconnaissance.nvd_client import fetch_vault_cves_from_nvd
-
             cves = fetch_vault_cves_from_nvd(force_refresh=True)
             print(f"[+] Cached {len(cves)} Vault-related CVEs from NVD.")
             if cves:
@@ -515,8 +514,6 @@ def main():
                     print(f"    - {cve['cve_id']} [{cve['severity']}] {cve['summary'][:80]}...")
                 if len(cves) > 10:
                     print(f"    ... and {len(cves) - 10} more")
-        except ImportError:
-            print("[-] NVD client unavailable — install project dependencies.")
         except Exception as error:
             print(f"[-] NVD refresh failed: {error}")
 

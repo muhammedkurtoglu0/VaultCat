@@ -518,11 +518,6 @@ async def refresh_nvd_cache() -> str:
             },
             ensure_ascii=False,
         )
-    except ImportError:
-        return json.dumps(
-            {"status": "error", "message": "NVD client dependency missing."},
-            ensure_ascii=False,
-        )
     except Exception as error:
         return json.dumps(
             {"status": "error", "message": str(error)},

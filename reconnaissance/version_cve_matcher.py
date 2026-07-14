@@ -215,8 +215,6 @@ def _resolve_advisory_pool(use_nvd: bool = True) -> list[dict]:
         if cached:
             return cached
 
-    except ImportError:
-        pass
     except Exception:
         pass
 
