@@ -1,6 +1,6 @@
 from typing import Optional
 
-import requests
+from core.tls_config import vault_request
 
 from ..context import ExecutionContext
 from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
@@ -177,7 +177,7 @@ def _any_token(context):
 # ─── KV ──────────────────────────────────────────────────────────────────────
 
 def _discover_kv_mounts(base_url, headers, timeout, verify_tls):
-    response = requests.get(
+    response = vault_request("GET", 
         f"{base_url}/v1/sys/mounts",
         headers=headers,
         timeout=timeout,
@@ -277,7 +277,7 @@ def _list_kv_path(base_url, headers, timeout, verify_tls, mount_path, kv_version
     else:
         endpoint = f"{base_url}/v1/{mount_path}/metadata/{relative_path}".rstrip("/")
 
-    response = requests.request(
+    response = vault_request(
         "LIST",
         endpoint,
         headers=headers,
@@ -300,7 +300,7 @@ def _read_kv_secret(base_url, headers, timeout, verify_tls, mount_path, kv_versi
     else:
         endpoint = f"{base_url}/v1/{mount_path}/data/{relative_path}".rstrip("/")
 
-    response = requests.get(
+    response = vault_request("GET", 
         endpoint,
         headers=headers,
         timeout=timeout,
@@ -325,7 +325,7 @@ def _kv_version(mount_info):
 def _list_transit_keys(base_url, headers, timeout, verify_tls):
     """Transit engine'deki tüm anahtarları listele"""
     endpoint = f"{base_url}/v1/transit/keys"
-    response = requests.request(
+    response = vault_request(
         "LIST",
         endpoint,
         headers=headers,
@@ -350,7 +350,7 @@ def _list_pki_certs(base_url, headers, timeout, verify_tls):
     
     for mount_path in mounts:
         endpoint = f"{base_url}/v1/{mount_path.strip('/')}/certs"
-        response = requests.request(
+        response = vault_request(
             "LIST",
             endpoint,
             headers=headers,
@@ -367,7 +367,7 @@ def _list_pki_certs(base_url, headers, timeout, verify_tls):
 
 def _discover_pki_mounts(base_url, headers, timeout, verify_tls):
     """PKI mount'larını keşfet"""
-    response = requests.get(
+    response = vault_request("GET", 
         f"{base_url}/v1/sys/mounts",
         headers=headers,
         timeout=timeout,
@@ -394,7 +394,7 @@ def _list_ssh_roles(base_url, headers, timeout, verify_tls):
     
     for mount_path in mounts:
         endpoint = f"{base_url}/v1/{mount_path.strip('/')}/roles"
-        response = requests.request(
+        response = vault_request(
             "LIST",
             endpoint,
             headers=headers,
@@ -411,7 +411,7 @@ def _list_ssh_roles(base_url, headers, timeout, verify_tls):
 
 def _discover_ssh_mounts(base_url, headers, timeout, verify_tls):
     """SSH mount'larını keşfet"""
-    response = requests.get(
+    response = vault_request("GET", 
         f"{base_url}/v1/sys/mounts",
         headers=headers,
         timeout=timeout,

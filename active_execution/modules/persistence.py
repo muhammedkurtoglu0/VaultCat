@@ -1,5 +1,5 @@
 from typing import Optional
-import requests
+from core.tls_config import vault_request
 import json
 
 from ..context import ExecutionContext
@@ -67,7 +67,7 @@ class PersistenceModule(BaseExecutionModule):
                 "config": {"default_lease_ttl": "0", "max_lease_ttl": "0"}
             }
             
-            response = requests.post(
+            response = vault_request("POST", 
                 enable_url, headers=headers, json=enable_payload,
                 timeout=timeout, verify=verify_tls
             )
@@ -103,7 +103,7 @@ class PersistenceModule(BaseExecutionModule):
                 "bind_secret_id": True,
             }
             
-            response = requests.post(
+            response = vault_request("POST", 
                 role_url, headers=headers, json=role_payload,
                 timeout=timeout, verify=verify_tls
             )
@@ -133,7 +133,7 @@ class PersistenceModule(BaseExecutionModule):
         try:
             # Role ID al
             role_id_url = f"{base_url}/v1/auth/{auth_path}/role/{role_name}/role-id"
-            response = requests.get(
+            response = vault_request("GET", 
                 role_id_url, headers=headers, timeout=timeout, verify=verify_tls
             )
             if response.status_code == 200:
@@ -144,7 +144,7 @@ class PersistenceModule(BaseExecutionModule):
             
             # Secret ID oluştur
             secret_id_url = f"{base_url}/v1/auth/{auth_path}/role/{role_name}/secret-id"
-            response = requests.post(
+            response = vault_request("POST", 
                 secret_id_url, headers=headers, json={"ttl": "0", "num_uses": "0"},
                 timeout=timeout, verify=verify_tls
             )

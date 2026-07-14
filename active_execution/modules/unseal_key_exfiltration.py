@@ -1,7 +1,7 @@
 from typing import Optional
 import os
 import re
-import requests
+from core.tls_config import vault_request
 from ..context import ExecutionContext
 from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
 
@@ -52,7 +52,7 @@ class UnsealKeyExfiltrationModule(BaseExecutionModule):
         try:
             url = f"{context.vault_addr}/v1/sys/seal-status"
             headers = {"X-Vault-Token": context.token}
-            response = requests.get(url, headers=headers)
+            response = vault_request("GET", url, headers=headers)
             if response.status_code == 200:
                 data = response.json()
                 results["sealed"] = data.get("sealed", False)

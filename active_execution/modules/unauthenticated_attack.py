@@ -1,5 +1,5 @@
 from typing import Optional
-import requests
+from core.tls_config import vault_request
 import os
 import subprocess
 from ..context import ExecutionContext
@@ -101,7 +101,7 @@ class UnauthenticatedAttackModule(BaseExecutionModule):
         results = {}
         try:
             # Health
-            resp = requests.get(f"{target}/v1/sys/health", timeout=5)
+            resp = vault_request("GET", f"{target}/v1/sys/health", timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 results["version"] = data.get("version")
@@ -109,7 +109,7 @@ class UnauthenticatedAttackModule(BaseExecutionModule):
                 results["cluster_name"] = data.get("cluster_name")
                 results["cluster_id"] = data.get("cluster_id")
             # UI
-            resp = requests.get(f"{target}/ui/", timeout=5)
+            resp = vault_request("GET", f"{target}/ui/", timeout=5)
             results["ui_accessible"] = resp.status_code == 200
         except Exception as e:
             results["error"] = str(e)

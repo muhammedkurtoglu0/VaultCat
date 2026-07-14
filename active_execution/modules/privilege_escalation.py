@@ -1,6 +1,6 @@
 from typing import Optional
 
-import requests
+from core.tls_config import vault_request
 
 from ..context import ExecutionContext
 from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
@@ -89,7 +89,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
                     "ttl": requested_ttl,
                 }
                 print(f"[*] [ACTIVE] Attempting policy: {policy_name}")
-                response = requests.post(
+                response = vault_request("POST", 
                     url,
                     headers=headers,
                     json=payload,
@@ -209,7 +209,7 @@ def _safe_response_json(response):
 def _lookup_source_policies(vault_addr, headers, timeout, verify_tls):
     url = f"{vault_addr.rstrip('/')}/v1/auth/token/lookup-self"
     try:
-        response = requests.get(
+        response = vault_request("GET", 
             url,
             headers=headers,
             timeout=timeout,

