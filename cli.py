@@ -583,8 +583,13 @@ def chat(
     addr: Optional[str] = typer.Option(None, "--addr", help="Vault address (legacy)"),
     provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider (ollama, openai, anthropic, deepseek)"),
     model: Optional[str] = typer.Option(None, "--model", help="LLM model name"),
+    skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
 ) -> None:
     """Start AI-powered pentest chat agent."""
+    if skip_tls_verify:
+        from core.tls_config import set_insecure_mode
+        set_insecure_mode()
+        print("[*] TLS certificate verification disabled")
     start_chat_session(
         vault_addr=target or addr,
         token=token,
@@ -594,8 +599,14 @@ def chat(
 
 
 @app.command()
-def mcp() -> None:
+def mcp(
+    skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
+) -> None:
     """Start MCP server on 127.0.0.1:8000."""
+    if skip_tls_verify:
+        from core.tls_config import set_insecure_mode
+        set_insecure_mode()
+        print("[*] TLS certificate verification disabled")
     from ai_core.mcp_server import start_mcp_service
     start_mcp_service()
 
