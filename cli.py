@@ -587,10 +587,13 @@ def chat(
 ) -> None:
     """Start AI-powered pentest chat agent."""
     resolved_target = target or addr
-    if skip_tls_verify or (resolved_target and resolved_target.startswith("https://")):
+    if skip_tls_verify:
         from core.tls_config import set_insecure_mode
         set_insecure_mode()
-        print("[*] TLS certificate verification disabled (self-signed certs are common in pentests)")
+        print("[*] TLS certificate verification disabled")
+    elif resolved_target and resolved_target.startswith("https://"):
+        from core.tls_config import set_insecure_mode
+        set_insecure_mode()
     start_chat_session(
         vault_addr=target or addr,
         token=token,

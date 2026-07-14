@@ -336,9 +336,6 @@ class ChatUI:
             if value.startswith("https://"):
                 from core.tls_config import set_insecure_mode
                 set_insecure_mode()
-                print(f"✅ Target set: {value}")
-                print("🔓 TLS verification auto-disabled for HTTPS target")
-                return
             print(f"✅ Target set: {value}")
         elif key == "token":
             self.token = value
@@ -356,12 +353,11 @@ class ChatUI:
             if value.lower() in ("off", "false", "skip", "0", "no"):
                 from core.tls_config import set_insecure_mode
                 set_insecure_mode()
-                print("🔓 TLS verification disabled")
             elif value.lower() in ("on", "true", "verify", "1", "yes"):
                 from core.tls_config import get_verify
-                print("⚠️ TLS verification mode controlled by --skip-tls-verify flag")
+                print("TLS verification is controlled by the --skip-tls-verify startup flag")
             else:
-                print(f"❌ Unknown tls-verify value: {value}. Use 'on' or 'off'.")
+                print(f"Unknown tls-verify value: {value}. Use 'on' or 'off'.")
         else:
             print(f"❌ Unknown parameter: {key}")
             print("   Valid: target, token, model, provider")
