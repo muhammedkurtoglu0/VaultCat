@@ -1,7 +1,5 @@
 from .agent import PentestAgent
 from .chat_ui import start_chat_session
-from .executor import Executor
-from .capabilities import CapabilityRegistry
 from .memory import Memory
 from .llm_engine import (
     LLMClient,
@@ -29,8 +27,6 @@ from .planning import (
 __all__ = [
     "PentestAgent",
     "start_chat_session",
-    "Executor",
-    "CapabilityRegistry",
     "Memory",
     "LLMClient",
     "LLMError",
