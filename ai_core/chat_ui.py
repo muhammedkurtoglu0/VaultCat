@@ -323,6 +323,7 @@ class ChatUI:
             print("   set token hvs.abc123...")
             print("   set model llama3.1:70b")
             print("   set provider openai")
+            print("   set tls-verify off")
             return
 
         key, value = parts[0].strip(), parts[1].strip()
@@ -331,6 +332,13 @@ class ChatUI:
             self.vault_addr = value
             self.agent.vault_addr = value
             self.memory.set_context("vault_addr", value)
+            # Auto-skip TLS for HTTPS targets (self-signed is common in pentests)
+            if value.startswith("https://"):
+                from core.tls_config import set_insecure_mode
+                set_insecure_mode()
+                print(f"✅ Target set: {value}")
+                print("🔓 TLS verification auto-disabled for HTTPS target")
+                return
             print(f"✅ Target set: {value}")
         elif key == "token":
             self.token = value
@@ -344,6 +352,16 @@ class ChatUI:
             self.agent.llm = LLMClient(provider=value, model=self.agent.llm.model)
             self.provider = value
             print(f"✅ Provider set: {value}")
+        elif key == "tls-verify":
+            if value.lower() in ("off", "false", "skip", "0", "no"):
+                from core.tls_config import set_insecure_mode
+                set_insecure_mode()
+                print("🔓 TLS verification disabled")
+            elif value.lower() in ("on", "true", "verify", "1", "yes"):
+                from core.tls_config import get_verify
+                print("⚠️ TLS verification mode controlled by --skip-tls-verify flag")
+            else:
+                print(f"❌ Unknown tls-verify value: {value}. Use 'on' or 'off'.")
         else:
             print(f"❌ Unknown parameter: {key}")
             print("   Valid: target, token, model, provider")

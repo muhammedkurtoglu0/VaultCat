@@ -586,10 +586,11 @@ def chat(
     skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
 ) -> None:
     """Start AI-powered pentest chat agent."""
-    if skip_tls_verify:
+    resolved_target = target or addr
+    if skip_tls_verify or (resolved_target and resolved_target.startswith("https://")):
         from core.tls_config import set_insecure_mode
         set_insecure_mode()
-        print("[*] TLS certificate verification disabled")
+        print("[*] TLS certificate verification disabled (self-signed certs are common in pentests)")
     start_chat_session(
         vault_addr=target or addr,
         token=token,
