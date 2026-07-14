@@ -1,6 +1,7 @@
-import requests
 from requests import Response
 from core.report import add_finding
+from core.tls_config import get_verify
+from reconnaissance.http_utils import safe_request
 
 
 MODULE_NAME = "health_scanner"
@@ -15,10 +16,7 @@ def scan_health(target, context=None):
     if context:
         response = context.fetch_health_once()
     else:
-        try:
-            response = requests.get(url, timeout=5)
-        except requests.exceptions.RequestException as error:
-            response = error
+        response = safe_request("GET", target, "/v1/sys/health")
 
     if not isinstance(response, Response):
         print(f"[-] Could not connect to health endpoint: {response}")
