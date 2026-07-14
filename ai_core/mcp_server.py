@@ -61,12 +61,9 @@ def _sync_context_to_session() -> None:
 
 
 def build_active_registry() -> ActiveExecutionRegistry:
-    """
-    Registry oluşturmak için main'deki fonksiyonu çağır.
-    Döngüsel import'u önlemek için import fonksiyon içinde yapılıyor.
-    """
-    from main import build_active_execution_registry
-    return build_active_execution_registry()
+    """Return the default active execution registry with all modules registered."""
+    from active_execution.modules import get_default_registry
+    return get_default_registry()
 
 
 def _module_metadata(module: Any) -> dict[str, Any]:
