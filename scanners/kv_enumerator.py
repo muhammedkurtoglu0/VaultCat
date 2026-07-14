@@ -337,14 +337,10 @@ async def _read_leaf_metadata(client, mount_point, path, kv_version):
 async def _blind_read_secret(client, mount_point, path, kv_version):
     """Read secret DATA directly — tries BOTH KV v1 and v2 path formats.
 
-    During blind enumeration we cannot trust auto-detected KV version.
-    A ``secret-v1`` mount may actually be KV v1 (no /data/ subpath) or
-    KV v2 (with /data/).  We try both and return the first success.
+    Returns ``(readable: bool, keys: list[str], data: dict | None, err: str | None)``.
+    *data* contains the actual key→value pairs (values masked for safety).
     """
     from hvac.exceptions import VaultError
-
-    v1_attempt = None
-    v2_attempt = None
 
     # ---- KV v1 path (direct) ----
     try:
@@ -355,7 +351,9 @@ async def _blind_read_secret(client, mount_point, path, kv_version):
         )
         data = response.get("data", {}) if isinstance(response, dict) else {}
         if data:
-            v1_attempt = sorted([str(k) for k in data.keys()])
+            keys = sorted([str(k) for k in data.keys()])
+            masked = _mask_secret_data(data)
+            return True, keys, masked, None
     except VaultError:
         pass
     except Exception:
@@ -371,18 +369,29 @@ async def _blind_read_secret(client, mount_point, path, kv_version):
         )
         data = response.get("data", {}).get("data", {}) if isinstance(response, dict) else {}
         if data:
-            v2_attempt = sorted([str(k) for k in data.keys()])
+            keys = sorted([str(k) for k in data.keys()])
+            masked = _mask_secret_data(data)
+            return True, keys, masked, None
     except VaultError:
         pass
     except Exception:
         pass
 
-    if v1_attempt is not None:
-        return True, v1_attempt, None
-    if v2_attempt is not None:
-        return True, v2_attempt, None
+    return False, [], None, "blind read: both v1 and v2 attempts failed"
 
-    return False, [], "blind read: both v1 and v2 attempts failed"
+
+def _mask_secret_data(data: dict) -> dict:
+    """Return a copy of *data* with values truncated for safe reporting."""
+    masked = {}
+    for k, v in data.items():
+        sv = str(v)
+        if len(sv) > 40:
+            masked[k] = sv[:16] + "..." + sv[-8:]
+        elif len(sv) > 16:
+            masked[k] = sv[:12] + "..."
+        else:
+            masked[k] = sv
+    return masked
 
 
 async def _blind_brute_path(
@@ -410,7 +419,7 @@ async def _blind_brute_path(
         display = _display_path(mount_point, leaf_path)
 
         async with semaphore:
-            readable, keys, _err = await _blind_read_secret(
+            readable, keys, secret_data, _err = await _blind_read_secret(
                 client, mount_point, leaf_path, kv_version,
             )
         if readable and display not in seen_secrets:
@@ -420,8 +429,10 @@ async def _blind_brute_path(
                 "readable": True,
                 "key_count": len(keys),
                 "keys": keys,
+                "data": secret_data or {},
             })
             results["leaf"] = display
+            results["data"] = secret_data
 
         # Try as subdirectory: LIST mount_point/metadata/<current_path>/<name>/
         subdir_path = _join_kv_path(current_path, name) + "/"
@@ -566,6 +577,13 @@ def _add_tree_findings(tree, target):
 
     blind_hits = tree.get("blind_hits", [])
     if blind_hits:
+        # Collect actual secret data from blind hits for evidence
+        leaked_preview: dict[str, dict] = {}
+        for secret in tree.get("secrets", []):
+            data = secret.get("data", {})
+            if data:
+                leaked_preview[secret["path"]] = data
+
         add_finding(
             "MEDIUM",
             "Blind enumeration discovered readable secrets without list permission",
@@ -578,10 +596,32 @@ def _add_tree_findings(tree, target):
                 "Either grant list permission alongside read, or use unpredictable "
                 "secret path names that cannot be guessed."
             ),
-            evidence=f"blind_hits: {len(blind_hits)}, paths: {', '.join(blind_hits[:10])}",
+            evidence=(
+                f"blind_hits: {len(blind_hits)}, "
+                f"paths: {', '.join(blind_hits[:10])}"
+            ),
             module=MODULE,
             target=target,
         )
+
+        if leaked_preview:
+            add_finding(
+                "HIGH",
+                "Secret data exfiltrated via blind enumeration",
+                (
+                    f"Blind brute-force successfully read {len(leaked_preview)} "
+                    f"secret(s). This confirms the Vault policy permits read "
+                    f"access without list — an attacker can guess secret names "
+                    f"and exfiltrate data."
+                ),
+                recommendation=(
+                    "Restrict read access to only the minimum required paths. "
+                    "Consider adding list permission or using path obfuscation."
+                ),
+                evidence=f"exfiltrated_secrets: {leaked_preview}",
+                module=MODULE,
+                target=target,
+            )
 
 
 def _split_mount_path(start_path):
