@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 from core.risk_score import calculate_risk
@@ -28,6 +29,7 @@ class Report:
     def __init__(self):
         self.findings: list[dict] = []
         self._min_severity: str | None = None
+        self._lock = threading.Lock()
 
     # ── severity filter ────────────────────────────────────────────────
 
@@ -77,19 +79,25 @@ class Report:
             finding.get("target"),
             finding.get("evidence"),
         )
-        for existing in self.findings:
-            existing_key = (
-                existing.get("severity"),
-                existing.get("title"),
-                existing.get("module"),
-                existing.get("target"),
-                existing.get("evidence"),
-            )
-            if existing_key == duplicate_key:
-                return existing
+        with self._lock:
+            for existing in self.findings:
+                existing_key = (
+                    existing.get("severity"),
+                    existing.get("title"),
+                    existing.get("module"),
+                    existing.get("target"),
+                    existing.get("evidence"),
+                )
+                if existing_key == duplicate_key:
+                    return existing
 
-        self.findings.append(finding)
+            self.findings.append(finding)
         return finding
+
+    def get_findings_snapshot(self) -> list[dict]:
+        """Return a thread-safe snapshot of current findings."""
+        with self._lock:
+            return list(self.findings)
 
     def clear(self):
         """Reset findings and severity filter for a fresh assessment run."""

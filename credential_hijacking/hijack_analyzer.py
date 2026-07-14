@@ -443,6 +443,7 @@ def run_hijack_scan(
     include_git_history=True,
     max_file_size_bytes=None,
     excluded_dirs=None,
+    max_workers=None,
 ):
     from credential_hijacking.db_validator import validate_database_secrets_engine
     from credential_hijacking.file_secret_scanner import scan_files
@@ -456,6 +457,7 @@ def run_hijack_scan(
         include_git_history=include_git_history,
         max_file_size_bytes=max_file_size_bytes,
         excluded_dirs=excluded_dirs,
+        max_workers=max_workers,
     )
     analyze_hijack_findings(matches)
     if validate_token:

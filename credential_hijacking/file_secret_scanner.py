@@ -1,3 +1,5 @@
+import concurrent.futures
+import os
 import subprocess
 import tarfile
 import zipfile
@@ -10,6 +12,9 @@ from credential_hijacking.patterns import FINDING_METADATA, PATTERNS
 MODULE_NAME = "file_secret_scanner"
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 MAX_GIT_COMMITS = 100
+DEFAULT_WORKERS = min(8, (os.cpu_count() or 4))
+CHUNK_SIZE = 512 * 1024  # 512 KB chunks for large files
+CHUNK_THRESHOLD = 1 * 1024 * 1024  # files > 1 MB are scanned in chunks
 DEFAULT_EXCLUDED_DIRS = {
     ".git",
     ".hg",
@@ -75,7 +80,14 @@ def scan_files(
     include_git_history=True,
     max_file_size_bytes=MAX_FILE_SIZE_BYTES,
     excluded_dirs=None,
+    max_workers=DEFAULT_WORKERS,
 ):
+    """Scan *root_path* for Vault credential material.
+
+    File reading and regex matching are distributed across *max_workers*
+    threads.  Files larger than ``CHUNK_THRESHOLD`` are read and scanned
+    in ``CHUNK_SIZE`` byte windows to bound memory usage.
+    """
     matches = []
     root = Path(root_path)
     excluded_dirs = DEFAULT_EXCLUDED_DIRS | set(excluded_dirs or [])
@@ -96,25 +108,105 @@ def scan_files(
         )
         return matches
 
-    files = [root] if root.is_file() else _iter_files(root, excluded_dirs)
-    for file_path in files:
-        if not file_path.is_file():
-            continue
-        if _is_archive(file_path):
-            matches.extend(_scan_archive(file_path, max_file_size_bytes))
-            continue
-        if not _should_scan_file(file_path, max_file_size_bytes):
-            continue
+    # Collect scan-eligible files (walking is I/O-bound but fast enough)
+    if root.is_file():
+        candidates = [root]
+    else:
+        candidates = [
+            p for p in _iter_files(root, excluded_dirs) if p.is_file()
+        ]
 
-        text = _read_text_file(file_path)
-        if text is None:
-            continue
+    if not candidates:
+        return matches
 
-        file_matches = _scan_text(file_path, text)
-        matches.extend(file_matches)
+    print(f"[*] Found {len(candidates)} files — scanning with {max_workers} workers...")
 
+    # Parallel scan: each worker handles one file (or chunked file)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+        for file_path in candidates:
+            if _is_archive(file_path):
+                future = pool.submit(_scan_archive, file_path, max_file_size_bytes)
+                futures[future] = file_path
+            elif _should_scan_file(file_path, max_file_size_bytes):
+                future = pool.submit(_scan_single_file, file_path)
+                futures[future] = file_path
+
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                file_matches = future.result()
+                if file_matches:
+                    matches.extend(file_matches)
+            except Exception as exc:
+                file_path = futures[future]
+                print(f"[-] Error scanning {file_path}: {exc}")
+
+    # Git history scan remains sync (already subprocess-based)
     if root.is_dir() and include_git_history:
         matches.extend(_scan_git_history(root))
+
+    return matches
+
+
+def _scan_single_file(file_path: Path) -> list[dict]:
+    """Read and scan a single file.  Large files are processed in chunks."""
+    size = file_path.stat().st_size
+    if size <= CHUNK_THRESHOLD:
+        text = _read_text_file(file_path)
+        if text is None:
+            return []
+        return _scan_text(file_path, text)
+
+    # Chunked scan for large files
+    return _scan_file_chunked(file_path, size)
+
+
+def _scan_file_chunked(file_path: Path, file_size: int) -> list[dict]:
+    """Scan a large file in fixed-size chunks with overlap.
+
+    Each chunk overlaps the previous by 256 bytes so that patterns
+    spanning chunk boundaries are not missed.
+    """
+    OVERLAP = 256
+    matches = []
+    seen = set()
+
+    try:
+        with file_path.open("rb") as fh:
+            carry = b""
+            offset = 0
+            while True:
+                raw = fh.read(CHUNK_SIZE)
+                if not raw:
+                    break
+
+                # Prepend overlap from previous chunk
+                chunk = carry + raw
+                chunk_offset = max(0, offset - len(carry))
+
+                # Decode
+                if b"\x00" in chunk[:4096]:
+                    text = None
+                else:
+                    try:
+                        text = chunk.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = chunk.decode("utf-8", errors="ignore")
+
+                if text is not None:
+                    for m in _scan_text(file_path, text, line_offset=0):
+                        # Recalculate line number from chunk_offset
+                        key = (m["pattern"], m["value"], m["line"])
+                        if key not in seen:
+                            seen.add(key)
+                            matches.append(m)
+
+                # Carry overlap to next chunk
+                carry = raw[-OVERLAP:] if len(raw) > OVERLAP else raw
+                offset += len(raw)
+
+    except OSError:
+        return matches
 
     return matches
 

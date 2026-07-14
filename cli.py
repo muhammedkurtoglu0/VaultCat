@@ -357,6 +357,7 @@ def scan(
     no_git_history: bool = typer.Option(False, "--no-git-history", help="Skip git history in hijack scan"),
     exclude_dir: Optional[list[str]] = typer.Option(None, "--exclude-dir", help="Exclude dir in hijack (repeatable)"),
     max_file_size_mb: int = typer.Option(5, "--max-file-size-mb", help="Max file size for hijack scan"),
+    workers: int = typer.Option(0, "--workers", help="Parallel scanner workers (0=auto)"),
     # ── reports ──
     min_severity: Optional[str] = typer.Option(None, "--min-severity", help="Minimum severity to show/export"),
     json_report: Optional[str] = typer.Option(None, "--json", help="Export findings to JSON"),
@@ -405,6 +406,7 @@ def scan(
             include_git_history=not no_git_history,
             max_file_size_bytes=max_file_size_mb * 1024 * 1024,
             excluded_dirs=exclude_dir,
+            max_workers=workers if workers > 0 else None,
         )
 
     # ── Environment scan ──
@@ -524,6 +526,7 @@ def hijack(
     no_git_history: bool = typer.Option(False, "--no-git-history", help="Skip git history scanning"),
     exclude_dir: Optional[list[str]] = typer.Option(None, "--exclude-dir", help="Exclude directory (repeatable)"),
     max_file_size_mb: int = typer.Option(5, "--max-file-size-mb", help="Maximum file size to scan (MB)"),
+    workers: int = typer.Option(0, "--workers", help="Parallel scanner workers (0=auto)"),
     skip_recon: bool = typer.Option(False, "--skip-recon", help="Skip unauthenticated recon"),
     min_severity: Optional[str] = typer.Option(None, "--min-severity", help="Minimum severity to show/export"),
     json_report: Optional[str] = typer.Option(None, "--json", help="Export findings to JSON"),
@@ -547,6 +550,7 @@ def hijack(
         include_git_history=not no_git_history,
         max_file_size_bytes=max_file_size_mb * 1024 * 1024,
         excluded_dirs=exclude_dir,
+        max_workers=workers if workers > 0 else None,
     )
 
     if target and validate_approle and role_id and secret_id:
