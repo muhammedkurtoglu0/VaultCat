@@ -1,6 +1,15 @@
-from core.report import add_finding
-from core.tls_config import get_verify
+"""Token capability audit via sys/capabilities-self.
 
+Dynamically discovers secret engine mounts (unauthenticated via
+``sys/internal/ui/mounts``) and includes them in the audit so that
+environment-specific paths (e.g. ``secret-v2/data/admin/*``) are
+not missed by a hardcoded path list.
+"""
+
+from __future__ import annotations
+
+from core.report import add_finding
+from core.tls_config import get_verify, vault_request
 
 MODULE = "capability_scanner"
 
@@ -16,7 +25,8 @@ CRITICAL_PATH_PREFIXES = (
     "database/creds/",
 )
 
-DEFAULT_CAPABILITY_PATHS = [
+# Static baseline — always checked
+_BASELINE_PATHS = [
     "sys/*",
     "sys/mounts",
     "sys/mounts/*",
@@ -33,11 +43,26 @@ DEFAULT_CAPABILITY_PATHS = [
     "kv/*",
     "kv/data/*",
     "kv/metadata/*",
+    # Common alternative mount names (labs, demos, multi-engine setups)
+    "secret-v1/*",
+    "secret-v1/data/*",
+    "secret-v1/metadata/*",
+    "secret-v2/*",
+    "secret-v2/data/*",
+    "secret-v2/metadata/*",
+    "secret-prod/*",
+    "secret-prod/data/*",
+    "secret-staging/*",
+    "secret-staging/data/*",
 ]
 
 
 def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, timeout=5):
-    """Audit a token's capabilities without reading or modifying secrets."""
+    """Audit a token's capabilities without reading or modifying secrets.
+
+    Mount paths are discovered dynamically via ``sys/internal/ui/mounts``
+    (unauthenticated) so that environment-specific KV engines are included.
+    """
     print("\n[+] Auditing token capabilities with sys/capabilities-self...")
 
     if not vault_addr or not token:
@@ -46,7 +71,14 @@ def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, time
 
     audit_paths = _normalize_paths(paths)
     if not audit_paths:
-        audit_paths = DEFAULT_CAPABILITY_PATHS
+        audit_paths = list(_BASELINE_PATHS)
+        # Dynamically discover mounts and add their paths
+        dynamic = _discover_mount_paths(vault_addr, timeout)
+        for p in dynamic:
+            if p not in audit_paths:
+                audit_paths.append(p)
+
+    print(f"[*] Auditing {len(audit_paths)} paths...")
 
     try:
         import hvac
@@ -102,6 +134,85 @@ def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, time
     return results
 
 
+# -----------------------------------------------------------------------
+# Dynamic mount discovery
+# -----------------------------------------------------------------------
+
+
+def _discover_mount_paths(vault_addr: str, timeout: int = 5) -> list[str]:
+    """Return capability-check paths for every discovered KV secrets engine."""
+    paths: list[str] = []
+    mounts = _fetch_mounts_unauthenticated(vault_addr, timeout)
+    if not mounts:
+        return paths
+
+    for mount_path, mount_type in mounts.items():
+        # Normalise: Vault returns "secret/" for mount paths
+        mp = mount_path.rstrip("/") if mount_path.endswith("/") else mount_path
+        if not mp:
+            continue
+
+        # KV mounts get full path coverage
+        if mount_type in ("kv", "generic"):
+            paths.append(f"{mp}/*")
+            paths.append(f"{mp}/data/*")
+            paths.append(f"{mp}/metadata/*")
+        elif mount_type == "database":
+            paths.append(f"{mp}/config/*")
+            paths.append(f"{mp}/roles/*")
+            paths.append(f"{mp}/creds/*")
+        elif mount_type == "transit":
+            paths.append(f"{mp}/*")
+        elif mount_type in ("pki", "ssh"):
+            paths.append(f"{mp}/*")
+
+        # For any KV mount, also check common admin sub-paths
+        if mount_type in ("kv", "generic"):
+            for sub in ("admin", "production", "staging", "dev", "db", "app"):
+                paths.append(f"{mp}/data/{sub}/*")
+                paths.append(f"{mp}/data/{sub}")
+
+    return paths
+
+
+def _fetch_mounts_unauthenticated(vault_addr: str, timeout: int = 5) -> dict:
+    """Read sys/internal/ui/mounts without authentication.
+
+    Returns ``{mount_path: mount_type, ...}`` or an empty dict on failure.
+    """
+    url = f"{vault_addr.rstrip('/')}/v1/sys/internal/ui/mounts"
+    try:
+        resp = vault_request("GET", url, timeout=timeout)
+    except Exception:
+        return {}
+
+    if resp.status_code != 200:
+        return {}
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    secret = data.get("data", data).get("secret", {})
+    if not isinstance(secret, dict):
+        return {}
+
+    mounts: dict[str, str] = {}
+    for mount_path, info in secret.items():
+        if isinstance(info, dict):
+            mounts[mount_path] = info.get("type", "unknown")
+    return mounts
+
+
+# -----------------------------------------------------------------------
+# Query helpers
+# -----------------------------------------------------------------------
+
+
 def _query_capabilities_self(client, paths):
     try:
         return client.sys.get_capabilities(paths=paths)
@@ -142,6 +253,11 @@ def _extract_capability_results(response, requested_paths):
         })
 
     return results
+
+
+# -----------------------------------------------------------------------
+# Reporting
+# -----------------------------------------------------------------------
 
 
 def _report_capability_findings(results, vault_addr):
@@ -197,6 +313,11 @@ def _report_capability_findings(results, vault_addr):
                 module=MODULE,
                 target=vault_addr,
             )
+
+
+# -----------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------
 
 
 def _normalize_paths(paths):

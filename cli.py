@@ -416,7 +416,18 @@ def scan(
 
     # ── Authenticated audits ──
     if vault_addr and token and capability_audit:
-        audit_token_capabilities(vault_addr, token, paths=capability_path, namespace=namespace)
+        # Auto-generate paths from --kv-path for deeper coverage
+        audit_paths = list(capability_path) if capability_path else None
+        if kv_path and not audit_paths:
+            mp = kv_path.rstrip("/")
+            audit_paths = [
+                f"{mp}/*",
+                f"{mp}/data/*",
+                f"{mp}/metadata/*",
+                f"{mp}/data/admin/*",
+                f"{mp}/data/production/*",
+            ]
+        audit_token_capabilities(vault_addr, token, paths=audit_paths, namespace=namespace)
 
     if vault_addr and token and priv_esc_audit:
         scan_privilege_escalation(vault_addr, token, policy_names=token_policy, namespace=namespace)
