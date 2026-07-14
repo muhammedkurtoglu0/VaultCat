@@ -311,16 +311,24 @@ class PentestAgent:
                     # Parse result for a quick summary
                     result_summary = self._summarize_result(tool_result)
 
-                    # Add to conversation
+                    # Generate a unique tool call ID for API compliance
+                    import uuid
+                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+
+                    # Add to conversation — OpenAI/DeepSeek API format
                     messages.append({
                         "role": "assistant",
                         "content": response.get("content") or "",
-                        "tool_calls": [{"name": name, "arguments": arguments}],
+                        "tool_calls": [{
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(arguments)},
+                        }],
                     })
                     messages.append({
                         "role": "tool",
                         "content": tool_result[:2000],
-                        "tool_call_id": name,
+                        "tool_call_id": call_id,
                     })
                     # Prompt LLM to analyze — BRIEFLY, no option lists
                     messages.append({
