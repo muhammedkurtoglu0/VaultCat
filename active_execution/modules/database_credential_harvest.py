@@ -92,6 +92,7 @@ class DatabasePivotModule(BaseExecutionModule):
 
         print(f"[*] [ACTIVE] Connecting to {db_type} database at {db_host}:{db_port}")
 
+        connection = None
         try:
             # Veritabanına bağlan
             connection = _connect_database(
@@ -166,8 +167,6 @@ class DatabasePivotModule(BaseExecutionModule):
                         },
                     )
 
-            connection.close()
-
             return ExecutionResult(
                 status="success",
                 message=f"Database pivot succeeded. Found {len(databases)} databases.",
@@ -180,6 +179,12 @@ class DatabasePivotModule(BaseExecutionModule):
                 message=f"Database pivot failed: {str(e)}",
                 evidence={"error": str(e)},
             )
+        finally:
+            if connection:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
 
 # ─── VERİTABANI BAĞLANTISI ──────────────────────────────────────────────────
@@ -399,70 +404,85 @@ def _connect_database(db_type, host, port, database, username, password, timeout
 
 def _list_databases(db_type, connection):
     """Veritabanlarını listele"""
+    cursor = None
     try:
         cursor = connection.cursor()
-        
+
         if db_type == "postgres":
             cursor.execute("SELECT datname FROM pg_database WHERE datistemplate = false;")
             return [row[0] for row in cursor.fetchall()]
-        
+
         elif db_type == "mysql":
             cursor.execute("SHOW DATABASES;")
             return [row[0] for row in cursor.fetchall()]
-        
+
         elif db_type == "mssql":
             cursor.execute("SELECT name FROM sys.databases;")
             return [row[0] for row in cursor.fetchall()]
-        
+
         return []
     except Exception as e:
         print(f"[!] Failed to list databases: {e}")
         return []
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
 
 def _list_tables(db_type, connection, database):
     """Tabloları listele"""
+    cursor = None
     try:
         cursor = connection.cursor()
-        
+
         if db_type == "postgres":
             cursor.execute(
                 "SELECT table_name FROM information_schema.tables "
                 "WHERE table_schema = 'public' AND table_type = 'BASE TABLE';"
             )
             return [row[0] for row in cursor.fetchall()]
-        
+
         elif db_type == "mysql":
             cursor.execute(f"SHOW TABLES FROM `{database}`;")
             return [row[0] for row in cursor.fetchall()]
-        
+
         elif db_type == "mssql":
             cursor.execute(
                 f"SELECT TABLE_NAME FROM {database}.INFORMATION_SCHEMA.TABLES "
                 "WHERE TABLE_TYPE = 'BASE TABLE';"
             )
             return [row[0] for row in cursor.fetchall()]
-        
+
         return []
     except Exception as e:
         print(f"[!] Failed to list tables: {e}")
         return []
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
 
 def _read_table_data(db_type, connection, database, table, max_rows=10):
     """Tablodan veri oku"""
+    cursor = None
     try:
         cursor = connection.cursor()
-        
+
         if db_type == "postgres":
             cursor.execute(f"SELECT * FROM {table} LIMIT {max_rows};")
-        
+
         elif db_type == "mysql":
             cursor.execute(f"SELECT * FROM `{database}`.`{table}` LIMIT {max_rows};")
-        
+
         elif db_type == "mssql":
             cursor.execute(f"SELECT TOP {max_rows} * FROM {database}.dbo.{table};")
-        
+
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         rows = cursor.fetchall()
         
@@ -471,6 +491,12 @@ def _read_table_data(db_type, connection, database, table, max_rows=10):
     except Exception as e:
         print(f"[!] Failed to read table {table}: {e}")
         return []
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
 
 # ─── CONTEXT YARDIMCILARI ────────────────────────────────────────────────────

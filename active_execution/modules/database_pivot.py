@@ -76,9 +76,10 @@ class DatabasePivotModule(BaseExecutionModule):
 
         print(f"[*] [ACTIVE] Connecting to {db_type} database at {db_host}:{db_port}")
 
+        connection = None
         try:
             connection = _connect_database(db_type, db_host, db_port, db_name, username, password, timeout)
-            
+
             if not connection:
                 return ExecutionResult(
                     status="failed",
@@ -88,7 +89,7 @@ class DatabasePivotModule(BaseExecutionModule):
 
             # Veritabanı listesini al
             databases = _list_databases(db_type, connection)
-            
+
             # Tabloları listele (ilk veritabanı)
             target_db = params.get("target_db") or (databases[0] if databases else db_name)
             tables = []
@@ -101,8 +102,6 @@ class DatabasePivotModule(BaseExecutionModule):
                 data = _read_table_data(db_type, connection, target_db, table, 3)
                 if data:
                     sample_data[table] = data
-
-            connection.close()
 
             context.add_finding(
                 title="HIGH: Database Pivot Successful",
@@ -136,6 +135,12 @@ class DatabasePivotModule(BaseExecutionModule):
                 message=f"Database pivot failed: {str(e)}",
                 evidence={"error": str(e)},
             )
+        finally:
+            if connection:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
 
 def _default_port(db_type: str) -> int:
@@ -173,6 +178,7 @@ def _connect_database(db_type, host, port, database, username, password, timeout
 
 
 def _list_databases(db_type, connection):
+    cursor = None
     try:
         cursor = connection.cursor()
         if db_type == "postgres":
@@ -188,9 +194,16 @@ def _list_databases(db_type, connection):
     except Exception as e:
         print(f"[!] Failed to list databases: {e}")
         return []
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
 
 def _list_tables(db_type, connection, database):
+    cursor = None
     try:
         cursor = connection.cursor()
         if db_type == "postgres":
@@ -206,9 +219,16 @@ def _list_tables(db_type, connection, database):
     except Exception as e:
         print(f"[!] Failed to list tables: {e}")
         return []
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
 
 def _read_table_data(db_type, connection, database, table, max_rows=3):
+    cursor = None
     try:
         cursor = connection.cursor()
         if db_type == "postgres":
@@ -217,10 +237,16 @@ def _read_table_data(db_type, connection, database, table, max_rows=3):
             cursor.execute(f"SELECT * FROM `{database}`.`{table}` LIMIT {max_rows};")
         elif db_type == "mssql":
             cursor.execute(f"SELECT TOP {max_rows} * FROM {database}.dbo.{table};")
-        
+
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         rows = cursor.fetchall()
         return [dict(zip(columns, row)) for row in rows]
     except Exception as e:
         print(f"[!] Failed to read table {table}: {e}")
         return []
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
