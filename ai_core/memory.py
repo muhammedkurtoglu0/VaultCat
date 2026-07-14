@@ -9,6 +9,8 @@ class Memory:
         self.captured_credentials: Dict[str, Any] = {}
         self.context: Dict[str, Any] = {}
         self.execution_history: List[Dict] = []
+        self.active_plan: Any = None  # PentestPlan | None
+        self.plan_history: List[Any] = []  # completed/aborted plans
     
     def add_conversation(self, role: str, message: str):
         self.conversation_history.append({
@@ -45,3 +47,17 @@ class Memory:
     
     def get_findings_by_severity(self, severity: str) -> List[Dict]:
         return [f for f in self.findings if f.get("severity") == severity]
+
+    def store_plan(self, plan) -> None:
+        """Store a plan as the active plan."""
+        self.active_plan = plan
+
+    def get_active_plan(self):
+        """Return the currently active plan or None."""
+        return self.active_plan
+
+    def archive_plan(self, plan) -> None:
+        """Move the active plan to the history archive."""
+        if self.active_plan is plan:
+            self.active_plan = None
+        self.plan_history.append(plan)

@@ -2,13 +2,14 @@
 
 The agent:
 1. Understands the full pentest context (target, token, findings, tool results)
-2. Plans multi-step attack chains autonomously
+2. Plans multi-step attack chains autonomously (via ``run_with_plan``)
 3. Decides which tool to use next based on findings, not keywords
 4. Adapts when tools succeed or fail
 5. Reports findings in natural language
 
 Architecture:
     User Objective → Agent Loop (think → act → observe → repeat) → Report
+    PentestPlan   → run_with_plan() → step-by-step autonomous execution
 """
 
 from __future__ import annotations
@@ -16,11 +17,64 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from enum import Enum
 from typing import Any, AsyncIterator, Optional
 
 from ai_core.llm_engine import LLMClient
 from ai_core.memory import Memory
 from ai_core.tools import ALL_TOOLS, ToolDef
+
+
+# ---------------------------------------------------------------------------
+# Phase tracker
+# ---------------------------------------------------------------------------
+
+
+class AttackPhase(Enum):
+    RECON = "recon"
+    AUDIT = "audit"
+    EXPLOIT = "exploit"
+    REPORT = "report"
+
+
+_PHASE_ORDER = {
+    AttackPhase.RECON: 0,
+    AttackPhase.AUDIT: 1,
+    AttackPhase.EXPLOIT: 2,
+    AttackPhase.REPORT: 3,
+}
+
+
+class PhaseTracker:
+    """Tracks which pentest phases have been completed."""
+
+    def __init__(self):
+        self.current_phase: AttackPhase = AttackPhase.RECON
+        self.completed_phases: set[AttackPhase] = set()
+        self.phase_artifacts: dict[str, Any] = {}
+
+    def transition_to(self, phase: AttackPhase) -> bool:
+        """Attempt to transition to *phase*. Returns False if invalid."""
+        target_order = _PHASE_ORDER.get(phase, 99)
+        current_order = _PHASE_ORDER.get(self.current_phase, 0)
+        if target_order < current_order:
+            return False  # can't go backwards
+        self.completed_phases.add(self.current_phase)
+        self.current_phase = phase
+        return True
+
+    def record_artifact(self, key: str, value: Any) -> None:
+        self.phase_artifacts[key] = value
+
+    def get_artifact(self, key: str) -> Any:
+        return self.phase_artifacts.get(key)
+
+    def summary(self) -> str:
+        return (
+            f"Phase: {self.current_phase.value} | "
+            f"Completed: {[p.value for p in self.completed_phases]} | "
+            f"Artifacts: {list(self.phase_artifacts.keys())}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +166,8 @@ Keep it minimal:
 class PentestAgent:
     """Autonomous agent that plans and executes Vault pentest operations."""
 
-    MAX_TURNS = 25  # safety limit
+    MAX_TURNS = 50  # safety limit per conversational session
+    MAX_PLAN_TOOL_CALLS = 15  # max tool calls per plan execution
 
     def __init__(
         self,
@@ -128,6 +183,13 @@ class PentestAgent:
         self.tools = ALL_TOOLS
         self._tool_executor: Any = None  # set by chat_ui
         self._turn_count = 0
+
+        # Plan execution state
+        self._phase_tracker = PhaseTracker()
+        self._paused_flag = asyncio.Event()
+        self._paused_flag.set()  # not paused initially
+        self._aborted_flag = False
+        self._plan_tool_call_count = 0
 
         if vault_addr:
             self.memory.set_context("vault_addr", vault_addr)
@@ -466,3 +528,174 @@ class PentestAgent:
         )
         lowered = text.lower()
         return any(m in lowered for m in markers) and len(text) > 100
+
+    # ── multi-step plan execution ────────────────────────────────────────
+
+    def pause(self) -> None:
+        """Pause plan execution after the current step finishes."""
+        self._paused_flag.clear()
+
+    async def resume(self) -> None:
+        """Resume a paused plan."""
+        self._paused_flag.set()
+
+    def abort(self) -> None:
+        """Abort plan execution immediately."""
+        self._aborted_flag = True
+        self._paused_flag.set()  # unblock any wait so the loop can see _aborted_flag
+
+    async def run_with_plan(self, plan: Any) -> AsyncIterator[dict]:
+        """Execute a full ``PentestPlan`` autonomously.
+
+        Yields events:
+            {"type": "phase_start"|"phase_end", "phase": str}
+            {"type": "step_start"|"step_end", "step": dict, "index": int, "total": int}
+            {"type": "tool_call"|"tool_result", ...}
+            {"type": "plan_complete", "plan": dict, "status": str}
+        """
+        from ai_core.planning.plan_schema import PentestPlan, PlanStatus
+
+        self._phase_tracker = PhaseTracker()
+        self._plan_tool_call_count = 0
+        self._aborted_flag = False
+        self._paused_flag.set()  # not paused
+
+        plan.status = PlanStatus.RUNNING
+        self.memory.active_plan = plan
+
+        yield {"type": "status", "message": f"Executing plan '{plan.id}' — {plan.total_steps} steps"}
+        yield {"type": "status", "message": plan.attack_narrative or "Starting attack plan..."}
+
+        last_phase: AttackPhase | None = None
+
+        for i, step in enumerate(plan.steps):
+            # Check abort
+            if self._aborted_flag:
+                plan.status = PlanStatus.FAILED
+                yield {"type": "plan_complete", "plan": plan.to_dict(), "status": "aborted"}
+                return
+
+            # Check pause — block until resumed
+            await self._paused_flag.wait()
+
+            # Check plan tool call limit
+            self._plan_tool_call_count += 1
+            if self._plan_tool_call_count > self.MAX_PLAN_TOOL_CALLS:
+                yield {
+                    "type": "warning",
+                    "message": f"Plan exceeded max tool calls ({self.MAX_PLAN_TOOL_CALLS})",
+                }
+                plan.status = PlanStatus.FAILED
+                yield {"type": "plan_complete", "plan": plan.to_dict(), "status": "limit_exceeded"}
+                return
+
+            plan.current_step_index = i
+
+            # Phase transition tracking
+            step_phase = AttackPhase(step.phase.value) if hasattr(step.phase, 'value') else AttackPhase.AUDIT
+            if step_phase != last_phase:
+                if last_phase:
+                    yield {"type": "phase_end", "phase": last_phase.value}
+                self._phase_tracker.transition_to(step_phase)
+                yield {"type": "phase_start", "phase": step_phase.value}
+                last_phase = step_phase
+
+            yield {
+                "type": "step_start",
+                "step": {"tool": step.tool, "reason": step.reason, "priority": step.priority},
+                "index": i,
+                "total": plan.total_steps,
+            }
+
+            # --- tool call ---
+            params_preview = dict(step.params) if step.params else {}
+            if self.vault_addr and "vault_addr" not in params_preview:
+                params_preview["vault_addr"] = self.vault_addr
+            if self.token and "token" not in params_preview:
+                params_preview["token"] = self.token
+            yield {
+                "type": "tool_call",
+                "message": f"{step.tool}({json.dumps(params_preview, ensure_ascii=False)})",
+                "tool": step.tool,
+                "params": params_preview,
+            }
+
+            result = await self._execute_planned_step(step, plan)
+
+            # --- tool result ---
+            yield {"type": "tool_result", "message": result.get("raw", result.get("message", ""))}
+
+            if result["status"] == "success":
+                yield {"type": "step_end", "status": "success", "result": result}
+            else:
+                outcome = self._handle_step_failure(step, result)
+                if outcome == "abort":
+                    plan.status = PlanStatus.FAILED
+                    yield {"type": "plan_complete", "plan": plan.to_dict(), "status": "failed"}
+                    return
+                if outcome == "skip":
+                    yield {"type": "step_end", "status": "skipped", "reason": result.get("message")}
+                    continue
+                if outcome == "retry" and step.max_retries > 0:
+                    step.max_retries -= 1
+                    yield {"type": "step_end", "status": "retrying", "retries_left": step.max_retries}
+                    # Re-attempt the same step
+                    yield {
+                        "type": "tool_call",
+                        "message": f"{step.tool}(retry)",
+                        "tool": step.tool,
+                        "params": params_preview,
+                    }
+                    result2 = await self._execute_planned_step(step, plan)
+                    yield {"type": "tool_result", "message": result2.get("raw", result2.get("message", ""))}
+                    if result2["status"] != "success":
+                        yield {"type": "step_end", "status": "failed", "result": result2}
+                        if step.on_failure == "abort":
+                            plan.status = PlanStatus.FAILED
+                            yield {"type": "plan_complete", "plan": plan.to_dict(), "status": "failed"}
+                            return
+                    else:
+                        yield {"type": "step_end", "status": "success", "result": result2}
+                else:
+                    yield {"type": "step_end", "status": "failed", "result": result}
+
+        if last_phase:
+            yield {"type": "phase_end", "phase": last_phase.value}
+
+        plan.status = PlanStatus.COMPLETED
+        self.memory.archive_plan(plan)
+        yield {"type": "plan_complete", "plan": plan.to_dict(), "status": "completed"}
+
+    async def _execute_planned_step(self, step: Any, plan: Any) -> dict:
+        """Execute a single PlannedStep and return the result dict."""
+        params = dict(step.params) if step.params else {}
+        if self.vault_addr and "vault_addr" not in params:
+            params["vault_addr"] = self.vault_addr
+        if self.token and "token" not in params:
+            params["token"] = self.token
+
+        tool_result = ""
+        if self._tool_executor:
+            try:
+                tool_result = await self._tool_executor(step.tool, params)
+            except Exception as exc:
+                tool_result = json.dumps({"status": "error", "message": str(exc)})
+        else:
+            tool_result = json.dumps({"status": "error", "message": "no tool executor configured"})
+
+        try:
+            data = json.loads(tool_result)
+            status = data.get("status", "error")
+            return {"status": status, "message": data.get("message", ""),
+                    "data": data, "raw": tool_result[:500]}
+        except json.JSONDecodeError:
+            return {"status": "unknown", "message": tool_result[:300],
+                    "data": {}, "raw": tool_result[:300]}
+
+    def _handle_step_failure(self, step: Any, result: dict) -> str:
+        """Decide what to do after a step failure.
+
+        Returns one of: "abort" | "skip" | "retry" | "continue"
+        """
+        on_failure = getattr(step, "on_failure", "abort") or "abort"
+        return on_failure

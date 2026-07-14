@@ -9,6 +9,8 @@ from active_execution.modules.secret_exfiltration import SecretExfiltrationModul
 from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
 from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
 from active_execution.registry import ActiveExecutionRegistry, RiskLevel, risk_level_allowed
+from ai_core.llm_engine import LLMClient, detect_provider
+from ai_core.session import session_manager
 from core.report import clear_findings, findings as report_findings
 from core.risk_score import calculate_risk
 from scanners.capability_scanner import audit_token_capabilities
@@ -45,9 +47,17 @@ mcp_server = FastMCP(
 )
 
 # Oturum düzeyinde yakalanan token ve bağlam durumu
+# Migrated to ai_core.session.SessionManager — kept as alias for backward compat
+_default_session = session_manager.get_or_create("default")
 pentest_context: dict[str, Any] = {
     "captured_token": None,
 }
+
+
+def _sync_context_to_session() -> None:
+    """Keep the legacy pentest_context in sync with SessionManager."""
+    token = _default_session.get_resolved_token()
+    pentest_context["captured_token"] = token
 
 
 def build_active_registry() -> ActiveExecutionRegistry:
@@ -520,6 +530,248 @@ async def refresh_nvd_cache() -> str:
         )
 
 
+# ─── Session Management ──────────────────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="get_session_status",
+    description=(
+        "Mevcut pentest oturumunun durumunu döndürür: hedefler, token geçmişi, "
+        "aktif plan, faz ve bulgular. Session ID verilmezse varsayılan oturum kullanılır."
+    ),
+)
+async def get_session_status(session_id: str = "default") -> str:
+    session = session_manager.get_or_create(session_id)
+    status = session.to_dict()
+    status["findings_count"] = len(report_findings)
+    risk = calculate_risk(report_findings)
+    status["risk_score"] = risk["score"]
+    status["risk_grade"] = risk["grade"]
+    return json.dumps(status, ensure_ascii=False)
+
+
+@mcp_server.tool(
+    name="reset_session",
+    description=(
+        "Pentest oturumunu sıfırlar: tüm token'lar, planlar ve hedefler temizlenir. "
+        "Bulgular etkilenmez. Session ID verilmezse varsayılan oturum kullanılır."
+    ),
+)
+async def reset_session(session_id: str = "default") -> str:
+    session = session_manager.get_or_create(session_id)
+    session.token_history.clear()
+    session.active_token = None
+    session.escalated_token = None
+    session.active_plan = None
+    session.plan_history.clear()
+    session.current_phase = "recon"
+    pentest_context["captured_token"] = None
+    return json.dumps(
+        {"status": "completed", "message": f"Session '{session_id}' reset."},
+        ensure_ascii=False,
+    )
+
+
+@mcp_server.tool(
+    name="create_attack_plan",
+    description=(
+        "Birikmiş enumeration bulgularından AI destekli çok adımlı saldırı planı üretir. "
+        "Plan; token değerlendirmesi, dinamik policy isimleri, öncelikli adımlar ve "
+        "saldırı anlatısı içerir. Üretilen plan oturuma kaydedilir ve "
+        "execute_attack_plan ile çalıştırılabilir."
+    ),
+)
+async def create_attack_plan(
+    vault_addr: str,
+    token: Optional[str] = None,
+    provider: Optional[str] = None,
+    session_id: str = "default",
+) -> str:
+    from ai_core.planning import create_planner, PentestPlan
+
+    session = session_manager.get_or_create(session_id)
+    if vault_addr:
+        session.set_target(vault_addr)
+    if token:
+        session.add_token(token, source="user_provided")
+
+    # Collect enumeration data from findings
+    enum_data: dict[str, Any] = {"findings": list(report_findings)}
+    token_hint = token[:12] + "..." if token and len(token) > 12 else (token or "none")
+
+    llm_provider = provider or detect_provider()
+    try:
+        planner = create_planner(llm_provider)
+        plan = planner.create_plan(vault_addr, token_hint, enum_data)
+        plan_dict = plan.to_dict()
+        session.active_plan = plan_dict
+        session.touch()
+        return json.dumps(
+            {
+                "status": "completed",
+                "plan": plan_dict,
+                "provider": llm_provider,
+                "message": f"Plan generated with {plan.total_steps} steps via {llm_provider}.",
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {"status": "error", "message": f"Plan generation failed: {exc}"},
+            ensure_ascii=False,
+        )
+
+
+@mcp_server.tool(
+    name="execute_attack_plan",
+    description=(
+        "Kaydedilmiş saldırı planını adım adım çalıştırır. Plan create_attack_plan ile "
+        "üretilmiş olmalıdır. Her adımın sonucu değerlendirilir; başarısız adımlar "
+        "planın on_failure ayarına göre atlanır, tekrarlanır veya durdurulur."
+    ),
+)
+async def execute_attack_plan(
+    vault_addr: str,
+    token: Optional[str] = None,
+    session_id: str = "default",
+    max_risk: str = "state_changing",
+) -> str:
+    session = session_manager.get_or_create(session_id)
+    plan_dict = session.active_plan
+    if not plan_dict:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": (
+                    "No active plan found. Run create_attack_plan first, "
+                    "or import a plan."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    resolved_token = token or session.get_resolved_token()
+    if not resolved_token:
+        return json.dumps(
+            {"status": "error", "message": "No token available for plan execution."},
+            ensure_ascii=False,
+        )
+
+    # Execute steps sequentially using the active execution engine
+    registry = build_active_registry()
+    engine_ctx = _execution_context(vault_addr, token=resolved_token)
+    results = []
+
+    for step in plan_dict.get("steps", []):
+        tool_name = step.get("tool", "")
+        params = step.get("params", {})
+
+        # Try to map tool name to a module
+        tool_module_map = {
+            "run_privilege_escalation": "privilege_escalation.token_abuse",
+            "run_secret_exfiltration": "secret_exfiltration.kv_dump",
+            "run_database_credential_harvest": "database_credential_harvest.dynamic_creds",
+            "run_cloud_key_exfiltration": "cloud_key_exfiltration.key_dump",
+        }
+        module_id = tool_module_map.get(tool_name)
+
+        if module_id:
+            module = registry.get(module_id)
+            if module:
+                try:
+                    max_risk_level = RiskLevel(max_risk)
+                except ValueError:
+                    max_risk_level = RiskLevel.STATE_CHANGING
+
+                if not risk_level_allowed(module.risk_level, max_risk_level):
+                    results.append({
+                        "step": tool_name,
+                        "status": "blocked",
+                        "message": f"Risk level {module.risk_level.value} exceeds max {max_risk}",
+                    })
+                    continue
+
+                if not module.can_run(engine_ctx):
+                    results.append({
+                        "step": tool_name,
+                        "status": "skipped",
+                        "message": f"Module {module_id} cannot run with current context",
+                    })
+                    continue
+
+                try:
+                    result = module.execute(engine_ctx, params)
+                    results.append({
+                        "step": tool_name,
+                        "status": result.status,
+                        "message": result.message,
+                        "evidence": result.evidence or {},
+                    })
+                    # Update session with captured token
+                    captured = (
+                        (result.evidence or {}).get("captured_token")
+                        or getattr(engine_ctx, "captured_token", None)
+                    )
+                    if captured:
+                        session.set_escalated_token(captured)
+                        pentest_context["captured_token"] = captured
+                        engine_ctx.token = captured
+
+                    # Stop on failure if configured
+                    on_failure = step.get("on_failure", "abort")
+                    if result.status not in ("success", "partial") and on_failure == "abort":
+                        results.append({"step": "plan", "status": "aborted",
+                                       "message": f"Stopped at {tool_name} due to failure"})
+                        break
+
+                except Exception as exc:
+                    results.append({
+                        "step": tool_name,
+                        "status": "error",
+                        "message": str(exc),
+                    })
+                    if step.get("on_failure", "abort") == "abort":
+                        break
+            else:
+                results.append({
+                    "step": tool_name,
+                    "status": "error",
+                    "message": f"Module not found: {module_id}",
+                })
+        else:
+            results.append({
+                "step": tool_name,
+                "status": "skipped",
+                "message": f"No direct module mapping for tool: {tool_name}. Use run_active_module.",
+            })
+
+    plan_dict["results"] = results
+    session.active_plan = plan_dict
+    session.touch()
+
+    # Aggregate findings from execution context
+    for finding in engine_ctx.findings:
+        from core.report import add_finding
+        add_finding(
+            finding.get("severity", "INFO"),
+            finding.get("title", ""),
+            finding.get("description", ""),
+            evidence=finding.get("evidence"),
+            module="active_execution",
+            target=vault_addr,
+        )
+
+    return json.dumps(
+        {
+            "status": "completed",
+            "plan_id": plan_dict.get("id", ""),
+            "steps_executed": len(results),
+            "results": results,
+        },
+        ensure_ascii=False,
+    )
+
+
 # ─── Active Execution: Privilege Escalation ───────────────────────────────
 
 @mcp_server.tool(
@@ -557,6 +809,10 @@ async def run_privilege_escalation(
     if result.status == "success":
         captured = evidence.get("captured_token") or getattr(context, "captured_token", None)
         pentest_context["captured_token"] = captured
+        if captured:
+            session = session_manager.get_or_create("default")
+            session.set_escalated_token(captured)
+            _sync_context_to_session()
 
     return json.dumps(
         {
@@ -888,6 +1144,9 @@ async def run_active_module(
     )
     if captured:
         pentest_context["captured_token"] = captured
+        session = session_manager.get_or_create("default")
+        session.set_escalated_token(captured)
+        _sync_context_to_session()
 
     return json.dumps(
         {

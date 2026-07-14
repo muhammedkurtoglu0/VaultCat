@@ -1,5 +1,21 @@
+"""Regex-based intent-to-module planner — DEPRECATED.
+
+This module is superseded by ``ai_core.planning`` which uses LLM-powered
+structured planning.  The regex approach is kept for reference only.
+New code should use:
+
+    from ai_core.planning import create_planner
+"""
+
+import warnings
 from typing import List, Dict, Any, Optional
 import re
+
+warnings.warn(
+    "ai_core.planner is deprecated — use ai_core.planning.create_planner instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 class Planner:

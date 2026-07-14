@@ -1,3 +1,11 @@
+"""Module capability registry — DEPRECATED.
+
+This module is superseded by:
+- ``active_execution.registry.ActiveExecutionRegistry`` for module execution.
+- ``ai_core.tools.ALL_TOOLS`` for tool definitions.
+- ``ai_core.planning`` for AI-driven plan generation.
+"""
+
 from typing import Dict, List, Optional
 
 

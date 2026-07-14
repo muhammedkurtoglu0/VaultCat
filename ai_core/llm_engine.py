@@ -4,8 +4,10 @@ Supports:
 - Ollama (local) — with native tool calling for models that support it, ReAct fallback
 - OpenAI API — native function calling
 - Anthropic API — native tool use
+- DeepSeek API — OpenAI-compatible function calling
 
 Provider selection is automatic based on configuration or can be forced.
+Features: retry with exponential backoff, circuit breaker, error classification.
 """
 
 from __future__ import annotations
@@ -13,9 +15,109 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+import threading
 from typing import Any, Optional
 
 import requests
+
+
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+
+class LLMError(Exception):
+    """Base exception for all LLM-related errors."""
+
+
+class RetryableError(LLMError):
+    """Transient error — safe to retry (429 rate limit, 5xx server error)."""
+
+
+class FatalError(LLMError):
+    """Non-retryable error — do NOT retry (401 auth, 402 payment, 403 forbidden)."""
+
+
+class LLMTimeoutError(LLMError):
+    """Request timed out."""
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
+
+
+class CircuitBreaker:
+    """Prevents repeated calls to a failing provider.
+
+    After *failure_threshold* consecutive failures, the breaker opens for
+    *recovery_timeout* seconds.  While open all calls fail fast with
+    ``FatalError`` instead of waiting for a real timeout.
+    """
+
+    def __init__(self, failure_threshold: int = 3, recovery_timeout: float = 30.0):
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+        self._failure_count = 0
+        self._last_failure_time: float = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._failure_count < self._failure_threshold:
+                return False
+            elapsed = time.monotonic() - self._last_failure_time
+            return elapsed < self._recovery_timeout
+
+    def success(self) -> None:
+        with self._lock:
+            self._failure_count = 0
+
+    def failure(self) -> None:
+        with self._lock:
+            self._failure_count += 1
+            self._last_failure_time = time.monotonic()
+
+    def reset(self) -> None:
+        """Manually reset the breaker to closed state."""
+        with self._lock:
+            self._failure_count = 0
+            self._last_failure_time = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Retry helper
+# ---------------------------------------------------------------------------
+
+
+def retry_with_backoff(
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    backoff_factor: float = 2.0,
+):
+    """Decorator / wrapper that retries on RetryableError with exponential backoff."""
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_exc: Exception | None = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except RetryableError as exc:
+                    last_exc = exc
+                    if attempt < max_retries:
+                        delay = min(base_delay * (backoff_factor ** attempt), max_delay)
+                        time.sleep(delay)
+                    # else: fall through to re-raise
+            raise last_exc  # type: ignore[misc]
+            return None
+
+        return wrapper
+
+    return decorator
 
 # ---------------------------------------------------------------------------
 # Provider detection
@@ -50,7 +152,10 @@ def detect_provider() -> str:
 
 
 class LLMClient:
-    """Unified LLM client with tool calling across providers."""
+    """Unified LLM client with tool calling across providers.
+
+    Features: retry with exponential backoff, circuit breaker, error classification.
+    """
 
     def __init__(
         self,
@@ -58,11 +163,14 @@ class LLMClient:
         model: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        request_timeout: float = 120.0,
     ):
         self.provider = provider or detect_provider()
         self.api_key = api_key or self._resolve_api_key()
         self.base_url = base_url or self._resolve_base_url()
         self.model = model or self._default_model()
+        self.request_timeout = request_timeout
+        self._circuit_breaker = CircuitBreaker()
 
     def _resolve_api_key(self) -> str:
         if self.provider == "openai":
@@ -87,7 +195,7 @@ class LLMClient:
     def _default_model(self) -> str:
         defaults = {
             "openai": "gpt-4o-mini",
-            "anthropic": "claude-sonnet-4-20250514",
+            "anthropic": os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-5"),
             "deepseek": "deepseek-chat",
         }
         if self.provider in defaults:
@@ -151,27 +259,108 @@ class LLMClient:
                 "finish_reason": "stop" | "tool_calls" | "error",
                 "raw": ...,
             }
+
+        Automatically retries on transient errors (429, 5xx) with
+        exponential backoff.  Fast-fails when the circuit breaker is open.
         """
-        if self.provider == "ollama":
-            return self._ollama_chat(system_prompt, messages, tools, temperature, max_tokens)
-        if self.provider in ("openai", "deepseek"):
-            return self._openai_chat(system_prompt, messages, tools, temperature, max_tokens)
-        if self.provider == "anthropic":
-            return self._anthropic_chat(system_prompt, messages, tools, temperature, max_tokens)
-        return {"role": "assistant", "content": None, "tool_calls": None,
-                "finish_reason": "error", "raw": "unknown provider"}
+        # Fast-fail when circuit breaker is open
+        if self._circuit_breaker.is_open:
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": None,
+                "finish_reason": "error",
+                "raw": f"Circuit breaker open for provider '{self.provider}'",
+            }
+
+        @retry_with_backoff(max_retries=3, base_delay=1.0)
+        def _call():
+            if self.provider == "ollama":
+                return self._ollama_chat(system_prompt, messages, tools, temperature, max_tokens)
+            if self.provider in ("openai", "deepseek"):
+                return self._openai_chat(system_prompt, messages, tools, temperature, max_tokens)
+            if self.provider == "anthropic":
+                return self._anthropic_chat(system_prompt, messages, tools, temperature, max_tokens)
+            raise FatalError(f"Unknown provider: {self.provider}")
+
+        try:
+            result = _call()
+            self._circuit_breaker.success()
+            return result
+        except FatalError as exc:
+            # Auth / client-side errors — do NOT trip the circuit breaker
+            # because the provider itself is healthy; the request is bad.
+            return {
+                "role": "assistant", "content": None, "tool_calls": None,
+                "finish_reason": "error",
+                "raw": f"Fatal error from provider '{self.provider}': {exc}",
+            }
+        except (RetryableError, LLMTimeoutError) as exc:
+            # Provider-side transient / timeout errors — trip the breaker.
+            self._circuit_breaker.failure()
+            return {
+                "role": "assistant", "content": None, "tool_calls": None,
+                "finish_reason": "error",
+                "raw": f"Retryable error exhausted for provider '{self.provider}': {exc}",
+            }
+        except LLMError as exc:
+            # Unknown LLM errors — trip conservatively.
+            self._circuit_breaker.failure()
+            return {
+                "role": "assistant", "content": None, "tool_calls": None,
+                "finish_reason": "error",
+                "raw": str(exc),
+            }
 
     def is_available(self) -> bool:
-        """Check if the configured provider is reachable."""
+        """Check if the configured provider is reachable and healthy."""
+        if self._circuit_breaker.is_open:
+            return False
         try:
             if self.provider == "ollama":
-                r = requests.get(f"{self.base_url}/api/tags", timeout=2)
+                r = requests.get(f"{self.base_url}/api/tags", timeout=5)
                 return r.status_code == 200
             if self.provider in ("openai", "anthropic", "deepseek"):
                 return bool(self.api_key)
         except Exception:
             pass
         return False
+
+    def health(self) -> dict:
+        """Return provider health status with detail."""
+        status: dict = {
+            "provider": self.provider,
+            "model": self.model,
+            "circuit_breaker_open": self._circuit_breaker.is_open,
+            "has_api_key": bool(self.api_key),
+        }
+        try:
+            if self.provider == "ollama":
+                r = requests.get(f"{self.base_url}/api/tags", timeout=5)
+                status["reachable"] = r.status_code == 200
+                status["models_count"] = len(r.json().get("models", [])) if r.status_code == 200 else 0
+            elif self.provider in ("openai", "anthropic", "deepseek"):
+                status["reachable"] = bool(self.api_key)
+            else:
+                status["reachable"] = False
+        except Exception as exc:
+            status["reachable"] = False
+            status["error"] = str(exc)
+        return status
+
+    def _classify_http_error(self, status_code: int, body: str = "") -> None:
+        """Raise the appropriate exception for an HTTP error status."""
+        if status_code == 429 or status_code >= 500:
+            raise RetryableError(
+                f"Provider '{self.provider}' returned {status_code}: {body[:300]}"
+            )
+        if status_code in (401, 402, 403):
+            raise FatalError(
+                f"Provider '{self.provider}' returned {status_code} (auth/payment): {body[:300]}"
+            )
+        raise FatalError(
+            f"Provider '{self.provider}' returned {status_code}: {body[:300]}"
+        )
 
     # ── Ollama ──────────────────────────────────────────────────────────
 
@@ -199,8 +388,12 @@ class LLMClient:
             "tools": tools,
         }
         try:
-            r = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=120)
+            r = requests.post(
+                f"{self.base_url}/api/chat", json=payload,
+                timeout=self.request_timeout,
+            )
             if r.status_code != 200:
+                self._classify_http_error(r.status_code, r.text)
                 return None
             data = r.json()
             msg = data.get("message", {})
@@ -224,7 +417,17 @@ class LLMClient:
                 "finish_reason": "stop",
                 "raw": data,
             }
-        except Exception:
+        except requests.exceptions.Timeout:
+            raise LLMTimeoutError(
+                f"Ollama request timed out after {self.request_timeout}s"
+            )
+        except requests.exceptions.ConnectionError:
+            raise RetryableError(
+                f"Ollama unreachable at {self.base_url}"
+            )
+        except (RetryableError, FatalError, LLMTimeoutError):
+            raise
+        except Exception as exc:
             return None
 
     def _ollama_react(self, system_prompt, messages, tools, temperature, max_tokens):
@@ -252,8 +455,12 @@ class LLMClient:
             "options": {"num_predict": max_tokens},
         }
         try:
-            r = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=120)
+            r = requests.post(
+                f"{self.base_url}/api/chat", json=payload,
+                timeout=self.request_timeout,
+            )
             if r.status_code != 200:
+                self._classify_http_error(r.status_code, r.text)
                 return {"role": "assistant", "content": None, "tool_calls": None,
                         "finish_reason": "error", "raw": r.text}
             data = r.json()
@@ -262,7 +469,6 @@ class LLMClient:
             # Parse ACTION blocks
             tool_calls = self._parse_react_actions(content)
             if tool_calls:
-                # Remove ACTION blocks from displayed content
                 clean_content = re.sub(
                     r'\n?ACTION:\s*\{[^}]+\}\s*\n?', '', content
                 ).strip()
@@ -280,9 +486,19 @@ class LLMClient:
                 "finish_reason": "stop",
                 "raw": data,
             }
-        except Exception as e:
+        except requests.exceptions.Timeout:
+            raise LLMTimeoutError(
+                f"Ollama ReAct request timed out after {self.request_timeout}s"
+            )
+        except requests.exceptions.ConnectionError:
+            raise RetryableError(
+                f"Ollama unreachable at {self.base_url}"
+            )
+        except (RetryableError, FatalError, LLMTimeoutError):
+            raise
+        except Exception as exc:
             return {"role": "assistant", "content": None, "tool_calls": None,
-                    "finish_reason": "error", "raw": str(e)}
+                    "finish_reason": "error", "raw": str(exc)}
 
     # ── OpenAI ──────────────────────────────────────────────────────────
 
@@ -308,29 +524,50 @@ class LLMClient:
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=120,
+                timeout=self.request_timeout,
             )
             if r.status_code != 200:
+                self._classify_http_error(r.status_code, r.text)
                 return {"role": "assistant", "content": None, "tool_calls": None,
                         "finish_reason": "error", "raw": r.text}
             data = r.json()
             choice = data["choices"][0]
             msg = choice["message"]
             tool_calls_raw = msg.get("tool_calls", [])
+            tool_calls = None
+            if tool_calls_raw:
+                tool_calls = []
+                for tc in tool_calls_raw:
+                    args = tc["function"].get("arguments", "{}")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {}
+                    tool_calls.append({
+                        "name": tc["function"]["name"],
+                        "arguments": args,
+                    })
             return {
                 "role": "assistant",
                 "content": msg.get("content", ""),
-                "tool_calls": [
-                    {"name": tc["function"]["name"],
-                     "arguments": json.loads(tc["function"]["arguments"])}
-                    for tc in tool_calls_raw
-                ] if tool_calls_raw else None,
+                "tool_calls": tool_calls,
                 "finish_reason": "tool_calls" if tool_calls_raw else "stop",
                 "raw": data,
             }
-        except Exception as e:
+        except requests.exceptions.Timeout:
+            raise LLMTimeoutError(
+                f"OpenAI/DeepSeek request timed out after {self.request_timeout}s"
+            )
+        except requests.exceptions.ConnectionError:
+            raise RetryableError(
+                f"OpenAI/DeepSeek unreachable at {self.base_url}"
+            )
+        except (RetryableError, FatalError, LLMTimeoutError):
+            raise
+        except Exception as exc:
             return {"role": "assistant", "content": None, "tool_calls": None,
-                    "finish_reason": "error", "raw": str(e)}
+                    "finish_reason": "error", "raw": str(exc)}
 
     # ── Anthropic ───────────────────────────────────────────────────────
 
@@ -390,9 +627,10 @@ class LLMClient:
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=120,
+                timeout=self.request_timeout,
             )
             if r.status_code != 200:
+                self._classify_http_error(r.status_code, r.text)
                 return {"role": "assistant", "content": None, "tool_calls": None,
                         "finish_reason": "error", "raw": r.text}
             data = r.json()
@@ -415,9 +653,19 @@ class LLMClient:
                 "finish_reason": "tool_calls" if tool_calls else "stop",
                 "raw": data,
             }
-        except Exception as e:
+        except requests.exceptions.Timeout:
+            raise LLMTimeoutError(
+                f"Anthropic request timed out after {self.request_timeout}s"
+            )
+        except requests.exceptions.ConnectionError:
+            raise RetryableError(
+                f"Anthropic API unreachable at {self.base_url}"
+            )
+        except (RetryableError, FatalError, LLMTimeoutError):
+            raise
+        except Exception as exc:
             return {"role": "assistant", "content": None, "tool_calls": None,
-                    "finish_reason": "error", "raw": str(e)}
+                    "finish_reason": "error", "raw": str(exc)}
 
     # ── helpers ─────────────────────────────────────────────────────────
 

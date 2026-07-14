@@ -23,3 +23,6 @@ public-labs/
 
 # Continue dev config
 .continue/
+
+# Claude Code config
+CLAUDE.md
