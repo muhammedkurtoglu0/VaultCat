@@ -526,7 +526,7 @@ def main():
         print("[*] TLS certificate verification disabled")
 
     if args.command == "chat":
-        llm_provider = args.provider if args.provider in ("ollama", "openai", "anthropic") else None
+        llm_provider = args.provider if args.provider in ("ollama", "openai", "anthropic", "deepseek") else None
         start_chat_session(
             vault_addr=args.target or args.addr,
             token=args.token,

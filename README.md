@@ -243,6 +243,69 @@ python main.py --target http://localhost:8200 --token YOUR_TOKEN --active-auto -
 
 The active execution engine blocks modules above the selected risk level, requires explicit confirmation for state-changing modules, and converts module failures into structured execution results.
 
+## AI-Powered Pentesting
+
+The `ai_core/` module provides an LLM-driven agent that plans and executes pentest operations autonomously. It supports multiple providers and exposes an MCP server for tool integration.
+
+### Chat Agent
+
+```bash
+python main.py chat
+python main.py chat --provider deepseek --model deepseek-chat
+python main.py chat --provider openai --model gpt-4o-mini
+python main.py chat --provider anthropic --model claude-sonnet-5
+```
+
+The agent understands natural language (Turkish or English), decides which tool to use based on findings, adapts when tools succeed or fail, and reports findings in table format. It follows a 4-phase methodology: Recon → Audit → Exploit → Report.
+
+Supported providers:
+
+| Provider | Env Var | Default Model |
+|----------|---------|---------------|
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Ollama (local) | `OLLAMA_HOST` | (auto-detect) |
+
+Provider auto-detection order: Anthropic → DeepSeek → OpenAI → Ollama. If no API key is set, Ollama is the default fallback.
+
+### MCP Server
+
+```bash
+python main.py mcp
+```
+
+Starts a FastMCP server on `127.0.0.1:8000` exposing 23 MCP tools: recon scanners, audit scanners, active execution modules, session management, and findings/risk-score reporting. Compatible with any MCP client (Claude Desktop, VS Code, etc.).
+
+### LLM Engine
+
+The `LLMClient` provides a unified `chat()` interface across all providers with:
+- Native tool/function calling (OpenAI/Anthropic/DeepSeek), ReAct fallback (Ollama)
+- Retry with exponential backoff on transient errors (429, 5xx)
+- Circuit breaker — fast-fails after 3 consecutive failures, auto-recovers after 30s
+- Error classification: `RetryableError` (transient), `FatalError` (auth/client), `LLMTimeoutError`
+
+### AI Planning
+
+`ai_core/planning/` provides provider-agnostic attack plan generation. The planner analyzes token capabilities, enumeration data, and findings, then produces a typed `PentestPlan` with prioritized steps, conditional execution (`on_failure`, `max_retries`, `alternative_tool`), and dynamic policy inference from observed data.
+
+```python
+from ai_core.planning import create_planner
+
+planner = create_planner("deepseek")
+plan = planner.create_plan(
+    vault_addr="http://localhost:8200",
+    token_hint="hvs.abc123...",
+    enum_data={"capabilities": ..., "findings": ...},
+)
+# plan.steps  → list of PlannedStep (tool, reason, phase, risk, params)
+# plan.token_assessment → TokenAssessment (power_level, escalation_possible)
+```
+
+### Session Management
+
+`ai_core/session.py` provides `PentestSession` (targets, token history, active plan, phase tracking) and thread-safe `SessionManager` with TTL-based cleanup and export/import. The MCP server uses it to isolate state between concurrent sessions.
+
 The hijack scanner currently looks for:
 
 - Vault tokens and response-wrapped tokens: `hvs.*`, `hvc.*`, wrapped-token examples, `VAULT_TOKEN`, `vault_token`
