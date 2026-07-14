@@ -2,12 +2,7 @@ import argparse
 
 from active_execution.context import ExecutionContext
 from active_execution.engine import ActiveExecutionEngine
-from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
-from active_execution.modules.secret_exfiltration import SecretExfiltrationModule
-from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
-from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
 from active_execution.registry import (
-    ActiveExecutionRegistry,
     RiskLevel,
     risk_level_allowed,
 )
@@ -53,49 +48,7 @@ from reconnaissance.vault_recon import scan_vault_recon
 
 def build_active_execution_registry():
     from active_execution.modules import get_default_registry
-
     return get_default_registry()
-
-    registry = ActiveExecutionRegistry()
-
-    # Mevcut modüller
-    registry.register(PrivilegeEscalationModule())
-    registry.register(SecretExfiltrationModule())
-    registry.register(DatabaseCredentialHarvestModule())
-    registry.register(CloudKeyExfiltrationModule())
-
-    # Yeni modüller
-    from active_execution.modules.token_exploit import TokenExploitModule
-    from active_execution.modules.policy_exploit import PolicyExploitModule
-    from active_execution.modules.audit_backdoor import AuditBackdoorModule
-    from active_execution.modules.cve_scanner import CVEScannerModule
-    from active_execution.modules.database_pivot import DatabasePivotModule
-    from active_execution.modules.cloud_pivot import CloudPivotModule
-    from active_execution.modules.persistence import PersistenceModule
-    from active_execution.modules.raft_storage_exploit import RaftStorageExploitModule
-    from active_execution.modules.unseal_key_exfiltration import UnsealKeyExfiltrationModule
-    from active_execution.modules.database_exploit import DatabaseExploitModule
-    from active_execution.modules.cloud_exploit import CloudExploitModule
-    from active_execution.modules.multi_persistence import MultiPersistenceModule
-    from active_execution.modules.payload_module import PayloadModule
-    from active_execution.modules.unauthenticated_attack import UnauthenticatedAttackModule
-
-    registry.register(TokenExploitModule())
-    registry.register(PolicyExploitModule())
-    registry.register(AuditBackdoorModule())
-    registry.register(CVEScannerModule())
-    registry.register(DatabasePivotModule())
-    registry.register(CloudPivotModule())
-    registry.register(PersistenceModule())
-    registry.register(RaftStorageExploitModule())
-    registry.register(UnsealKeyExfiltrationModule())
-    registry.register(DatabaseExploitModule())
-    registry.register(CloudExploitModule())
-    registry.register(MultiPersistenceModule())
-    registry.register(PayloadModule())
-    registry.register(UnauthenticatedAttackModule())
-
-    return registry
 
 
 def run_unauthenticated_recon(target):
