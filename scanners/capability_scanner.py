@@ -131,6 +131,9 @@ def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, time
             target=vault_addr,
         )
 
+    # Auto-probe: try to read secrets from sudo+read paths
+    _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, get_verify())
+
     return results
 
 
@@ -313,6 +316,159 @@ def _report_capability_findings(results, vault_addr):
                 module=MODULE,
                 target=vault_addr,
             )
+
+
+# -----------------------------------------------------------------------
+# Auto-probe: read secrets from sudo+read paths
+# -----------------------------------------------------------------------
+
+# Wordlist of common secret names to probe under privileged paths
+_SECRET_NAMES = [
+    "config",
+    "credentials",
+    "creds",
+    "token",
+    "api-key",
+    "api_key",
+    "apikey",
+    "master-key",
+    "master_key",
+    "secret",
+    "secrets",
+    "password",
+    "passwd",
+    "db-creds",
+    "db_creds",
+    "db-config",
+    "db_config",
+    "database",
+    "aws-keys",
+    "aws_keys",
+    "aws-config",
+    "aws_config",
+    "ssh-key",
+    "ssh_key",
+    "cert",
+    "certificate",
+    "private-key",
+    "private_key",
+    "vault-config",
+    "vault_config",
+    "admin",
+    "root",
+    "backup",
+    "backup-config",
+    "backup_config",
+]
+
+
+def _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, verify):
+    """For every path with sudo+read, probe common secret names and read data."""
+    # Find paths with both 'sudo' and 'read'
+    sudo_read_paths = []
+    for r in results:
+        caps = set(r.get("capabilities", []))
+        if "sudo" in caps and "read" in caps and "*" in r.get("path", ""):
+            sudo_read_paths.append(r["path"])
+
+    if not sudo_read_paths:
+        return
+
+    print(f"\n[*] Probing {len(sudo_read_paths)} privileged wildcard path(s) for secrets...")
+    vault_addr = vault_addr.rstrip("/")
+
+    for wildcard_path in sudo_read_paths:
+        base = _wildcard_base_path(wildcard_path)
+        if not base:
+            continue
+
+        # Convert policy path to data path: secret-v2/data/admin/* -> secret-v2/data/admin
+        data_base = _to_data_path(base)
+
+        found_any = False
+        for name in _SECRET_NAMES:
+            secret_path = f"{data_base}/{name}"
+            url = f"{vault_addr}/v1/{secret_path}"
+            try:
+                resp = vault_request(
+                    "GET", url,
+                    headers={"X-Vault-Token": token},
+                    timeout=timeout, verify=verify,
+                )
+            except Exception:
+                continue
+
+            if resp.status_code != 200:
+                continue
+
+            try:
+                body = resp.json()
+            except ValueError:
+                continue
+
+            secret_data = body.get("data", {}).get("data", {})
+            if not secret_data:
+                continue
+
+            found_any = True
+            keys_found = list(secret_data.keys())
+            print(f"[+] SECRET FOUND: {secret_path} -> {keys_found}")
+
+            # Mask long values in evidence
+            masked = {}
+            for k, v in secret_data.items():
+                sv = str(v)
+                masked[k] = sv[:8] + "..." if len(sv) > 12 else sv
+
+            add_finding(
+                severity="CRITICAL",
+                title=f"Secret exfiltrated from privileged path: {secret_path}",
+                description=(
+                    f"Token with sudo+read on '{wildcard_path}' was used to "
+                    f"read secret at '{secret_path}'. Keys found: {keys_found}"
+                ),
+                recommendation=(
+                    "Remove unnecessary sudo capability from this token. "
+                    "Restrict read access to the minimum required paths."
+                ),
+                evidence={
+                    "wildcard_path": wildcard_path,
+                    "secret_path": secret_path,
+                    "keys": keys_found,
+                    "preview": masked,
+                },
+                module=MODULE,
+                target=vault_addr,
+            )
+
+        if not found_any:
+            print(f"    {wildcard_path} -> no secrets found under {data_base}")
+
+
+def _wildcard_base_path(wildcard_path):
+    """Strip the wildcard portion: 'secret-v2/data/admin/*' -> 'secret-v2/data/admin'"""
+    idx = wildcard_path.find("*")
+    if idx == -1:
+        return wildcard_path.rstrip("/")
+    return wildcard_path[:idx].rstrip("/")
+
+
+def _to_data_path(base):
+    """Ensure the path uses the data/ prefix for KV v2 reads.
+
+    'secret-v2/admin' -> 'secret-v2/data/admin'
+    'secret-v2/data/admin' -> 'secret-v2/data/admin'  (already correct)
+    """
+    parts = base.strip("/").split("/")
+    # If it's already a data path, return as-is
+    if "data" in parts:
+        return base.strip("/")
+    # Insert 'data' after mount name: secret-v2/admin -> secret-v2/data/admin
+    if len(parts) >= 2:
+        mount = parts[0]
+        rest = "/".join(parts[1:])
+        return f"{mount}/data/{rest}"
+    return base.strip("/")
 
 
 # -----------------------------------------------------------------------
