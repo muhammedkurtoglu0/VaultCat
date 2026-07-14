@@ -185,11 +185,11 @@ class LLMClient:
         if self.provider == "ollama":
             return _env("OLLAMA_HOST", "http://localhost:11434")
         if self.provider == "openai":
-            return "https://api.openai.com/v1"
+            return _env("OPENAI_BASE_URL", "https://api.openai.com/v1")
         if self.provider == "anthropic":
-            return "https://api.anthropic.com"
+            return _env("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
         if self.provider == "deepseek":
-            return "https://api.deepseek.com/v1"
+            return _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
         return "http://localhost:11434"
 
     def _default_model(self) -> str:

@@ -168,6 +168,8 @@ class PentestAgent:
 
     MAX_TURNS = 50  # safety limit per conversational session
     MAX_PLAN_TOOL_CALLS = 15  # max tool calls per plan execution
+    MAX_CONTEXT_MESSAGES = 24  # prune when message count exceeds this
+    PRUNE_KEEP_RECENT = 8     # keep the most recent N messages during pruning
 
     def __init__(
         self,
@@ -243,6 +245,12 @@ class PentestAgent:
 
         while self._turn_count < self.MAX_TURNS:
             self._turn_count += 1
+
+            # Prune old tool results before context window overflows
+            before = len(messages)
+            messages = self._messages = self._prune_context(messages)
+            if len(messages) < before:
+                yield {"type": "status", "message": f"Context pruned: {before} → {len(messages)} messages"}
 
             # Get LLM decision (offload sync HTTP to thread)
             llm_tools = [t.to_openai_function() for t in self.tools]
@@ -536,6 +544,79 @@ class PentestAgent:
         )
         lowered = text.lower()
         return any(m in lowered for m in markers) and len(text) > 100
+
+    # ── context pruning ──────────────────────────────────────────────────
+
+    def _prune_context(self, messages: list[dict]) -> list[dict]:
+        """Trim old tool results when the message list grows too large.
+
+        Strategy: when the message count exceeds ``MAX_CONTEXT_MESSAGES``,
+        locate the oldest *tool-call block* (assistant + tool + user follow-up),
+        replace it with a short summary injected into the preceding user
+        message, and remove the block.  The ``PRUNE_KEEP_RECENT`` most recent
+        messages are always left untouched.
+        """
+        if len(messages) <= self.MAX_CONTEXT_MESSAGES:
+            return messages
+
+        # Find the boundary: everything before this index is eligible for pruning
+        prune_boundary = max(0, len(messages) - self.PRUNE_KEEP_RECENT)
+
+        # Locate the oldest tool-call block within the prune-eligible range.
+        # A block is: assistant(with tool_calls) → tool → user(follow-up)
+        block_start: int | None = None
+        for i in range(prune_boundary - 2):
+            if (
+                messages[i].get("role") == "assistant"
+                and messages[i].get("tool_calls")
+                and i + 1 < len(messages)
+                and messages[i + 1].get("role") == "tool"
+            ):
+                block_start = i
+                break
+
+        if block_start is None:
+            return messages  # nothing to prune safely
+
+        # Determine block end: after the tool result, there is often a user
+        # follow-up message; include it if present.
+        block_end = block_start + 2  # assistant + tool
+        if block_end < len(messages) and messages[block_end].get("role") == "user":
+            block_end += 1
+
+        # Build a one-line summary from the tool call block
+        tool_name = "unknown"
+        for tc in messages[block_start].get("tool_calls", []):
+            fn = tc.get("function", {}) if "function" in tc else tc
+            tool_name = fn.get("name", tool_name)
+        tool_content = messages[block_start + 1].get("content", "")[:150]
+        summary = (
+            f"[CONTEXT PRUNE] Earlier tool '{tool_name}' result summarized: "
+            f"{tool_content[:120]}..."
+        )
+
+        # Inject summary into the message just before the block
+        prev_msg = messages[block_start - 1] if block_start > 0 else None
+        if prev_msg and prev_msg.get("role") == "user":
+            prev_msg["content"] = (
+                prev_msg.get("content", "")[:500] + "\n\n" + summary
+            )
+        else:
+            # No good anchor — just insert a system note
+            messages.insert(block_start, {
+                "role": "user",
+                "content": f"SYSTEM NOTE: {summary}",
+            })
+            block_end += 1  # shift because we inserted
+
+        # Remove the pruned block
+        del messages[block_start : block_end]
+
+        # Recurse if still over limit (shouldn't normally happen)
+        if len(messages) > self.MAX_CONTEXT_MESSAGES:
+            return self._prune_context(messages)
+
+        return messages
 
     # ── multi-step plan execution ────────────────────────────────────────
 
