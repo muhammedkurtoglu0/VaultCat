@@ -13,7 +13,7 @@ from core.tls_config import get_verify, vault_request
 
 MODULE = "capability_scanner"
 
-DANGEROUS_CAPABILITIES = {"sudo", "create", "update", "delete", "patch"}
+DANGEROUS_CAPABILITIES = {"sudo", "create", "update", "delete", "patch", "root"}
 WRITE_CAPABILITIES = {"create", "update", "delete", "patch"}
 CRITICAL_PATH_PREFIXES = (
     "sys/",
@@ -294,7 +294,17 @@ def _report_capability_findings(results, vault_addr):
                 target=vault_addr,
             )
 
-        if "sudo" in dangerous:
+        if "root" in dangerous:
+            add_finding(
+                severity="CRITICAL",
+                title="Token has root capability on Vault path",
+                description="The supplied token has root-equivalent access on the audited Vault path. ROOT MEANS FULL CONTROL.",
+                recommendation="This is a root token or has root policy. Never expose root tokens. Rotate immediately if compromised.",
+                evidence=evidence,
+                module=MODULE,
+                target=vault_addr,
+            )
+        elif "sudo" in dangerous:
             add_finding(
                 severity="CRITICAL",
                 title="Token has sudo capability on Vault path",
@@ -364,11 +374,11 @@ _SECRET_NAMES = [
 
 def _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, verify):
     """For every path with sudo+read, probe common secret names and read data."""
-    # Find paths with both 'sudo' and 'read'
+    # Find paths with both 'sudo'/'root' and 'read'
     sudo_read_paths = []
     for r in results:
         caps = set(r.get("capabilities", []))
-        if "sudo" in caps and "read" in caps and "*" in r.get("path", ""):
+        if ("sudo" in caps or "root" in caps) and "read" in caps and "*" in r.get("path", ""):
             sudo_read_paths.append(r["path"])
 
     if not sudo_read_paths:

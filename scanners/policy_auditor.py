@@ -159,6 +159,9 @@ def _extract_policy_text(response):
 
     data = response.get("data") if isinstance(response.get("data"), dict) else response
     policy_text = data.get("policy") or data.get("rules")
-    if isinstance(policy_text, str) and policy_text.strip():
-        return policy_text
+    if isinstance(policy_text, str):
+        if policy_text.strip():
+            return policy_text
+        # Empty policy content = built-in special policy (root/default grants all)
+        return "# Built-in policy — no explicit HCL rules (grants full access)"
     return None

@@ -275,6 +275,19 @@ def clear_findings():
     _default_report.clear()
 
 
+def clear_module_findings(*module_names: str):
+    """Discard findings from specific modules only.
+
+    Use this in MCP tool handlers so re-running the same tool replaces its
+    own findings without wiping findings from other tools — enabling
+    cross-tool finding accumulation for the AI agent.
+    """
+    _default_report.findings[:] = [
+        f for f in _default_report.findings
+        if f.get("module") not in module_names
+    ]
+
+
 def get_default_report() -> Report:
     """Return the module-level shared :class:`Report` instance."""
     return _default_report

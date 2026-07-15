@@ -200,17 +200,29 @@ def scan_kv_tree(
         return None
 
     try:
-        tree = asyncio.run(enumerate_kv_tree(
-            vault_addr,
-            token,
-            start_path,
-            kv_version=kv_version,
-            namespace=namespace,
-            max_depth=max_depth,
-            concurrency=concurrency,
-            read_leaves=read_leaves,
-            blind_brute=blind_brute,
-        ))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            tree = asyncio.run(enumerate_kv_tree(
+                vault_addr, token, start_path,
+                kv_version=kv_version, namespace=namespace,
+                max_depth=max_depth, concurrency=concurrency,
+                read_leaves=read_leaves, blind_brute=blind_brute,
+            ))
+        else:
+            # Already inside an event loop (e.g. MCP server) — run in thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    enumerate_kv_tree(
+                        vault_addr, token, start_path,
+                        kv_version=kv_version, namespace=namespace,
+                        max_depth=max_depth, concurrency=concurrency,
+                        read_leaves=read_leaves, blind_brute=blind_brute,
+                    )
+                )
+                tree = future.result(timeout=120)
     except Exception as error:
         add_finding(
             "LOW",
