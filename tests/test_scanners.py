@@ -117,7 +117,9 @@ def test_recon_context_fetches_health_once(monkeypatch):
 
 
 def test_placeholder_values_are_context_not_material():
-    assert _is_material_value("vault_secret_id", "fake-secret-id-456")
+    assert not _is_material_value("vault_secret_id", "fake-secret-id-456")
+    assert not _is_material_value("vault_role_id", "fake-role-id-123")
+    assert not _is_material_value("vault_token_value", "hvs.fake-token-example")
     assert not _is_material_value("vault_secret_id", "${VAULT_SECRET_ID}")
     assert not _is_material_value("vault_token_assignment", "{{ vault_token }}")
     assert mask_value("hvs.example-token-value") == "hvs.example-token-value"
@@ -461,9 +463,9 @@ def test_version_cve_matcher_flags_cve_2023_6337_range():
 
 
 def test_version_cve_matcher_does_not_report_fixed_version():
-    # v1.19.2 is the fixed version for CVE-2025-2065 — nothing should match
+    # v2.0.3 is the latest fixed version — no CVE should match
     matches = version_cve_matcher.match_vault_version_cves(
-        "1.19.2",
+        "2.0.3",
         target="http://vault.test",
         use_nvd=False,
     )

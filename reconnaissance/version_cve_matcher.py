@@ -138,6 +138,94 @@ KNOWN_VAULT_CVES = [
             {"introduced": "1.18.0", "fixed": "1.18.5"},
         ],
     },
+    {
+        "cve_id": "CVE-2026-5807",
+        "severity": "HIGH",
+        "summary": (
+            "HashiCorp Vault vulnerable to denial-of-service via unauthenticated "
+            "root token generation and rekey operations. An attacker can lock the "
+            "single in-progress operation slot, preventing legitimate administrative workflows."
+        ),
+        "fixed_versions": "2.0.0",
+        "references": [
+            "https://nvd.nist.gov/vuln/detail/CVE-2026-5807",
+        ],
+        "affected_ranges": [
+            {"introduced": None, "fixed": "2.0.0"},
+        ],
+    },
+    {
+        "cve_id": "CVE-2026-4525",
+        "severity": "HIGH",
+        "summary": (
+            "HashiCorp Vault token leaked to auth plugins when the Authorization "
+            "header is configured to pass through. Vault mistakenly forwards the "
+            "Vault token to the auth plugin backend."
+        ),
+        "fixed_versions": "2.0.0, 1.21.5, 1.20.10, and 1.19.16",
+        "references": [
+            "https://nvd.nist.gov/vuln/detail/CVE-2026-4525",
+        ],
+        "affected_ranges": [
+            {"introduced": None, "fixed": "1.19.16"},
+            {"introduced": "1.20.0", "fixed": "1.20.10"},
+            {"introduced": "1.21.0", "fixed": "1.21.5"},
+        ],
+    },
+    {
+        "cve_id": "CVE-2026-3605",
+        "severity": "HIGH",
+        "summary": (
+            "HashiCorp Vault KVv2 metadata and secret deletion policy bypass. "
+            "Authenticated users with a glob-based policy can delete secrets they "
+            "are not authorized to read or write, leading to denial-of-service."
+        ),
+        "fixed_versions": "2.0.0, 1.21.5, 1.20.10, and 1.19.16",
+        "references": [
+            "https://nvd.nist.gov/vuln/detail/CVE-2026-3605",
+        ],
+        "affected_ranges": [
+            {"introduced": None, "fixed": "1.19.16"},
+            {"introduced": "1.20.0", "fixed": "1.20.10"},
+            {"introduced": "1.21.0", "fixed": "1.21.5"},
+        ],
+    },
+    {
+        "cve_id": "CVE-2026-5052",
+        "severity": "MEDIUM",
+        "summary": (
+            "HashiCorp Vault PKI engine ACME validation does not reject local "
+            "targets for http-01 and tls-alpn-01 challenges, potentially leading "
+            "to information disclosure."
+        ),
+        "fixed_versions": "2.0.0, 1.21.5, 1.20.10, and 1.19.16",
+        "references": [
+            "https://nvd.nist.gov/vuln/detail/CVE-2026-5052",
+        ],
+        "affected_ranges": [
+            {"introduced": None, "fixed": "1.19.16"},
+            {"introduced": "1.20.0", "fixed": "1.20.10"},
+            {"introduced": "1.21.0", "fixed": "1.21.5"},
+        ],
+    },
+    {
+        "cve_id": "CVE-2026-5051",
+        "severity": "MEDIUM",
+        "summary": (
+            "HashiCorp Vault audit log plugin directory guard bypass via legacy "
+            "path option, potentially allowing unauthorized access to audit configuration."
+        ),
+        "fixed_versions": "2.0.1, 1.21.6, 1.20.11, and 1.19.17",
+        "references": [
+            "https://nvd.nist.gov/vuln/detail/CVE-2026-5051",
+        ],
+        "affected_ranges": [
+            {"introduced": None, "fixed": "1.19.17"},
+            {"introduced": "1.20.0", "fixed": "1.20.11"},
+            {"introduced": "1.21.0", "fixed": "1.21.6"},
+            {"introduced": "2.0.0", "fixed": "2.0.1"},
+        ],
+    },
 ]
 
 
