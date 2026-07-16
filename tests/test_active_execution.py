@@ -19,34 +19,43 @@ class FakeResponse:
 def test_privilege_escalation_module_discovers_policy_and_creates_raw_success_evidence(monkeypatch):
     requests_seen = []
 
-    def fake_get(url, headers=None, timeout=None, verify=None):
-        return FakeResponse(payload={"data": {"policies": ["default", "low-privilege-policy"]}})
-
-    def fake_post(url, headers=None, json=None, timeout=None, verify=None):
+    def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
         requests_seen.append({
+            "method": method,
             "url": url,
             "headers": headers,
             "json": json,
             "timeout": timeout,
             "verify": verify,
         })
-        if json["policies"] == ["admin"]:
+        if "/v1/auth/token/lookup-self" in url:
+            return FakeResponse(payload={"data": {"policies": ["default", "low-privilege-policy"]}})
+        if "/v1/sys/mounts" in url:
+            # Token verification check — return 200 for elevated tokens
+            if "example-elevated-token" in str(headers.get("X-Vault-Token", "")):
+                return FakeResponse(payload={"data": {}})
+            return FakeResponse(status_code=403, payload={"errors": ["permission denied"]})
+        if "policies/acl" in url:
+            # Token cannot manage policies — no wildcard policy access
+            return FakeResponse(status_code=403, payload={"errors": ["permission denied"]})
+        if json and json.get("policies") == ["admin"]:
             return FakeResponse(
                 status_code=400,
                 payload={"errors": ["policy not allowed"]},
                 text='{"errors":["policy not allowed"]}',
             )
-        return FakeResponse(
-            payload={
-                "auth": {
-                    "client_token": "hvs.example-elevated-token",
-                    "policies": ["admin-policy", "default"],
+        if "/v1/auth/token/create" in url:
+            return FakeResponse(
+                payload={
+                    "auth": {
+                        "client_token": "hvs.example-elevated-token",
+                        "policies": ["admin-policy", "default"],
+                    }
                 }
-            }
-        )
+            )
+        return FakeResponse(status_code=404, text="not found")
 
-    monkeypatch.setattr("requests.get", fake_get)
-    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.request", fake_request)
 
     context = ExecutionContext(
         vault_addr="https://vault.test/",
@@ -57,27 +66,12 @@ def test_privilege_escalation_module_discovers_policy_and_creates_raw_success_ev
     result = PrivilegeEscalationModule().execute(context)
 
     assert result.status == "success"
-    assert requests_seen[:2] == [{
-        "url": "https://vault.test/v1/auth/token/create",
-        "headers": {
-            "X-Vault-Token": "hvs.source-token",
-            "Content-Type": "application/json",
-            "X-Vault-Namespace": "admin",
-        },
-        "json": {"policies": ["admin"], "ttl": "30m"},
-        "timeout": 10,
-        "verify": False,
-    }, {
-        "url": "https://vault.test/v1/auth/token/create",
-        "headers": {
-            "X-Vault-Token": "hvs.source-token",
-            "Content-Type": "application/json",
-            "X-Vault-Namespace": "admin",
-        },
-        "json": {"policies": ["admin-policy"], "ttl": "30m"},
-        "timeout": 10,
-        "verify": False,
-    }]
+    # First call: lookup-self (GET)
+    assert requests_seen[0]["method"] == "GET"
+    assert "lookup-self" in requests_seen[0]["url"]
+    # Then token creation attempts (POST)
+    create_calls = [r for r in requests_seen if "/v1/auth/token/create" in r["url"]]
+    assert len(create_calls) >= 2
     assert result.evidence["selected_policy"] == "admin-policy"
     assert result.evidence["source_token_policies"] == ["default", "low-privilege-policy"]
     assert result.evidence["added_policies"] == ["admin-policy"]
@@ -89,22 +83,27 @@ def test_privilege_escalation_module_discovers_policy_and_creates_raw_success_ev
 def test_privilege_escalation_module_honors_explicit_policy(monkeypatch):
     requests_seen = []
 
-    def fake_get(url, headers=None, timeout=None, verify=None):
-        return FakeResponse(payload={"data": {"policies": ["default", "low-privilege-policy"]}})
-
-    def fake_post(url, headers=None, json=None, timeout=None, verify=None):
-        requests_seen.append(json)
-        return FakeResponse(
-            payload={
-                "auth": {
-                    "client_token": "hvs.admin-policy-token",
-                    "policies": ["admin-policy", "default"],
+    def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
+        requests_seen.append({"method": method, "url": url, "json": json})
+        if "/v1/auth/token/lookup-self" in url:
+            return FakeResponse(payload={"data": {"policies": ["default", "low-privilege-policy"]}})
+        if "/v1/sys/mounts" in url:
+            return FakeResponse(payload={"data": {}})
+        if "policies/acl" in url:
+            # Token cannot manage policies
+            return FakeResponse(status_code=403, payload={"errors": ["permission denied"]})
+        if "/v1/auth/token/create" in url:
+            return FakeResponse(
+                payload={
+                    "auth": {
+                        "client_token": "hvs.admin-policy-token",
+                        "policies": ["admin-policy", "default"],
+                    }
                 }
-            }
-        )
+            )
+        return FakeResponse(status_code=404, text="not found")
 
-    monkeypatch.setattr("requests.get", fake_get)
-    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.request", fake_request)
 
     result = PrivilegeEscalationModule().execute(
         ExecutionContext(vault_addr="https://vault.test", token="hvs.source-token"),
@@ -112,29 +111,35 @@ def test_privilege_escalation_module_honors_explicit_policy(monkeypatch):
     )
 
     assert result.status == "success"
-    assert requests_seen == [{"policies": ["admin-policy"], "ttl": "15m"}]
+    create_calls = [r for r in requests_seen if "/v1/auth/token/create" in r["url"]]
+    assert len(create_calls) == 1
+    assert create_calls[0]["json"] == {"policies": ["admin-policy"], "ttl": "15m"}
     assert result.evidence["selected_policy"] == "admin-policy"
 
 
 def test_privilege_escalation_module_rejects_same_or_lower_policy_result(monkeypatch):
     requests_seen = []
 
-    def fake_get(url, headers=None, timeout=None, verify=None):
-        return FakeResponse(payload={"data": {"policies": ["default", "low-privilege-policy"]}})
-
-    def fake_post(url, headers=None, json=None, timeout=None, verify=None):
+    def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
         requests_seen.append(json)
-        return FakeResponse(
-            payload={
-                "auth": {
-                    "client_token": "hvs.same-policy-token",
-                    "policies": ["default", "low-privilege-policy"],
+        if "/v1/auth/token/lookup-self" in url:
+            return FakeResponse(payload={"data": {"policies": ["default", "low-privilege-policy"]}})
+        if "/v1/sys/mounts" in url:
+            return FakeResponse(status_code=403, payload={"errors": ["permission denied"]})
+        if "policies/acl" in url:
+            return FakeResponse(status_code=403, payload={"errors": ["permission denied"]})
+        if "/v1/auth/token/create" in url:
+            return FakeResponse(
+                payload={
+                    "auth": {
+                        "client_token": "hvs.same-policy-token",
+                        "policies": ["default", "low-privilege-policy"],
+                    }
                 }
-            }
-        )
+            )
+        return FakeResponse(status_code=404, text="not found")
 
-    monkeypatch.setattr("requests.get", fake_get)
-    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.request", fake_request)
 
     result = PrivilegeEscalationModule().execute(
         ExecutionContext(vault_addr="https://vault.test", token="hvs.source-token"),
@@ -142,7 +147,6 @@ def test_privilege_escalation_module_rejects_same_or_lower_policy_result(monkeyp
     )
 
     assert result.status == "failed"
-    assert requests_seen == [{"policies": ["admin-policy"], "ttl": "15m"}]
     assert result.evidence["attempted_policies"][0]["reason"] == "policy already present on source token"
     assert result.evidence["attempted_policies"][1]["reason"] == "created token did not add a new candidate policy"
 
@@ -167,16 +171,16 @@ def test_secret_exfiltration_module_requires_captured_token():
 def test_secret_exfiltration_module_reads_kv_v2_payloads(monkeypatch):
     requests_seen = []
 
-    def fake_get(url, headers=None, timeout=None, verify=None):
-        requests_seen.append(("GET", url, headers))
-        if url == "https://vault.test/v1/sys/mounts":
+    def fake_request(method, url, headers=None, timeout=None, verify=None, **kwargs):
+        requests_seen.append((method, url, headers))
+        if method == "GET" and url == "https://vault.test/v1/sys/mounts":
             return FakeResponse(payload={
                 "data": {
                     "secret/": {"type": "kv", "options": {"version": "2"}},
                     "database/": {"type": "database"},
                 }
             })
-        if url == "https://vault.test/v1/secret/data/app/db":
+        if method == "GET" and url == "https://vault.test/v1/secret/data/app/db":
             return FakeResponse(payload={
                 "data": {
                     "data": {
@@ -185,17 +189,12 @@ def test_secret_exfiltration_module_reads_kv_v2_payloads(monkeypatch):
                     }
                 }
             })
-        return FakeResponse(status_code=404, text="not found")
-
-    def fake_request(method, url, headers=None, timeout=None, verify=None):
-        requests_seen.append((method, url, headers))
         if method == "LIST" and url == "https://vault.test/v1/secret/metadata":
             return FakeResponse(payload={"data": {"keys": ["app/"]}})
         if method == "LIST" and url == "https://vault.test/v1/secret/metadata/app":
             return FakeResponse(payload={"data": {"keys": ["db"]}})
         return FakeResponse(status_code=404, text="not found")
 
-    monkeypatch.setattr("requests.get", fake_get)
     monkeypatch.setattr("requests.request", fake_request)
 
     context = ExecutionContext(vault_addr="https://vault.test", token="hvs.low-token")

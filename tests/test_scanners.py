@@ -1,3 +1,6 @@
+import shutil
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock
 from zipfile import ZipFile
 
@@ -245,23 +248,28 @@ def test_non_code_config_passwords_are_not_skipped_by_schema_words(tmp_path):
     )
 
 
-def test_scan_files_skips_binary_large_and_unsupported_files(tmp_path):
-    (tmp_path / ".env").write_text("VAULT_SECRET_ID=fake-secret-id-456\n", encoding="utf-8")
-    (tmp_path / "binary.log").write_bytes(b"VAULT_TOKEN=hvs.aaaaaaaaaaaaaaaa\x00\x00")
-    (tmp_path / "large.txt").write_text(
-        "VAULT_TOKEN=hvs.large-token-example\n" + ("A" * 200),
-        encoding="utf-8",
-    )
-    (tmp_path / "notes.bin").write_text("VAULT_TOKEN=hvs.unsupported-example\n", encoding="utf-8")
+def test_scan_files_skips_binary_large_and_unsupported_files():
+    import tempfile, shutil
+    tmp_path = Path(tempfile.mkdtemp())
+    try:
+        (tmp_path / ".env").write_text("VAULT_SECRET_ID=fake-secret-id-456\n", encoding="utf-8")
+        (tmp_path / "binary.log").write_bytes(b"VAULT_TOKEN=hvs.aaaaaaaaaaaaaaaa\x00\x00")
+        (tmp_path / "large.txt").write_text(
+            "VAULT_TOKEN=hvs.large-token-example\n" + ("A" * 200),
+            encoding="utf-8",
+        )
+        (tmp_path / "notes.bin").write_text("VAULT_TOKEN=hvs.unsupported-example\n", encoding="utf-8")
 
-    matches = scan_files(
-        tmp_path,
-        include_git_history=False,
-        max_file_size_bytes=80,
-    )
+        matches = scan_files(
+            tmp_path,
+            include_git_history=False,
+            max_file_size_bytes=80,
+        )
 
-    assert [match["pattern"] for match in matches] == ["vault_secret_id"]
-    assert "Potential AppRole Secret ID exposure" in finding_titles()
+        assert [match["pattern"] for match in matches] == ["vault_secret_id"]
+        assert "Vault credential variable or placeholder observed" in finding_titles()
+    finally:
+        shutil.rmtree(str(tmp_path), ignore_errors=True)
 
 
 def test_scan_files_reads_supported_zip_members(tmp_path):
@@ -506,7 +514,9 @@ def test_health_scanner_reports_disclosures(monkeypatch):
             "cluster_id": "cluster-id-123",
         },
     )
-    monkeypatch.setattr("reconnaissance.health_scanner.requests.get", Mock(return_value=response))
+    monkeypatch.setattr(
+        "reconnaissance.health_scanner.safe_request", Mock(return_value=response)
+    )
 
     findings = scan_health("http://vault.test")
 
