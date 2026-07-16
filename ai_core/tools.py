@@ -146,7 +146,12 @@ TOOL_RUN_CAPABILITY_AUDIT = ToolDef(
         "Audit a Vault token's capabilities using sys/capabilities-self. Shows exactly which "
         "Vault paths the token can read/write/delete/sudo. Checks CRITICAL paths: sys/*, "
         "auth/*, identity/*, database/config/*, database/roles/*. "
-        "USE THIS immediately after obtaining ANY token to understand its blast radius."
+        "USE THIS immediately after obtaining ANY token to understand its blast radius. "
+        "BEFORE responding, if the capability results show read access on sys/mounts, "
+        "sys/auth, or sys/policy, use run_raw_vault_request to read those endpoints "
+        "and discover mounts, auth methods, and policies. "
+        "ALSO use run_raw_vault_request to read sys/mounts and sys/auth regardless — "
+        "many tokens have read access that capability audit doesn't highlight."
     ),
     parameters=[
         ToolParam("vault_addr", "string",
@@ -185,7 +190,12 @@ TOOL_RUN_KV_ENUMERATION = ToolDef(
     description=(
         "Recursively enumerate ALL accessible KV secret paths and list their keys. "
         "Builds a complete tree of readable secrets using async parallel workers. "
-        "USE THIS after obtaining a token to map what secrets are accessible."
+        "USE THIS after obtaining a token to map what secrets are accessible. "
+        "IMPORTANT: The tree shows NESTED paths like secret/admin/creds — "
+        "use run_secret_exfiltration to dump the actual secret values. "
+        "NEVER brute-force flat paths like secret/data/admin — KV v2 uses "
+        "nested paths (secret/data/admin/creds), not flat ones. "
+        "If enumeration shows 'creds (readable)', the full path is already known."
     ),
     parameters=[
         ToolParam("vault_addr", "string",
@@ -258,6 +268,51 @@ TOOL_RUN_POLICY_AUDITOR = ToolDef(
     phase="audit",
 )
 
+TOOL_READ_SINGLE_POLICY = ToolDef(
+    name="read_single_policy",
+    description=(
+        "Read a single Vault ACL policy by name. "
+        "Use this when the token cannot LIST sys/policies/acl but might still "
+        "have READ access to individual policies via sys/policies/acl/*. "
+        "Try common names first: 'default', 'root', and the token's own policy "
+        "names from lookup-self. Returns the raw HCL policy text. Read-only."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string", "Target Vault URL", required=True),
+        ToolParam("token", "string", "Vault token", required=True),
+        ToolParam("policy_name", "string", "Policy name to read (e.g. 'default', 'root', 'wildcard-sudo-user')", required=True),
+        ToolParam("namespace", "string", "Vault namespace"),
+    ],
+    phase="audit",
+)
+
+TOOL_RUN_RAW_VAULT_REQUEST = ToolDef(
+    name="run_raw_vault_request",
+    description=(
+        "Ham Vault API istegi gonder (GET/POST/PUT/DELETE). "
+        "Token OPSIYONELDIR — AppRole/login gibi unauthenticated islemler icin "
+        "token='' gonder, X-Vault-Token header eklenmez. "
+        "Kullaniciya manuel curl komutu onermek yerine BU TOOL'U KULLAN. "
+        "path='auth/approle/login' gibi (basinda /v1/ olmadan). "
+        "body dict olarak POST/PUT icin gonderilir. "
+        "ORNEK AppRole: method='POST', path='auth/approle/login', "
+        "body={'role_id':'...','secret_id':'...'}, token=''. "
+        "ONEMLI: Eger ayni islemi yapan bir aktif modul varsa (seal, unseal, "
+        "database harvest gibi) MODULU KULLAN, bu tool'u degil. "
+        "Moduller bulgu kaydeder ve risk kontrolu yapar, raw request yapmaz. "
+        "Bu tool SADECE modul olmayan ozel islemler icindir."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string", "Target Vault URL", required=True),
+        ToolParam("method", "string", "HTTP method: GET/POST/PUT/DELETE", required=True),
+        ToolParam("path", "string", "Vault API path, e.g. 'auth/approle/login'", required=True),
+        ToolParam("token", "string", "Vault token (bos birakilirsa unauthenticated)"),
+        ToolParam("body", "object", "JSON body for POST/PUT requests"),
+        ToolParam("namespace", "string", "Vault namespace"),
+    ],
+    phase="exec",
+)
+
 # ── Active execution ─────────────────────────────────────────────────────
 
 TOOL_RUN_PRIVILEGE_ESCALATION = ToolDef(
@@ -288,9 +343,11 @@ TOOL_RUN_SECRET_EXFILTRATION = ToolDef(
     name="run_secret_exfiltration",
     description=(
         "EXFILTRATE secrets using a captured/elevated token. Enumerates and reads: "
-        "KV secrets, Transit encryption keys, PKI certificates, SSH roles. "
+        "KV secrets (with full values), Transit encryption keys, PKI certificates, SSH roles. "
         "Automatically uses the token from a previous privilege escalation step. "
-        "USE THIS after successful privilege escalation to dump all accessible secrets."
+        "USE THIS after KV enumeration to dump actual secret VALUES — "
+        "NEVER brute-force individual secret paths with run_raw_vault_request. "
+        "This tool handles nested KV paths correctly (secret/admin/creds, not secret/data/admin)."
     ),
     parameters=[
         ToolParam("vault_addr", "string",
@@ -311,7 +368,11 @@ TOOL_RUN_DATABASE_CREDENTIAL_HARVEST = ToolDef(
         "HARVEST database credentials from Vault Database Secrets Engine. "
         "Generates dynamic database users from ALL accessible roles. "
         "STATE-CHANGING: creates real database users. Automatically flags admin/dba roles. "
-        "USE THIS after privilege escalation to pivot from Vault to databases."
+        "USE THIS after privilege escalation to pivot from Vault to databases. "
+        "CRITICAL: Whenever sys/mounts shows a 'database/' mount, ALWAYS try this tool "
+        "even if the token seems low-privilege — many limited tokens have read access "
+        "to database/creds/* which allows harvesting admin database credentials. "
+        "NEVER skip this tool just because KV enumeration is empty."
     ),
     parameters=[
         ToolParam("vault_addr", "string",
@@ -431,6 +492,8 @@ ALL_TOOLS: list[ToolDef] = [
     TOOL_RUN_TTL_AUDIT,
     TOOL_RUN_AUTH_CONFIG_AUDIT,
     TOOL_RUN_POLICY_AUDITOR,
+    TOOL_READ_SINGLE_POLICY,
+    TOOL_RUN_RAW_VAULT_REQUEST,
     TOOL_RUN_PRIVILEGE_ESCALATION,
     TOOL_RUN_SECRET_EXFILTRATION,
     TOOL_RUN_DATABASE_CREDENTIAL_HARVEST,

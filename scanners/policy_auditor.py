@@ -13,6 +13,10 @@ def scan_policy_audit(vault_addr, token, namespace=None, timeout=TIMEOUT):
     Lists /v1/sys/policies/acl, reads each policy definition, and runs the
     shared HCL analyzer (policy_scanner.analyze_hcl_policy) against it. Does
     not modify any Vault state.
+
+    When the token lacks the ``list`` capability on the parent path it falls
+    back to individual reads using candidate names derived from the token's
+    own policies and well-known built-in names (default, root).
     """
     print("\n[+] Auditing readable Vault ACL policies (sys/policies/acl)...")
 
@@ -51,17 +55,37 @@ def scan_policy_audit(vault_addr, token, namespace=None, timeout=TIMEOUT):
             verify=get_verify(),
         )
         policy_names = _list_acl_policies(client)
-    except Exception as error:
-        add_finding(
-            "LOW",
-            "Policy listing failed",
-            "The token could not list ACL policies at sys/policies/acl.",
-            recommendation="Confirm the token has 'list' on sys/policies/acl and that Vault is reachable.",
-            evidence=f"error: {error}",
-            module=MODULE,
-            target=vault_addr,
-        )
-        return None
+        listing_worked = True
+    except Exception:
+        listing_worked = False
+        policy_names = []
+
+    # ── Fallback: when LIST fails, collect candidate names from the token
+    #    itself and a small set of well-known built-in policies, then try
+    #    reading each one individually.  Many tokens have "read" on
+    #    sys/policies/acl/* even when they lack "list" on the parent path.
+    fallback_used = False
+    if not listing_worked:
+        candidates = _build_fallback_candidates(client)
+        policy_names = []
+        for name in candidates:
+            policy_text = _read_acl_policy(client, name)
+            if policy_text is not None:
+                policy_names.append(name)
+        if policy_names:
+            fallback_used = True
+        else:
+            add_finding(
+                "LOW",
+                "Policy listing failed",
+                "The token could not list ACL policies at sys/policies/acl "
+                "and individual-policy fallback reads also returned nothing.",
+                recommendation="Confirm the token has 'list' or 'read' on sys/policies/acl.",
+                evidence="listing and fallback reads both failed",
+                module=MODULE,
+                target=vault_addr,
+            )
+            return None
 
     if not policy_names:
         add_finding(
@@ -103,13 +127,15 @@ def scan_policy_audit(vault_addr, token, namespace=None, timeout=TIMEOUT):
         recommendation="Review each policy finding against least-privilege expectations.",
         evidence=(
             f"policies_listed: {len(policy_names)}, "
-            f"analyzed: {len(audited)}, read_denied: {len(denied)}"
+            f"analyzed: {len(audited)}, read_denied: {len(denied)}, "
+            f"fallback_used: {fallback_used}"
         ),
         module=MODULE,
         target=vault_addr,
     )
 
-    print(f"[+] Policy audit completed: {len(audited)} analyzed, {len(denied)} denied.")
+    print(f"[+] Policy audit completed: {len(audited)} analyzed, {len(denied)} denied"
+          f"{' (fallback)' if fallback_used else ''}.")
     return {"policies": policy_names, "audited": audited, "denied": denied}
 
 
@@ -165,3 +191,41 @@ def _extract_policy_text(response):
         # Empty policy content = built-in special policy (root/default grants all)
         return "# Built-in policy — no explicit HCL rules (grants full access)"
     return None
+
+
+def _build_fallback_candidates(client):
+    """Build a list of policy names to try when LIST on sys/policies/acl fails.
+
+    Derives names from the token's own metadata (lookup-self) and adds
+    well-known built-in policies so the scanner can still read individual
+    ACL policies when the token has ``read`` on ``sys/policies/acl/*`` but
+    not ``list`` on the parent collection endpoint.
+    """
+    candidates = []
+
+    # ── Token's own policies ──────────────────────────────────────────
+    try:
+        response = client.adapter.get(url="/v1/auth/token/lookup-self")
+        if hasattr(response, "json"):
+            response_data = response.json()
+        else:
+            response_data = response
+        token_data = (
+            response_data.get("data", {})
+            if isinstance(response_data, dict)
+            else {}
+        )
+        for policy_list_key in ("policies", "identity_policies"):
+            for name in token_data.get(policy_list_key) or []:
+                name = str(name).strip()
+                if name and name not in candidates:
+                    candidates.append(name)
+    except Exception:
+        pass
+
+    # ── Well-known built-in policies ─────────────────────────────────
+    for name in ("default", "root"):
+        if name not in candidates:
+            candidates.append(name)
+
+    return candidates

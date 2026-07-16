@@ -22,6 +22,11 @@ def register_all(registry: ActiveExecutionRegistry):
     from .token_exploit import TokenExploitModule
     from .unauthenticated_attack import UnauthenticatedAttackModule
     from .unseal_key_exfiltration import UnsealKeyExfiltrationModule
+    from .vault_seal_manipulation import (
+        SealStatusModule,
+        SealVaultModule,
+        UnsealVaultModule,
+    )
 
     registry.register(PrivilegeEscalationModule())
     registry.register(SecretExfiltrationModule())
@@ -41,6 +46,9 @@ def register_all(registry: ActiveExecutionRegistry):
     registry.register(MultiPersistenceModule())
     registry.register(PayloadModule())
     registry.register(UnauthenticatedAttackModule())
+    registry.register(SealStatusModule())
+    registry.register(SealVaultModule())
+    registry.register(UnsealVaultModule())
 
 
 def get_default_registry() -> ActiveExecutionRegistry:

@@ -407,6 +407,8 @@ class PentestAgent:
         vault_tools = {
             "run_unauthenticated_recon", "run_capability_audit",
             "run_priv_esc_scan", "run_kv_enumeration", "run_ttl_audit",
+            "read_single_policy",
+            "run_raw_vault_request",
             "run_auth_config_audit", "run_policy_auditor",
             "run_privilege_escalation", "run_secret_exfiltration",
             "run_database_credential_harvest", "run_cloud_key_exfiltration",
@@ -418,7 +420,7 @@ class PentestAgent:
         token_tools = {
             "run_capability_audit", "run_priv_esc_scan", "run_kv_enumeration",
             "run_ttl_audit", "run_auth_config_audit", "run_policy_auditor",
-            "run_privilege_escalation",
+            "read_single_policy", "run_privilege_escalation",
         }
         if name in token_tools and not self.token and not arguments.get("token"):
             return "No token. Ask: set token hvs.ABC..."
@@ -452,6 +454,21 @@ class PentestAgent:
                     "Respond to the user with specific, actionable findings."
                 )
             self._get_findings_count = count + 1
+
+        # ---- prevent infinite loops: same tool + same args > 3x ----
+        call_tracker = getattr(self, '_call_tracker', None)
+        if call_tracker is None:
+            call_tracker = {}
+            self._call_tracker = call_tracker
+        call_key = f"{name}:{_hash_args(arguments)}"
+        call_count = call_tracker.get(call_key, 0) + 1
+        call_tracker[call_key] = call_count
+        if call_count > 3:
+            return (
+                f"CALL LIMIT: '{name}' with the same arguments has been called "
+                f"{call_count} times. STOP looping. Analyze previous results "
+                f"and either escalate differently or report findings to user."
+            )
 
         return None
 
@@ -788,3 +805,11 @@ class PentestAgent:
         """
         on_failure = getattr(step, "on_failure", "abort") or "abort"
         return on_failure
+
+
+def _hash_args(args: dict) -> str:
+    """Stable hash of tool arguments for duplicate-call detection."""
+    if not args:
+        return "noargs"
+    raw = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+    return str(hash(raw))

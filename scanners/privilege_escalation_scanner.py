@@ -1,6 +1,8 @@
 import asyncio
+import concurrent.futures
 
 from core.report import add_finding
+from core.tls_config import get_verify
 
 
 MODULE = "privilege_escalation_scanner"
@@ -11,6 +13,26 @@ TOKEN_CREATE_PATHS = (
     "auth/token/create/*",
     "auth/token/create-orphan",
 )
+
+
+def _run_async(coro):
+    """Run a coroutine safely regardless of whether an event loop is already running.
+
+    When called from a sync context (CLI) no loop is running and
+    ``asyncio.run()`` works directly.  When called from an async context
+    (MCP server / chat session) a loop is already running so we execute
+    the coroutine on a short-lived thread to avoid the ``asyncio.run()
+    cannot be called from a running event loop`` error.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop — the simple path.
+        return asyncio.run(coro)
+
+    # Running inside an asyncio event loop — offload to a thread.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coro).result()
 
 
 async def analyze_token_privilege_escalation(
@@ -32,7 +54,15 @@ async def analyze_token_privilege_escalation(
         headers["X-Vault-Namespace"] = namespace
 
     client_timeout = aiohttp.ClientTimeout(total=timeout)
-    async with aiohttp.ClientSession(timeout=client_timeout, headers=headers) as session:
+
+    # Respect the global --skip-tls-verify flag
+    connector = None
+    if not get_verify():
+        connector = aiohttp.TCPConnector(ssl=False)
+
+    async with aiohttp.ClientSession(
+        timeout=client_timeout, headers=headers, connector=connector
+    ) as session:
         resolved_policies = list(policy_names or [])
         if not resolved_policies:
             resolved_policies = await _lookup_self_policies(session, base_url, aiohttp)
@@ -72,7 +102,7 @@ def scan_privilege_escalation(
         return None
 
     try:
-        result = asyncio.run(analyze_token_privilege_escalation(
+        result = _run_async(analyze_token_privilege_escalation(
             vault_addr,
             token,
             policy_names=policy_names,

@@ -278,6 +278,14 @@ class PrivilegeEscalationModule(BaseExecutionModule):
                 attempt["reason"] = "created token did not add a new candidate policy"
                 continue
 
+            # Verify the new token actually has elevated privileges
+            if new_token and not _token_has_elevated_access(
+                vault_addr, new_token, timeout, verify_tls
+            ):
+                print(f"[!] [ACTIVE] Token with '{policy_name}' created but NOT elevated — skipping")
+                attempt["reason"] = "policy does not grant elevated access (non-existent or weak policy)"
+                continue
+
             evidence = {
                 "status_code": response.status_code,
                 "url": create_url,
@@ -445,6 +453,22 @@ def _added_policies(source_policies, token_policies):
         str(p) for p in token_policies
         if p and p != "default" and str(p) not in source
     )
+
+
+def _token_has_elevated_access(vault_addr, token, timeout, verify_tls):
+    """Verify a newly created token actually has elevated privileges.
+
+    Checks whether the token can read sys/mounts — a reliable indicator
+    that the escalated policy grants real access beyond the default policy.
+    Tokens created with non-existent policy names will fail this check.
+    """
+    url = f"{vault_addr}/v1/sys/mounts"
+    headers = {"X-Vault-Token": token}
+    try:
+        resp = vault_request("GET", url, headers=headers, timeout=timeout, verify=verify_tls)
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 
 def _dedupe(items):

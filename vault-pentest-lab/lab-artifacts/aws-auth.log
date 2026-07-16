@@ -1,0 +1,1 @@
+POST /v1/auth/aws/login failed because iam_request_url was rejected

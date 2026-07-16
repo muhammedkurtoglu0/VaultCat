@@ -25,4 +25,10 @@ public-labs/
 .continue/
 
 # Claude Code config
-CLAUDE.md
+
+# Vault pentest lab (generated at runtime)
+vault-pentest-lab/lab-tokens.env
+vault-pentest-lab/vault-data/
+vault-pentest-lab/vault-logs/
+vault-pentest-lab/vault-target/cert.pem
+vault-pentest-lab/vault-target/key.pem

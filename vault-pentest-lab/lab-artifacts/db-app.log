@@ -1,0 +1,2 @@
+2026-07-01T10:00:00Z INFO requesting Vault DB credentials from /v1/database/creds/app-readonly
+2026-07-01T10:00:01Z INFO database username v-token-app-readonly-XyZ123abc created with ttl=1h

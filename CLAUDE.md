@@ -1,0 +1,97 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+**Install dependencies (Windows):**
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+**Run all tests:**
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+**Run a single test file:**
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_scanners.py
+```
+
+**Run a single test by name:**
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_scanners.py -k test_hijack_analyzer_correlates_approle_pair_and_token_chain
+```
+
+On this Windows host, do not execute `.venv\Scripts\pytest.exe` directly. Windows Code Integrity blocks the generated
+console-script executable; always invoke pytest through the signed Python interpreter with
+`.\.venv\Scripts\python.exe -m pytest ...`.
+
+Do not create a Task/subagent just to run tests in this repository. Run the pytest command directly in the current
+session with the Bash tool so the result is visible to the operator.
+
+**Run the CLI:**
+```bash
+python main.py --target http://localhost:8200
+python main.py hijack --path ./test-artifacts
+python main.py chat   # starts local Ollama agent
+python main.py mcp    # starts MCP server on 127.0.0.1:8000
+```
+
+## Architecture
+
+`main.py` is the single CLI entry point (argparse). It orchestrates all modules and calls `print_report()` / `export_*_report()` at the end of every run.
+
+### `core/`
+- `client.py` — `VaultClient`: thin `requests` wrapper that adds the `X-Vault-Token` header. Used only for authenticated legacy checks; most scanners make their own requests.
+- `report.py` — global `findings` list (module-level state). All findings flow through `add_finding(severity, title, description, ...)`. The `recommendation` field is accepted but **intentionally not stored or printed** (stripped at ingestion). Severity filter is set once via `set_report_min_severity()`.
+- `risk_score.py` — converts the findings list to a 0–100 score + letter grade.
+
+### `reconnaissance/`
+Unauthenticated scanners for external recon. Each file exports one public `scan_*` function. They share a `ReconContext` instance that caches HTTP responses by `(method, path)` to avoid redundant requests to the same endpoint.
+
+`http_utils.safe_request()` is the shared HTTP helper used across all recon scanners.
+
+### `scanners/`
+Authenticated and local assessment helpers (token analysis, capability audit, KV enumeration, TTL governance, policy analysis, auth config audit, privilege escalation, environment scan). These use `hvac` for Vault API calls or direct `requests`.
+
+### `credential_hijacking/`
+The file/git scanning pipeline:
+1. `patterns.py` — compiled `PATTERNS` dict (pattern name → regex) and `FINDING_METADATA` dict (pattern name → severity/title/description). This is the single source of truth for what the scanner detects.
+2. `file_secret_scanner.py` — walks a directory tree and optionally git history; calls `_scan_text()` per file; calls `add_finding()` immediately for individual pattern hits. `_is_material_value()` distinguishes real credential values from placeholders (`${VAR}`, `{{ template }}`). `mask_value()` intentionally returns raw values (surfaced for authorized assessment).
+3. `hijack_analyzer.py` — `analyze_hijack_findings(matches)` takes the raw match list and performs per-file correlation (e.g. role_id + secret_id in same file → HIGH) and cross-file chain detection (e.g. vault_addr + approle pair across the whole scope → HIGH).
+4. `validators.py` — opt-in token and AppRole validation against a live Vault, only when `--validate-token` / `--validate-approle` is passed.
+5. `db_validator.py` — opt-in database secrets engine metadata check via `--validate-db`.
+6. `impact_analyzer.py` — blast-radius analysis for validated credentials.
+
+### `active_execution/`
+Plugin-style system for state-changing assessment modules:
+- `registry.py` — `BaseExecutionModule` (abstract: `can_run()` / `execute()`), `ActiveExecutionRegistry`, `RiskLevel` enum (`read_only` → `state_changing` → `destructive`), `risk_level_allowed()`.
+- `engine.py` — `ActiveExecutionEngine.execute_plan(steps, context)` iterates a step list, checks `can_run`, calls `execute`, and prints results.
+- `context.py` — `ExecutionContext` carries `vault_addr`, `token`, `namespace`, and accumulates `findings`.
+- `modules/` — concrete module implementations (`PrivilegeEscalationModule`, `SecretExfiltrationModule`).
+
+### `ai_core/`
+- `mcp_server.py` — FastMCP server (streamable HTTP, `127.0.0.1:8000`) exposing 23 MCP tools: recon scanners, audit scanners, active execution modules (`run_privilege_escalation`, `run_secret_exfiltration`, …), session management (`get_session_status`, `reset_session`, `create_attack_plan`, `execute_attack_plan`), and meta tools (`get_findings`, `get_risk_score`, `list_active_modules`, `run_active_module`). Maintains a `PentestSession` per session ID via `ai_core.session.SessionManager`.
+- `agent.py` — `PentestAgent`: ReAct-loop conversational agent with hallucination guards (fake token/IP detection, duplicate-call prevention). Also supports `run_with_plan()` for autonomous multi-step plan execution with pause/resume/abort controls, phase tracking (`PhaseTracker`), and conditional step failure handling.
+- `llm_engine.py` — `LLMClient`: multi-provider (Ollama/OpenAI/Anthropic/DeepSeek) with unified `chat()` interface, native tool calling, ReAct fallback for Ollama, retry with exponential backoff (`RetryableError`/`FatalError`), circuit breaker (`CircuitBreaker`), and `health()` status.
+- `session.py` — `PentestSession` dataclass (targets, token history, active plan, phase tracking) + thread-safe `SessionManager` with TTL cleanup and export/import.
+- `planning/` — Provider-agnostic plan generation: `BasePlanner` → `OpenAIPlanner` (JSON mode), `DeepSeekPlanner` (thin subclass), `AnthropicPlanner` (extended thinking). `PlannerFactory` picks by provider name. Produces typed `PentestPlan` with `PlannedStep` (conditional execution: `on_failure`, `max_retries`, `alternative_tool`).
+- `chat_ui.py` — interactive terminal chat (`ChatUI`) connecting `PentestAgent` to MCP tool execution.
+- `tools.py` — 18 `ToolDef` dataclasses (OpenAI/Anthropic function-calling format) in `ALL_TOOLS`.
+- `memory.py` — conversation history, findings, captured credentials, plan storage (`active_plan`, `plan_history`).
+
+## Key Conventions
+
+**All findings go through `core.report.add_finding()`** — never print findings directly from scanners. The `recommendation` argument is accepted for call-site documentation purposes but is not stored or exported.
+
+**The `material` flag on matches** — `_is_material_value()` marks a match as `material: False` when the captured value looks like a placeholder or template variable. The `hijack_analyzer` uses this flag to suppress correlation findings for non-concrete values.
+
+**Findings deduplication** — `add_finding()` silently drops exact duplicates keyed on `(severity, title, module, target, evidence)`.
+
+**Test isolation** — the `clear_findings` autouse fixture in `tests/test_scanners.py` resets `report.findings` before and after every test. When writing new scanner tests, monkeypatch the `safe_request` function or the relevant `requests` call rather than hitting the network.
+
+**Pattern additions** — add new regex to `credential_hijacking/patterns.py` (`PATTERNS` + `FINDING_METADATA`). The scanner picks them up automatically. Add correlation logic to `hijack_analyzer.py` if the new pattern participates in multi-pattern chains.

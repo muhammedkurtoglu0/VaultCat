@@ -234,6 +234,7 @@ def _map_phase(tool_name: str) -> AttackPhase:
     audit_tools = {
         "run_capability_audit", "run_priv_esc_scan", "run_kv_enumeration",
         "run_ttl_audit", "run_auth_config_audit", "run_policy_auditor",
+        "read_single_policy", "run_raw_vault_request",
     }
     exploit_tools = {
         "run_privilege_escalation", "run_secret_exfiltration",

