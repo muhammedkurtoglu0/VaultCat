@@ -469,13 +469,21 @@ Starts a FastMCP server on `127.0.0.1:8000` exposing 26 MCP tools: recon, audit,
 
 The agent automatically searches the web when it encounters CVEs, errors, or unknown versions. Results are parsed for executable PoC code (curl, requests, vault CLI) and converted into `run_raw_vault_request` calls.
 
+**Default: DuckDuckGo** — free, no API key, works out of the box.  
+**Optional: Tavily** — 1000 queries/month free. Set `TAVILY_API_KEY` in `.env` (copy from `.env.example`). If Tavily fails or key is missing, DuckDuckGo is used as fallback.
+
 | Component | File | Role |
 |-----------|------|------|
-| Search engine | `ai_core/web_search.py` | DuckDuckGo (free) + Tavily fallback, 24h MD5 cache |
+| Search engine | `ai_core/web_search.py` | DuckDuckGo (default) + Tavily (opt-in), 24h MD5 cache |
 | PoC parser | `ai_core/poc_parser.py` | Extracts curl/requests/vault CLI from text → `PoCAction` |
 | PoC sequencer | `ai_core/poc_sequencer.py` | Chains actions: producer→consumer, dependency detection |
 
 **Flow:** web search → parse PoCs → sequence into chains → offer to execute (or auto-execute in `--auto-pilot` mode).
+
+```bash
+# Disable web search (privacy / air-gapped)
+python main.py chat --disable-web --target https://vault:8200
+```
 
 ### Stealth HTTP (`--stealth`)
 
