@@ -700,6 +700,36 @@ async def refresh_nvd_cache() -> str:
         )
 
 
+# ─── Web Search ──────────────────────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="web_search",
+    description=(
+        "Web'de arama yapar. Vault CVE'leri, exploit detayları, konfigürasyon "
+        "referansları ve hata mesajları için kullanılır. Sonuçlar 24 saat önbelleklenir."
+    ),
+)
+async def web_search(query: str, max_results: int = 5) -> str:
+    try:
+        from ai_core.web_search import search_web
+
+        results = await search_web(query, max_results=max_results)
+        return json.dumps({
+            "query": query,
+            "total": len(results),
+            "results": [
+                {"title": r["title"], "url": r["url"], "snippet": r["snippet"]}
+                for r in results
+            ],
+        }, ensure_ascii=False)
+    except Exception as error:
+        return json.dumps(
+            {"status": "error", "message": str(error)},
+            ensure_ascii=False,
+        )
+
+
 # ─── Session Management ──────────────────────────────────────────────────
 
 

@@ -81,81 +81,67 @@ class PhaseTracker:
 # System prompt — teaches the LLM the pentest methodology
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are an expert Vault penetration testing agent. You work alongside the user as a senior pentester would — conversational, direct, and practical.
+SYSTEM_PROMPT = """You are an expert Vault penetration testing agent — a senior red-teamer who thinks like a hacker, not a script. You have deep knowledge of HashiCorp Vault internals, privilege escalation paths, and lateral movement techniques.
 
 ## YOUR PERSONALITY
-- Talk like a senior pentester chatting with a colleague. Use the user's language.
-- When you discover findings, present them as TABLES (markdown format).
-- After each finding, suggest the NEXT MOVE. Don't list 5 options — give ONE concrete next step.
-- Be concise. No fluff. No disclaimers.
-- Celebrate wins briefly (a checkmark, a "found it"), then move on.
-- If something fails, explain why in one sentence and suggest the fix.
-- Turkish users get Turkish responses. English users get English. Detect automatically.
+- Talk like a senior pentester chatting with a colleague. Use the user's language (Turkish for Turkish users, English otherwise).
+- Be direct, practical, and confident. No fluff, no disclaimers, no "I apologize".
+- When you discover findings, present them as TABLES (markdown).
+- After each action, suggest ONE concrete next step based on what you just learned.
+- If something fails, explain WHY in one sentence and immediately suggest an alternative.
+- Celebrate wins briefly, then move to the next objective.
 
-## OUTPUT STYLE
-After recon/scan results, format like this:
-```
-| Bulgu | Severity | Detay |
-|-------|----------|-------|
-| HTTP kullanımı | HIGH | Vault HTTPS yerine HTTP'te |
-| Sürüm 1.15.6 | LOW | 3 CVE eşleşti |
+## UNDERSTANDING USER INTENT
+The user speaks naturally — they are NOT typing commands. Understand their INTENT:
 
-**Sıradaki:** Token varsa capability audit yapalım. Yoksa token bulmamız lazım.
-```
+| User says something like... | You understand they want... |
+|---|---|
+| "tam tarama yap", "her şeyi tara", "full audit" | Autonomous assessment (run recon → audit → report) |
+| "çözüm öner", "nasıl kapatırım", "fix this" | Remediation advice for findings |
+| "başka ne deneyebilirim", "alternatif yol", "ne yapabilirim" | Attack path mutation (generate alternative branches) |
+| "şu CVE için exploit var mı", "araştır", "google'da bak" | Web search for CVEs, exploits, error messages |
+| "otomatik devam et", "düşünmeden yap", "auto pilot" | Auto-pilot mode (execute PoC chains without asking) |
+| "özet çıkar", "rapor hazırla", "PDF" | Generate PDF report |
+| "durum nedir", "neler var elimizde" | Status overview (tokens, findings, session) |
+| "bu token ile neler yapabilirim" | Capability audit + privilege escalation assessment |
+| "veritabanına sız", "DB'ye bağlan", "pivot" | Database pivot / lateral movement |
 
-## CRITICAL RULES
-- NO target → ask user to set one. Never guess IPs.
-- NO token → suggest unauthenticated recon first.
-- After each scan, ANALYZE results and suggest ONE next step.
-- NEVER list numbered options like "we could do A, B, or C".
-- NEVER output Chinese/Korean/Japanese unless asked.
+## YOUR TOOLKIT
+You have 20+ pentest tools covering:
+- **recon**: run_unauthenticated_recon, run_hijack_scan, run_env_scan
+- **audit**: run_capability_audit, run_priv_esc_scan, run_kv_enumeration, run_ttl_audit, run_auth_config_audit, run_policy_auditor, read_single_policy
+- **active**: run_raw_vault_request, run_privilege_escalation, run_secret_exfiltration, run_database_credential_harvest, run_cloud_key_exfiltration
+- **meta**: web_search, get_findings, get_risk_score, list_active_modules, run_active_module
 
-## CRITICAL RULE — BEFORE ANY TOOL CALL
-
-If NO target URL is configured, you CANNOT run recon or audit tools.
-Instead, TELL THE USER in natural language:
-"Please set a target first: set target http://VAULT_IP:8200"
-Then STOP and wait for the user to provide it.
-
-## YOUR CAPABILITIES
-You have 18 specialized pentest tools. You decide which tool to use, when, and why — based on context and findings.
+## SMART CAPABILITIES (use proactively!)
+1. **Web Search**: When you see a CVE, 403/500 error, or unknown version — AUTOMATICALLY use web_search. Results may contain PoC code (curl, requests) that you can execute.
+2. **PoC-to-Action**: When web results contain curl commands or API calls — EXTRACT and suggest executing them. Say "Web'de şu PoC'u buldum, çalıştırmamı ister misin?"
+3. **Attack Chains**: When multiple PoCs depend on each other (e.g. create_token → read_secret), SEQUENCE them and explain the flow.
+4. **Auto-Pilot**: When the user wants hands-off execution, tell them "Auto-pilot moda geçireyim mi? Bulduğum her PoC zincirini otomatik çalıştırırım."
+5. **Attack Tree Walking**: When you have multiple tokens and credentials, suggest "Elimizde 3 token var, agresiften stealth'e sıralı saldırı ağacı oluşturayım mı?"
 
 ## METHODOLOGY
+1. RECON first — always start with unauthenticated recon
+2. If token available → audit capabilities, enumerate KV, check TTLs, analyze policies
+3. If multiple tokens → compare privileges, try escalation paths
+4. If blocked → web search for alternatives, mutate attack paths
+5. If credentials found (DB, cloud) → suggest lateral movement
+6. When done or user asks → generate report, provide remediation advice
 
-### Phase 1: RECONNAISSANCE (no credentials needed)
-1. Run unauthenticated recon on the target — ALWAYS START HERE
-2. If you have local access, scan for leaked credentials (env vars, files, git history)
-3. Review findings in natural language — what did you discover?
-
-### Phase 2: AUDIT (requires a token)
-4. If a token was discovered or provided, audit its capabilities
-5. Simulate privilege escalation paths (read-only, safe)
-6. Enumerate KV paths, audit TTLs, auth configs, ACL policies
-
-### Phase 3: EXPLOITATION (state-changing)
-7. Attempt active privilege escalation if paths exist
-8. Exfiltrate secrets with elevated token
-9. Harvest database credentials and cloud IAM keys
-10. Deploy persistence
-
-### Phase 4: REPORTING
-11. Use get_findings to review all findings
-12. Assess overall risk score
-13. Provide a structured summary of everything found
-
-## COMMUNICATION RULES
-- Respond in 2-4 sentences — be concise, like a senior pentester talking to a colleague
-- NEVER list numbered options or suggestions — the user decides next steps
-- NEVER say "we could do A, B, or C" — just report findings
-- After tool results, explain what you found briefly and STOP
-- If a target is unreachable, TELL THE USER clearly
-- If the user's request is complete, provide a short summary and stop
-- NEVER stay silent after a tool returns results
+## CRITICAL RULES
+- NO target → ask user to set one: "Hedef Vault adresini ver, başlayayım."
+- NO token → start with unauthenticated recon, suggest finding one
+- NEVER list multiple numbered options — give ONE concrete next step
+- NEVER output Chinese/Korean/Japanese
+- NEVER guess IPs or tokens — use only what's provided or discovered
+- After a tool result: analyze (1 sentence) + suggest next move (1 sentence) = DONE
 
 ## RESPONSE FORMAT
-Keep it minimal:
-1. What the tool found (1-2 sentences)
-2. If you MUST run another tool immediately, call it — otherwise STOP and wait"""
+Keep it tight. After tool results:
+1. What you found (1-2 sentences, use tables if 3+ items)
+2. ONE suggested next action — specific, actionable
+3. STOP. Don't ramble.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +163,13 @@ class PentestAgent:
         token: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        disable_web: bool = False,
+        auto_pilot: bool = False,
     ):
         self.vault_addr = vault_addr
         self.token = token
+        self._disable_web = disable_web
+        self._auto_pilot = auto_pilot
         self.llm = LLMClient(provider=provider, model=model)
         self.memory = Memory()
         self.tools = ALL_TOOLS
@@ -192,6 +182,8 @@ class PentestAgent:
         self._paused_flag.set()  # not paused initially
         self._aborted_flag = False
         self._plan_tool_call_count = 0
+        self._searched_web: set[str] = set()  # cache keys for already-searched queries
+        self._searched_cves: set[str] = set()  # CVE IDs already searched
 
         if vault_addr:
             self.memory.set_context("vault_addr", vault_addr)
@@ -316,6 +308,112 @@ class PentestAgent:
                     result_preview = tool_result[:500]
                     yield {"type": "tool_result", "message": result_preview}
 
+                    # ── Auto-trigger web search on CVE / error / version ──
+                    if self._should_search_web(tool_result):
+                        yield {"type": "status", "message": "  [*] Auto-triggering web search..."}
+                        try:
+                            from ai_core.web_search import search_web_sync
+                            from ai_core.poc_parser import parse_web_results
+                            from ai_core.poc_sequencer import PoCSequencer
+
+                            search_query = self._build_web_search_query(name, tool_result)
+                            web_results = search_web_sync(search_query, max_results=3)
+                            if web_results:
+                                yield {"type": "status", "message": f"  [*] Web results: {len(web_results)} found"}
+
+                                # ── 1. Parse raw PoC actions ─────────
+                                poc_actions = parse_web_results(
+                                    web_results, vault_addr=self.vault_addr or ""
+                                )
+
+                                # ── 2. Sequence into attack chains ────
+                                poc_text = ""
+                                chains = []
+                                if poc_actions:
+                                    sequencer = PoCSequencer()
+                                    chains = sequencer.build_chains(poc_actions)
+                                    yield {"type": "status", "message": f"  [!] {len(poc_actions)} PoC(s) → {len(chains)} attack chain(s)"}
+
+                                    poc_parts = []
+                                    for chain in chains:
+                                        poc_parts.append(chain.to_agent_prompt(self.vault_addr or ""))
+                                    poc_text = "\n".join(poc_parts)
+
+                                    # ── 3. Auto-pilot: execute full chains ──
+                                    if getattr(self, '_auto_pilot', False):
+                                        for chain in chains:
+                                            if chain.total_confidence == "low":
+                                                continue
+                                            yield {"type": "status", "message": f"  [>>] Auto-pilot chain: {chain.description}"}
+                                            chain_results = []
+                                            for step in chain.steps:
+                                                poc_params = step.action.to_tool_params(self.vault_addr or "")
+                                                yield {"type": "status", "message": f"       Step {step.step_index}: {step.action.method} {step.action.path}"}
+                                                try:
+                                                    poc_result = await self._tool_executor("run_raw_vault_request", poc_params)
+                                                    chain_results.append({
+                                                        "step": step.step_index,
+                                                        "path": step.action.path,
+                                                        "result": str(poc_result)[:500],
+                                                    })
+                                                    yield {"type": "tool_result", "message": str(poc_result)[:200]}
+                                                except Exception as poc_exc:
+                                                    yield {"type": "warning", "message": f"Chain step failed: {poc_exc}"}
+                                                    break  # stop chain on failure
+
+                                            # Feed chain results back to agent
+                                            if chain_results:
+                                                messages.append({
+                                                    "role": "tool",
+                                                    "content": json.dumps({
+                                                        "chain_executed": chain.description,
+                                                        "steps": chain_results,
+                                                    }, ensure_ascii=False)[:2000],
+                                                    "tool_call_id": f"call_chain_{hash(chain.chain_id) & 0x7FFFFFFF:08x}",
+                                                })
+
+                                # Build web+POC+chains content for the agent
+                                chain_summary = [
+                                    {"id": c.chain_id, "steps": len(c.steps),
+                                     "description": c.description,
+                                     "confidence": c.total_confidence}
+                                    for c in chains
+                                ] if chains else []
+
+                                web_content = json.dumps({
+                                    "query": search_query,
+                                    "results": web_results,
+                                    "poc_actions_count": len(poc_actions) if poc_actions else 0,
+                                    "chains": chain_summary,
+                                }, ensure_ascii=False)[:2000]
+
+                                messages.append({
+                                    "role": "tool",
+                                    "content": web_content,
+                                    "tool_call_id": f"call_web_{hash(search_query) & 0x7FFFFFFF:08x}",
+                                })
+
+                                # Add sequenced chain prompt for the agent
+                                if poc_text:
+                                    action = "Execute ALL steps without asking" if getattr(self, '_auto_pilot', False) else "Recommend which chains to execute"
+                                    messages.append({
+                                        "role": "user",
+                                        "content": (
+                                            f"{poc_text}\n\n"
+                                            f"{action}. For multi-step chains, explain the "
+                                            f"dependency flow (step 1 generates token → step 2 uses it)."
+                                        ),
+                                    })
+
+                                # Mark as searched
+                                self._searched_web.add(self._search_cache_key(name, tool_result))
+                                for cve_match in __import__('re').finditer(
+                                    r'CVE-\d{4}-\d{4,}', str(tool_result), __import__('re').IGNORECASE
+                                ):
+                                    self._searched_cves.add(cve_match.group(0).upper())
+                        except Exception as exc:
+                            yield {"type": "warning", "message": f"Web search failed: {exc}"}
+
                     # Parse result for a quick summary
                     result_summary = self._summarize_result(tool_result)
 
@@ -429,9 +527,21 @@ class PentestAgent:
         if self.vault_addr and name in vault_tools:
             arguments["vault_addr"] = self.vault_addr
 
-        # ---- inject real token ----
-        if self.token and name in token_tools:
-            arguments["token"] = self.token
+        # ---- inject best available token (global store > explicit) ----
+        best_token = None
+        try:
+            from ai_core.dynamic_session import global_store
+            best_token = global_store.get_best_token_value()
+        except ImportError:
+            pass
+        if not best_token:
+            best_token = self.token
+
+        if best_token and name in token_tools:
+            arguments["token"] = best_token
+            # Update agent's own token view if escalated
+            if best_token != self.token:
+                self.token = best_token
 
         # ---- prevent duplicate recon ----
         if name == "run_unauthenticated_recon":
@@ -548,6 +658,76 @@ class PentestAgent:
                 parts.append(f"  [{f.get('severity', '?')}] {f.get('title', '')}")
 
         return "\n".join(parts) if parts else "Continue the conversation."
+
+    # ── web search auto-trigger ──────────────────────────────────────────
+
+    @staticmethod
+    def _search_cache_key(tool_name: str, result: str) -> str:
+        """Stable key to prevent searching the same result twice."""
+        import hashlib
+        raw = f"{tool_name}|{str(result)[:200]}"
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def _should_search_web(self, observation: str) -> bool:
+        """Return True if the observation warrants a web search.
+
+        Triggers on:
+        - CVE IDs (e.g. CVE-2024-2048) not yet searched
+        - HTTP 403/500/permission denied errors not yet searched
+        - Vault version strings without existing exploit info
+        """
+        if getattr(self, '_disable_web', False):
+            return False
+        if not observation:
+            return False
+
+        # Don't search for our own web search results (prevent loop)
+        if '"query"' in observation and '"results"' in observation:
+            return False
+
+        obs_lower = observation.lower()
+
+        # Check: contains a CVE ID?
+        cve_match = __import__('re').search(r'CVE-\d{4}-\d{4,}', observation, __import__('re').IGNORECASE)
+        if cve_match:
+            cve_id = cve_match.group(0).upper()
+            if cve_id not in self._searched_cves:
+                return True
+
+        # Check: HTTP error codes that might benefit from web search
+        if any(err in obs_lower for err in ("403", "500", "permission denied", "access denied")):
+            err_key = self._search_cache_key("error", observation[:200])
+            if err_key not in self._searched_web:
+                return True
+
+        # Check: version string found, possibly need exploit info
+        if "version:" in obs_lower or "vault version" in obs_lower:
+            ver_key = self._search_cache_key("version", observation[:200])
+            if ver_key not in self._searched_web:
+                return True
+
+        return False
+
+    def _build_web_search_query(self, tool_name: str, result: str) -> str:
+        """Build a targeted web search query from the observation context."""
+        import re
+
+        # Extract CVE ID
+        cve_match = re.search(r'CVE-\d{4}-\d{4,}', result, re.IGNORECASE)
+        if cve_match:
+            return f"HashiCorp Vault {cve_match.group(0)} exploit"
+
+        # Error-based query
+        if "permission denied" in result.lower():
+            return f"HashiCorp Vault permission denied fix {tool_name}"
+
+        # Version-based query
+        ver_match = re.search(r'(?:version|vault)[:\s]+(\d+\.\d+\.\d+)', result, re.IGNORECASE)
+        if ver_match:
+            return f"HashiCorp Vault {ver_match.group(1)} vulnerabilities exploits"
+
+        # Generic fallback
+        return f"HashiCorp Vault {tool_name} error"
 
     @staticmethod
     def _is_completion_marker(text: str) -> bool:

@@ -15,6 +15,7 @@ def register_all(registry: ActiveExecutionRegistry):
     from .multi_persistence import MultiPersistenceModule
     from .payload_module import PayloadModule
     from .persistence import PersistenceModule
+    from .pivot_engine import PivotEngineModule
     from .policy_exploit import PolicyExploitModule
     from .privilege_escalation import PrivilegeEscalationModule
     from .raft_storage_exploit import RaftStorageExploitModule
@@ -45,6 +46,7 @@ def register_all(registry: ActiveExecutionRegistry):
     registry.register(CloudExploitModule())
     registry.register(MultiPersistenceModule())
     registry.register(PayloadModule())
+    registry.register(PivotEngineModule())
     registry.register(UnauthenticatedAttackModule())
     registry.register(SealStatusModule())
     registry.register(SealVaultModule())

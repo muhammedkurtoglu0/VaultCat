@@ -129,6 +129,10 @@ class ActiveExecutionEngine:
         print(f"    -> {result.status}: {result.message}")
         if result.evidence:
             print(f"    Evidence: {result.evidence}")
+
+        # Sync discovered tokens from context → global store for auto-escalation
+        _sync_context_to_global_store(context)
+
         return result
 
     def _iter_steps(
@@ -199,3 +203,27 @@ class ActiveExecutionEngine:
             print(f"    -> {result.status}: {result.message}")
             if result.evidence:
                 print(f"    Evidence: {result.evidence}")
+
+            # Sync discovered tokens from context → global store
+            _sync_context_to_global_store(context)
+
+
+# ---------------------------------------------------------------------------
+# Helper — feed context tokens back to global DynamicCredentialStore
+# ---------------------------------------------------------------------------
+
+
+def _sync_context_to_global_store(context) -> None:
+    """If the context has captured/escalated tokens, register them globally."""
+    try:
+        from ai_core.dynamic_session import global_store, _looks_like_vault_token
+    except ImportError:
+        return
+
+    for attr, power in (
+        ("escalated_token", "elevated"),
+        ("captured_token", "unknown"),
+    ):
+        token = getattr(context, attr, None)
+        if token and _looks_like_vault_token(token) and token not in global_store.tokens:
+            global_store.add_token(token, source=f"active_exec.{attr}", power_level=power)

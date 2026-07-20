@@ -13,6 +13,14 @@ class ExecutionContext:
     namespace: Optional[str] = None
     verify_tls: bool = field(default_factory=get_verify)
     findings: list = field(default_factory=list)
+    store: object = None  # DynamicCredentialStore (lazy import)
+
+    def __post_init__(self):
+        # Auto-resolve token from global store if none provided
+        if not self.token and self.store:
+            best = self.store.get_best_token_value()
+            if best:
+                self.token = best
 
     def add_finding(self, title: str, description: str, severity: str, evidence=None):
         finding = {

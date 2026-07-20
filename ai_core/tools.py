@@ -480,6 +480,21 @@ TOOL_REFRESH_NVD_CACHE = ToolDef(
     phase="meta",
 )
 
+TOOL_WEB_SEARCH = ToolDef(
+    name="web_search",
+    description=(
+        "Search the web for Vault CVE details, exploit techniques, error message "
+        "solutions, and configuration references. Results are cached for 24 hours. "
+        "Use this when you encounter an unknown CVE, error code, or need exploit "
+        "documentation. Parameters: query (search string), max_results (1-10, default 5)."
+    ),
+    parameters=[
+        ToolParam(name="query", type="string", description="Search query string", required=True),
+        ToolParam(name="max_results", type="integer", description="Max results (1-10)", required=False),
+    ],
+    phase="meta",
+)
+
 # ── Master registry ──────────────────────────────────────────────────────
 
 ALL_TOOLS: list[ToolDef] = [
@@ -503,6 +518,7 @@ ALL_TOOLS: list[ToolDef] = [
     TOOL_GET_FINDINGS,
     TOOL_GET_RISK_SCORE,
     TOOL_REFRESH_NVD_CACHE,
+    TOOL_WEB_SEARCH,
 ]
 
 

@@ -24,6 +24,7 @@ from active_execution.context import ExecutionContext
 from active_execution.engine import ActiveExecutionEngine
 from active_execution.registry import RiskLevel, risk_level_allowed
 from ai_core.chat_ui import start_chat_session
+from ai_core.dynamic_session import global_store
 from core.client import VaultClient
 from core.report import (
     add_finding,
@@ -87,6 +88,7 @@ MODULE_CHOICES = [
     "multi_persistence.backdoor",
     "payload_module.reverse_shell",
     "unauthenticated.attack",
+    "pivot_engine.cross_service",
 ]
 
 PROVIDER_CHOICES = ["aws", "azure", "gcp", "ollama", "openai", "anthropic", "deepseek"]
@@ -131,6 +133,18 @@ def _run_unauthenticated_recon(target: str) -> None:
     scan_cors(target, context=context)
     scan_headers(target, context=context)
     scan_endpoints(target, context=context)
+
+
+def _sync_session_from_context(ctx: ExecutionContext) -> None:
+    """Feed tokens discovered by active modules back into the global store."""
+    for attr in ("captured_token", "escalated_token"):
+        token = getattr(ctx, attr, None)
+        if token and token not in global_store.tokens:
+            global_store.add_token(
+                token,
+                source=f"active_execution.{attr}",
+                power_level="elevated" if attr == "escalated_token" else "unknown",
+            )
 
 
 def _resolve_target(target: str | None, addr: str | None) -> str | None:
@@ -224,6 +238,9 @@ def _run_single_module(
             target=vault_addr,
         )
 
+    # Feed discovered tokens back into global session for auto-escalation
+    _sync_session_from_context(context)
+
 
 def _run_active_auto(
     vault_addr: str | None,
@@ -283,6 +300,9 @@ def _run_active_auto(
     else:
         print("[-] No suitable active modules found for the current risk level.")
 
+    # Feed discovered tokens back into global session
+    _sync_session_from_context(context)
+
 
 # ---------------------------------------------------------------------------
 # Commands
@@ -341,6 +361,7 @@ def scan(
     db_pivot: bool = typer.Option(False, "--db-pivot", help="Enable database pivot module"),
     cloud_pivot: bool = typer.Option(False, "--cloud-pivot", help="Enable cloud pivot module"),
     persistence: bool = typer.Option(False, "--persistence", help="Enable persistence module"),
+    pivot: bool = typer.Option(False, "--pivot", help="Enable cross-service pivot engine (DB -> OS -> infra)"),
     # ── module params ──
     provider: Optional[str] = typer.Option(None, "--provider", help="Cloud/LLM provider"),
     region: str = typer.Option("us-east-1", "--region", help="AWS region"),
@@ -365,6 +386,10 @@ def scan(
 ) -> None:
     """Run a full Vault pentest assessment."""
     clear_findings()
+
+    # Register user token in global session for dynamic escalation
+    if token:
+        global_store.add_user_token(token)
 
     if skip_tls_verify:
         from core.tls_config import set_insecure_mode
@@ -464,6 +489,8 @@ def scan(
         requested_modules.append("cloud_pivot.exploit")
     if persistence:
         requested_modules.append("persistence.backdoor")
+    if pivot:
+        requested_modules.append("pivot_engine.cross_service")
     requested_modules = list(dict.fromkeys(requested_modules))
 
     if requested_modules:
@@ -548,6 +575,10 @@ def hijack(
     set_report_min_severity(min_severity)
     target = vault_addr or addr
 
+    # Register user token in global session
+    if token:
+        global_store.add_user_token(token)
+
     if target and not skip_recon:
         _run_unauthenticated_recon(target)
 
@@ -590,6 +621,8 @@ def chat(
         help="LLM model name. If not set, you will be asked interactively.",
     ),
     skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
+    disable_web: bool = typer.Option(False, "--disable-web", help="Disable automatic web search (privacy/offline)"),
+    auto_pilot: bool = typer.Option(False, "--auto-pilot", help="Auto-execute high-confidence PoCs from web search results"),
     # ── Auto mode ──
     auto: bool = typer.Option(
         False, "--auto",
@@ -638,6 +671,8 @@ def chat(
         hijack_path=hijack_path,
         auto_max_risk=auto_max_risk,
         auto_max_turns=auto_max_turns,
+        disable_web=disable_web,
+        auto_pilot=auto_pilot,
     )
 
 

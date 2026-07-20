@@ -32,6 +32,23 @@ from .planning import (
     create_planner,
 )
 from .auto_mode import AutoPentestRunner, run_auto_pentest
+from .dynamic_session import DynamicCredentialStore, global_store
+from .mutation_engine import (
+    AttackTreeNode,
+    BranchRisk,
+    MutationEngine,
+    MutationResult,
+    NodeStatus,
+    gather_attack_state,
+)
+from .tree_walker import (
+    FailedAttempts,
+    RiskProfile,
+    TreeWalker,
+    WalkResult,
+    WalkStatus,
+    WalkStep,
+)
 
 __all__ = [
     "PentestAgent",
@@ -64,4 +81,18 @@ __all__ = [
     "create_planner",
     "AutoPentestRunner",
     "run_auto_pentest",
+    "DynamicCredentialStore",
+    "global_store",
+    "AttackTreeNode",
+    "BranchRisk",
+    "MutationEngine",
+    "MutationResult",
+    "NodeStatus",
+    "gather_attack_state",
+    "FailedAttempts",
+    "RiskProfile",
+    "TreeWalker",
+    "WalkResult",
+    "WalkStatus",
+    "WalkStep",
 ]

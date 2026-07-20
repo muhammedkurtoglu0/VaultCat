@@ -20,6 +20,7 @@ except ImportError:
         pass
 
 from ai_core.agent import PentestAgent
+from ai_core.dynamic_session import DynamicCredentialStore
 from ai_core.llm_engine import LLMClient, detect_provider
 from ai_core.memory import Memory
 from ai_core.models import get_models, get_default_model, list_providers, get_provider_name
@@ -40,20 +41,33 @@ class ChatUI:
         hijack_path: str | None = None,
         auto_max_risk: str = "read_only",
         auto_max_turns: int = 30,
+        disable_web: bool = False,
+        auto_pilot: bool = False,
     ):
         self.vault_addr = vault_addr
         self.token = token
+        self.disable_web = disable_web
+        self.auto_pilot = auto_pilot
         # Track whether provider/model were explicitly passed (vs auto-detected)
         self._provider_explicit = provider is not None
         self._model_explicit = model is not None
         self.provider = provider or detect_provider()
         self.model = model or get_default_model(self.provider)
         self.memory = Memory()
+
+        # Dynamic credential store — tracks all discovered tokens/creds
+        # and auto-escalates to the highest-privilege token.
+        self.session = DynamicCredentialStore()
+        if token:
+            self.session.add_user_token(token)
+
         self.agent = PentestAgent(
             vault_addr=vault_addr,
             token=token,
             provider=self.provider,
             model=self.model,
+            disable_web=self.disable_web,
+            auto_pilot=self.auto_pilot,
         )
         self.agent.set_tool_executor(self._execute_tool)
         self.running = True
@@ -93,7 +107,7 @@ class ChatUI:
         print(f"  Tools    : {len(ALL_TOOLS)} available")
         print("\n  The agent decides WHAT to do, WHEN, and WHY.")
         print("  Just tell it your objective — it handles everything.")
-        print("  Commands: help, modules, findings, status, auto, fix, set, exit")
+        print("  Commands: help, modules, findings, status, auto, pilot, walk, mutate, fix, set, exit")
         print("=" * 60 + "\n")
 
         while self.running:
@@ -128,6 +142,21 @@ class ChatUI:
 
                 if cmd in ("auto", "otomatik"):
                     self._start_auto_from_chat()
+                    continue
+
+                if cmd in ("pilot", "auto-pilot", "otopilot"):
+                    self.agent._auto_pilot = not getattr(self.agent, '_auto_pilot', False)
+                    state = "ON" if self.agent._auto_pilot else "OFF"
+                    print(f"\n  Auto-Pilot mode: {state}")
+                    print(f"  {'Web PoC chains will auto-execute without asking.' if self.agent._auto_pilot else 'PoCs will be suggested, not auto-executed.'}")
+                    continue
+
+                if cmd in ("mutate", "mutasyon", "branch"):
+                    self._show_mutation()
+                    continue
+
+                if cmd in ("walk", "yürü"):
+                    self._start_tree_walk()
                     continue
 
                 if cmd in ("remediate", "fix", "çözüm", "cozum"):
@@ -444,16 +473,37 @@ class ChatUI:
         """Execute a tool by calling the corresponding MCP function or module.
 
         This is the bridge between the agent's decisions and real code execution.
+        Before executing, the best available token is injected. After executing,
+        results are scanned for newly discovered credentials.
         """
-        # Inject context
+        # ── Inject vault_addr ──────────────────────────────────────────
         if "vault_addr" not in params and self.vault_addr:
             params["vault_addr"] = self.vault_addr
-        if "token" not in params and self.token:
+
+        # ── Dynamic token injection ─────────────────────────────────────
+        # Always prefer the best available token from the session.
+        best_token = self.session.get_best_token_value()
+        if best_token:
+            if "token" not in params or not params["token"]:
+                params["token"] = best_token
+                # If we auto-escalated, notify on first use of a new token
+                current = self.token
+                if current and best_token != current:
+                    pass  # will be visible in the tool call output
+            self.token = best_token  # sync agent's view
+        elif "token" not in params and self.token:
             params["token"] = self.token
 
         try:
-            # Import and call the actual MCP tool function
             result = await self._call_mcp_tool(tool_name, params)
+
+            # ── Parse result for new credentials ───────────────────────
+            discoveries = self.session.parse_tool_result(tool_name, result)
+            if discoveries:
+                for msg in discoveries:
+                    if "*** ESCALATED ***" in msg or "ESCALATED" in msg:
+                        print(f"\n  *** PRIVILEGE ESCALATION: new token discovered! ***")
+
             # Record execution
             self.memory.add_execution(tool_name, "success", {"params": params})
             return result
@@ -469,6 +519,7 @@ class ChatUI:
             get_risk_score,
             list_active_modules,
             refresh_nvd_cache,
+            web_search,
             run_active_module,
             run_auth_config_audit,
             run_capability_audit,
@@ -508,6 +559,7 @@ class ChatUI:
             "get_findings": get_findings,
             "get_risk_score": get_risk_score,
             "refresh_nvd_cache": refresh_nvd_cache,
+            "web_search": web_search,
         }
 
         handler = tool_map.get(tool_name)
@@ -528,19 +580,22 @@ class ChatUI:
     <anything>  -> Tell the agent what to do (it decides HOW)
     modules     -> List all tools the agent can use
     findings    -> Show accumulated pentest findings
-    status      -> Show current target, token, provider, model
-    auto        -> Run fully autonomous pentest + generate PDF report
+    status      -> Show current target, token, provider, model, session
+    auto        -> Run fully autonomous pentest + PDF report
+    pilot       -> Toggle auto-pilot mode (auto-execute web PoC chains)
+    walk        -> Walk the attack tree (risk-ordered branch execution)
+    mutate      -> Ask LLM for alternative attack paths (dynamic branching)
+    fix         -> Get remediation advice for all findings
     set target  -> Set the Vault target URL
     set token   -> Set a Vault token
-    set model   -> Change the LLM model
-    set provider-> Change the LLM provider (ollama/openai/anthropic/deepseek)
     exit        -> Quit
 
   EXAMPLES:
-    > "Scan http://localhost:8200 and find every vulnerability"
-    > "I found this token hvs.abc123 — assess its power and escalate"
-    > "Do a full penetration test on this Vault instance"
+    > "Scan this Vault and find every vulnerability"
+    > "I found token hvs.abc123 — assess its power and escalate"
     > auto
+    > pilot
+    > walk
 
   Provider: {self.provider}  Model: {self.agent.llm.model}  Tools: {len(ALL_TOOLS)}
 """)
@@ -643,17 +698,179 @@ class ChatUI:
         print(f"\n  Analyzing {len(findings)} findings for remediation...\n")
         asyncio.run(self._run_agent(prompt))
 
+    def _show_mutation(self):
+        """Ask the LLM mutation engine to suggest alternative attack paths.
+
+        Uses the global session state (tokens, credentials, findings) to
+        generate a branching attack tree.  The agent receives all context
+        and produces 3 ranked alternatives.
+        """
+        from ai_core.mutation_engine import gather_attack_state
+
+        state = gather_attack_state()
+        if not state["tokens"] and not state["findings"]:
+            print("\n  No attack state available yet.")
+            print("  Run some scans first to discover tokens and findings.")
+            return
+
+        findings_text = "\n".join(
+            f"  [{f.get('severity', '?')}] {f.get('title', '')}"
+            for f in state["findings"][-15:]
+        )
+        tokens_text = "\n".join(
+            f"  {t['power_level']:10s} {t['source']:20s} {t['token'][:24]}..."
+            for t in state["tokens"]
+        ) if state["tokens"] else "  (no tokens)"
+
+        prompt = (
+            f"ATTACK TREE MUTATION REQUEST\n\n"
+            f"Current target: {self.vault_addr or 'unknown'}\n\n"
+            f"=== AVAILABLE TOKENS ===\n{tokens_text}\n\n"
+            f"=== RECENT FINDINGS ===\n{findings_text}\n\n"
+            f"=== YOUR TASK ===\n"
+            f"Based on the above state, generate 3 alternative attack paths — "
+            f"from most AGGRESSIVE to STEALTHIEST.\n\n"
+            f"Rules:\n"
+            f"1. Each path uses a REAL tool from the pentest toolkit.\n"
+            f"2. Think LATERALLY — if one path is blocked, find another.\n"
+            f"3. If you have DB credentials, consider direct database pivot.\n"
+            f"4. If one token is limited, try another token.\n"
+            f"5. If Vault is locked down, attack backend infrastructure.\n"
+            f"6. Be SPECIFIC with tool names, paths, and parameters.\n\n"
+            f"Respond with EXACTLY 3 paths ranked by risk, using a TABLE format:\n"
+            f"| # | Risk | Tool | Reason | Expected Outcome |"
+        )
+
+        print(f"\n  Generating attack tree mutations...\n")
+        asyncio.run(self._run_agent(prompt))
+
+    def _start_tree_walk(self):
+        """Run the autonomous tree walker — aggressive by default.
+
+        Builds a mutation engine attack tree from the current session
+        state, then walks it depth-first in risk order.  New tokens
+        trigger recursive re-generation of the tree with elevated privileges.
+        """
+        from ai_core.mutation_engine import MutationEngine, gather_attack_state
+        from ai_core.tree_walker import TreeWalker, RiskProfile, WalkStatus
+
+        if not self.vault_addr:
+            print("\n  Set a target first: set target http://VAULT_IP:8200")
+            return
+
+        state = gather_attack_state()
+        if not state["tokens"]:
+            print("\n  No tokens yet. Run recon or set a token first.")
+            return
+
+        print("\n" + "=" * 54)
+        print("  ATTACK TREE WALKER")
+        print("=" * 54)
+        print(f"  Profile  : AGGRESSIVE (A -> B -> S)")
+        print(f"  Tokens   : {state['session_summary']['total_tokens']}")
+        print(f"  Best     : {state['session_summary']['best_token_power']}")
+        print(f"  Max depth: 5  |  Max steps: 50")
+        print("=" * 54 + "\n")
+
+        # Build initial tree
+        engine = MutationEngine()
+        root = engine.start_tree(self.vault_addr, {"token_count": len(state["tokens"])})
+
+        # Add initial branches from findings
+        from ai_core.tree_walker import AttackTreeNode, BranchRisk
+        for finding in state["findings"][:10]:
+            sev = finding.get("severity", "INFO")
+            title = finding.get("title", "")
+            mod = finding.get("module", "")
+
+            if any(w in title.lower() for w in ("denied", "blocked", "fail")):
+                continue  # skip failures as initial branches
+
+            if sev in ("CRITICAL", "HIGH"):
+                risk = BranchRisk.AGGRESSIVE
+            elif sev == "MEDIUM":
+                risk = BranchRisk.BALANCED
+            else:
+                risk = BranchRisk.STEALTH
+
+            # Suggest tools based on module
+            tool = {
+                "recon": "run_unauthenticated_recon",
+                "capability": "run_capability_audit",
+                "privilege": "run_priv_esc_scan",
+                "priv_esc": "run_priv_esc_scan",
+                "kv_enum": "run_kv_enumeration",
+                "ttl": "run_ttl_audit",
+                "auth": "run_auth_config_audit",
+                "policy": "read_single_policy",
+                "secret": "run_secret_exfiltration",
+                "env": "run_env_scan",
+            }.get(mod, "run_raw_vault_request") if mod else "run_raw_vault_request"
+
+            engine.add_branch(
+                parent=root,
+                tool=tool,
+                reason=title[:150],
+                risk=risk,
+                phase="audit",
+                expected_outcome=f"Investigate: {title[:100]}",
+            )
+
+        # Walk the tree
+        async def _walk():
+            walker = TreeWalker(
+                tool_executor=self._execute_tool,
+                risk_profile=RiskProfile.AGGRESSIVE,
+                max_depth=5,
+                max_total_steps=50,
+            )
+            result = await walker.walk(root, self.vault_addr, engine)
+
+            print(f"\n{'=' * 54}")
+            print(f"  WALK COMPLETE")
+            print(f"{'=' * 54}")
+            print(f"  Steps      : {result.total_steps}")
+            print(f"  Successes  : {result.successes}")
+            print(f"  Failures   : {result.failures}")
+            print(f"  Escalations: {result.escalations}")
+            print(f"  Dead ends  : {result.dead_ends}")
+            print(f"  Final power: {result.final_token_power}")
+            print(f"  Success %  : {result.success_rate:.0%}")
+            print(f"{'=' * 54}")
+
+            for i, step in enumerate(result.steps, 1):
+                icon = {
+                    WalkStatus.SUCCESS: "[+]",
+                    WalkStatus.ESCALATED: "[!]",
+                    WalkStatus.FAILED: "[-]",
+                    WalkStatus.SKIPPED: "[~]",
+                    WalkStatus.DEAD_END: "[x]",
+                }.get(step.status, "[?]")
+                print(f"  {i:2d} {icon} [{step.risk:11s}] {step.tool:35s} ({step.attempt}/2)")
+
+        try:
+            asyncio.run(_walk())
+        except KeyboardInterrupt:
+            print("\n[WARN] Tree walk interrupted.")
+        except Exception as exc:
+            print(f"\n[ERROR] Tree walk failed: {exc}")
+            import traceback
+            traceback.print_exc()
+
     def _show_status(self):
         llm = self.agent.llm
+        sess = self.session.status_summary()
         print(f"""
-📊 STATUS:
-  Provider : {llm.provider}
-  Model    : {llm.model}
-  Target   : {self.vault_addr or 'not set (use "set target <url>")'}
-  Token    : {'present' if self.token else 'not set (use "set token <token>")'}
-  Tools    : {len(ALL_TOOLS)} available
-  Findings : {len(self.memory.findings)} in session memory
-  LLM OK   : {'✅ connected' if llm.is_available() else '❌ check connection / API key'}
+  STATUS:
+    Provider : {llm.provider}
+    Model    : {llm.model}
+    Target   : {self.vault_addr or 'not set (use "set target <url>")'}
+    Token    : {'present' if self.token else 'not set (use "set token <token>")'}
+    Session  : {sess['total_tokens']} tokens, {sess['escalation_count']} escalations
+    Best     : {sess['best_token_power']} ({sess['best_token_preview']}) via {sess['best_token_source']}
+    Tools    : {len(ALL_TOOLS)} available
+    Findings : {len(self.memory.findings)} in session memory
+    LLM OK   : {'connected' if llm.is_available() else 'check connection / API key'}
 """)
 
     def _handle_set(self, command: str):
@@ -683,7 +900,8 @@ class ChatUI:
             self.token = value
             self.agent.token = value
             self.memory.set_context("token", value)
-            print(f"✅ Token set: {value[:12] if len(value) > 12 else value}...")
+            self.session.add_user_token(value)
+            print(f"[+] Token registered in session: {value[:12] if len(value) > 12 else value}...")
         elif key == "model":
             if not value:
                 # Interactive model selection for current provider
@@ -788,6 +1006,8 @@ def start_chat_session(
     hijack_path: str | None = None,
     auto_max_risk: str = "read_only",
     auto_max_turns: int = 30,
+    disable_web: bool = False,
+    auto_pilot: bool = False,
 ):
     """Launch the interactive AI pentest chat session (or auto mode)."""
     chat = ChatUI(
@@ -800,6 +1020,8 @@ def start_chat_session(
         hijack_path=hijack_path,
         auto_max_risk=auto_max_risk,
         auto_max_turns=auto_max_turns,
+        disable_web=disable_web,
+        auto_pilot=auto_pilot,
     )
     chat.start()
 
