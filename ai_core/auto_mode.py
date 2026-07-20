@@ -237,6 +237,16 @@ class AutoPentestRunner:
                 risk=BranchRisk.AGGRESSIVE, phase="audit",
                 expected_outcome="Map token capabilities and find escalation paths")
 
+        # Add pivot branches when DB credentials are already in the session
+        db_creds = [c for c in state.get("credentials", []) if c.get("cred_type") in ("db_conn", "password")]
+        if db_creds:
+            yield {"type": "status", "message": f"  Pivot: {len(db_creds)} DB credential(s) — adding pivot branches"}
+            engine.add_branch(root, "run_raw_vault_request",
+                "Read database engine configuration for connection strings",
+                params={"method": "GET", "path": "database/config"},
+                risk=BranchRisk.AGGRESSIVE, phase="exploit",
+                expected_outcome="Extract full DB connection details for direct pivot")
+
         yield {"type": "status", "message": f"  Tree: {engine.tree_summary()['total_nodes']} nodes seeded"}
 
         # ── 3. Walk the tree ────────────────────────────────────────────

