@@ -623,6 +623,7 @@ def chat(
     skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
     disable_web: bool = typer.Option(False, "--disable-web", help="Disable automatic web search (privacy/offline)"),
     auto_pilot: bool = typer.Option(False, "--auto-pilot", help="Auto-execute high-confidence PoCs from web search results"),
+    stealth: bool = typer.Option(False, "--stealth", help="Enable stealth HTTP (jitter, backoff, rate-limit evasion)"),
     # ── Auto mode ──
     auto: bool = typer.Option(
         False, "--auto",
@@ -652,6 +653,11 @@ def chat(
     if auto and not resolved_target:
         print("❌ --auto mode requires --target <url>. Nothing to do.")
         raise typer.Exit(code=1)
+
+    if stealth:
+        from reconnaissance.stealth_http import enable_stealth
+        enable_stealth()
+        print("[*] Stealth HTTP enabled (jitter, backoff, rate-limit evasion)")
 
     if skip_tls_verify:
         from core.tls_config import set_insecure_mode

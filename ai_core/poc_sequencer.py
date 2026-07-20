@@ -207,17 +207,29 @@ class PoCSequencer:
             )
             chains.append(chain)
 
-        # ── 4. Remaining consumers → chain them with the first producer ──
+        # ── 4. Remaining consumers → attach to existing chain or standalone ──
         unpaired = [c for ci, c in enumerate(consumers) if ci not in used_consumers]
-        if unpaired and chains:
-            # Attach to the first chain that has a token producer
+        if unpaired:
+            attached = False
+            # Try attaching to a chain with a token producer
             for chain in chains:
                 if any(s.produces == "vault_token" for s in chain.steps):
                     for consumer in unpaired:
                         consumer.depends_on = 1
                         consumer.step_index = len(chain.steps) + 1
                         chain.steps.append(consumer)
+                    attached = True
                     break
+            # If no chain to attach to, make each unpaired consumer its own chain
+            if not attached:
+                for consumer in unpaired:
+                    consumer.step_index = 1
+                    chains.append(PoCChain(
+                        chain_id=f"chain_{len(chains)+1}",
+                        steps=[consumer],
+                        description=f"Unpaired consumer: {consumer.action.method} {consumer.action.path}",
+                        total_confidence=consumer.action.confidence,
+                    ))
 
         # ── 5. Standalone actions → single-step chains ─────────────────
         for standalone in standalones:

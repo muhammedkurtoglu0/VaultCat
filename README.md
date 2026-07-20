@@ -341,29 +341,110 @@ For a detailed walkthrough of all test scenarios, see [vault-pentest-lab/README.
 
 ## AI-Powered Pentesting
 
-The `ai_core/` module provides an LLM-driven agent that plans and executes pentest operations autonomously. It supports multiple providers and exposes an MCP server for tool integration.
+The `ai_core/` module provides an LLM-driven agent that plans and executes pentest operations autonomously.
 
-### Chat Agent
+### Quick Start
 
 ```bash
-python main.py chat
-python main.py chat --target https://localhost:8200 --skip-tls-verify --provider deepseek
-python main.py chat --provider deepseek --model deepseek-v4-pro
-python main.py chat --provider openai --model gpt-4o-mini
-python main.py chat --provider anthropic --model claude-sonnet-5
+# Interactive chat
+python main.py chat --target https://vault:8200 --token hvs.xxx
+
+# Fully autonomous (non-interactive, cron-compatible)
+python main.py chat --auto --target https://vault:8200 --token hvs.xxx --pdf-report report.pdf
+
+# Auto with stealth evasion
+python main.py chat --auto --stealth --target https://vault:8200
+
+# Auto-pilot: auto-execute web PoC chains
+python main.py chat --auto-pilot --target https://vault:8200
 ```
 
-The agent understands natural language (Turkish or English), decides which tool to use based on what it discovers, adapts when tools succeed or fail, and reports findings in table format. It follows a 4-phase methodology: Recon → Audit → Exploit → Report.
+### In-Chat Commands
 
-In-chat commands:
+Natural language works — the agent understands intent. These commands are shortcuts:
+
+| Command | Action |
+|---------|--------|
+| `auto` / `otomatik` | Run fully autonomous pentest → tree walker → PDF report |
+| `pilot` / `auto-pilot` | Toggle auto-execution of web PoC chains |
+| `walk` / `yuru` | Walk the attack tree (risk-ordered branches) |
+| `mutate` / `branch` | Ask LLM for alternative attack paths |
+| `fix` / `cozum` | Get remediation advice for all findings |
+| `stealth` / `gizli` | Toggle stealth HTTP (jitter + backoff) |
+| `status` | Show session: tokens, escalations, power levels |
+| `findings` | Show accumulated pentest findings |
+| `set target/token` | Configure target URL and Vault token |
+| `exit` | Quit |
+
+### Architecture — How Everything Fits Together
+
 ```
-set target https://localhost:8200
-set token hvs.abc123...
-saldır                    # Run autonomous pentest
-bloklamayı kaldır         # Re-run blocked module with max_risk=destructive
+                        ┌─────────────────────────────┐
+                        │        ChatUI / Agent        │
+                        │  (natural language, ReAct)   │
+                        └─────────────┬───────────────┘
+                                      │
+              ┌───────────────────────┼───────────────────────┐
+              ▼                       ▼                       ▼
+    ┌─────────────────┐   ┌───────────────────┐   ┌──────────────────┐
+    │   auto_mode.py  │   │  tree_walker.py   │   │ mutation_engine  │
+    │ (orchestrator)  │   │ (branch executor) │   │   (LLM planner)  │
+    └────────┬────────┘   └────────┬──────────┘   └────────┬─────────┘
+             │                     │                        │
+             │    ┌────────────────┘                        │
+             │    │  auto_mode calls TreeWalker to walk     │
+             │    │  branches. On failure, MutationEngine   │
+             │    │  generates new branches via LLM.        │
+             │    │  On escalation, tree is regenerated.    │
+             │    └─────────────────────────────────────────┘
+             │
+    ┌────────┴──────────┐
+    │                   │
+    ▼                   ▼
+┌──────────┐    ┌───────────────┐
+│ web_search│    │ poc_parser +  │
+│ (DDG 24h │    │ poc_sequencer │
+│  cache)  │    │ (curl→action) │
+└────┬─────┘    └───────┬───────┘
+     │                  │
+     └──────┬───────────┘
+            ▼
+   ┌─────────────────┐
+   │ dynamic_session │  ← global singleton
+   │  (token store,  │     all modules read/write
+   │   auto-escalate)│
+   └────────┬────────┘
+            │
+   ┌────────┴────────┐
+   ▼                 ▼
+┌──────────┐  ┌──────────────┐
+│ pivot    │  │ stealth_http │
+│ engine   │  │ (opt-in,     │
+│ (DB→OS)  │  │  --stealth)  │
+└──────────┘  └──────────────┘
 ```
 
-Supported providers:
+**Flow when `auto` is triggered:**
+
+1. **Recon** — direct tool calls (no LLM overhead)
+2. **Build Attack Tree** — `MutationEngine` seeds branches from findings + tokens
+3. **Walk Tree** — `TreeWalker` executes branches in risk order (Aggressive → Balanced → Stealth)
+4. **On Failure** → `MutationEngine` asks LLM for new branches (dynamic, no hardcoded limit)
+5. **On Escalation** → regenerate tree with elevated privileges, walk deeper (recursive)
+6. **Agent Summary** → LLM reviews all findings, provides structured report
+7. **PDF Export** → `export_pdf_report()`
+
+### Auto Mode vs Tree Walker vs Mutation Engine
+
+| Component | Role | Calls |
+|-----------|------|-------|
+| `auto_mode.py` | **Orchestrator** — drives the full autonomous flow | TreeWalker, MutationEngine, PentestAgent |
+| `tree_walker.py` | **Executor** — walks branches in risk order, tracks failures (max 2/branch), recursive escalation | tool_executor (MCP tools) |
+| `mutation_engine.py` | **Planner** — asks LLM for dynamic attack paths (2-6 branches), context-aware fallbacks when offline | LLM (optional), web intel |
+
+`auto_mode` is the entry point. It owns the flow. `TreeWalker` does the walking. `MutationEngine` provides new ideas when things fail.
+
+### Supported Providers
 
 | Provider | Env Var | Default Model |
 |----------|---------|---------------|
@@ -372,44 +453,68 @@ Supported providers:
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | Ollama (local) | `OLLAMA_HOST` | (auto-detect) |
 
-Provider auto-detection order: Anthropic → DeepSeek → OpenAI → Ollama. If no API key is set, Ollama is the default fallback.
-
 ### MCP Server
 
 ```bash
 python main.py mcp
 ```
 
-Starts a FastMCP server on `127.0.0.1:8000` exposing 25 MCP tools: recon scanners, audit scanners, active execution modules (privilege escalation, secret exfiltration, DB harvest, cloud key dump, seal/unseal), raw Vault API access, single policy read, session management, and findings/risk-score reporting. Compatible with any MCP client (Claude Desktop, VS Code, etc.).
+Starts a FastMCP server on `127.0.0.1:8000` exposing 26 MCP tools: recon, audit, active execution, raw Vault API, `web_search`, session management, findings/risk-score.
 
 ### LLM Engine
 
-The `LLMClient` provides a unified `chat()` interface across all providers with:
-- Native tool/function calling (OpenAI/Anthropic/DeepSeek), ReAct fallback (Ollama)
-- Retry with exponential backoff on transient errors (429, 5xx)
-- Circuit breaker — fast-fails after 3 consecutive failures, auto-recovers after 30s
-- Error classification: `RetryableError` (transient), `FatalError` (auth/client), `LLMTimeoutError`
+`LLMClient` unified `chat()` across all providers with native tool calling, retry + exponential backoff, circuit breaker.
 
-### AI Planning
+### Web Search & PoC-to-Action
 
-`ai_core/planning/` provides provider-agnostic attack plan generation. The planner analyzes token capabilities, enumeration data, and findings, then produces a typed `PentestPlan` with prioritized steps, conditional execution (`on_failure`, `max_retries`, `alternative_tool`), and dynamic policy inference from observed data.
+The agent automatically searches the web when it encounters CVEs, errors, or unknown versions. Results are parsed for executable PoC code (curl, requests, vault CLI) and converted into `run_raw_vault_request` calls.
 
-```python
-from ai_core.planning import create_planner
+| Component | File | Role |
+|-----------|------|------|
+| Search engine | `ai_core/web_search.py` | DuckDuckGo (free) + Tavily fallback, 24h MD5 cache |
+| PoC parser | `ai_core/poc_parser.py` | Extracts curl/requests/vault CLI from text → `PoCAction` |
+| PoC sequencer | `ai_core/poc_sequencer.py` | Chains actions: producer→consumer, dependency detection |
 
-planner = create_planner("deepseek")
-plan = planner.create_plan(
-    vault_addr="http://localhost:8200",
-    token_hint="hvs.abc123...",
-    enum_data={"capabilities": ..., "findings": ...},
-)
-# plan.steps  → list of PlannedStep (tool, reason, phase, risk, params)
-# plan.token_assessment → TokenAssessment (power_level, escalation_possible)
+**Flow:** web search → parse PoCs → sequence into chains → offer to execute (or auto-execute in `--auto-pilot` mode).
+
+### Stealth HTTP (`--stealth`)
+
+**OFF by default** — requests are fast and direct. Enable with `--stealth` for real targets:
+
+| Feature | Effect |
+|---------|--------|
+| 429 backoff | Exponential: 10s→20s→40s→80s, concurrency halved |
+| 403 backoff | Moderate: 5s→10s→20s (WAF evasion) |
+| Random jitter | 1-5s between requests (human cadence) |
+| Concurrency limit | Starts at 3, drops to 1 on 429 |
+| Adaptive polling | Fast Vault→2s poll, slow Vault→30s poll |
+
+```bash
+python main.py chat --stealth --target https://prod-vault:8200
+# In chat: >> stealth    (toggle ON/OFF)
 ```
 
-### Session Management
+### Dynamic Session & Auto-Escalation
 
-`ai_core/session.py` provides `PentestSession` (targets, token history, active plan, phase tracking) and thread-safe `SessionManager` with TTL-based cleanup and export/import. The MCP server uses it to isolate state between concurrent sessions.
+`ai_core/dynamic_session.py` — global singleton tracking all discovered tokens and credentials. Every module (scanners, active execution, agent) reads/writes to it. When a higher-privilege token is discovered, all subsequent tool calls automatically use it.
+
+```python
+from ai_core.dynamic_session import global_store
+global_store.add_token("hvs.xxx", source="priv_esc", power_level="root")
+best = global_store.get_best_token()  # always the highest-power token
+```
+
+### Pivot Engine (`--pivot`)
+
+`active_execution/modules/pivot_engine.py` — cross-service lateral movement. Takes DB credentials harvested from Vault, connects directly to PostgreSQL, checks SUPERUSER privileges, and attempts OS command execution via `COPY FROM PROGRAM`.
+
+```
+Vault → Database Credentials → PostgreSQL Connection → SUPERUSER Check → OS Shell
+```
+
+```bash
+python main.py scan --target https://vault:8200 --token root --pivot --confirm-active
+```
 
 The hijack scanner currently looks for:
 

@@ -199,6 +199,29 @@ def human_jitter(min_s: float = 1.0, max_s: float = 5.0) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Stealth toggle — OFF by default for fast lab/dev work
+# ---------------------------------------------------------------------------
+
+_STEALTH_ENABLED = False
+
+
+def enable_stealth() -> None:
+    """Activate stealth mode — jitter, backoff, concurrency limits."""
+    global _STEALTH_ENABLED
+    _STEALTH_ENABLED = True
+
+
+def disable_stealth() -> None:
+    """Deactivate stealth mode — fast direct requests (lab/dev)."""
+    global _STEALTH_ENABLED
+    _STEALTH_ENABLED = False
+
+
+def is_stealth_enabled() -> bool:
+    return _STEALTH_ENABLED
+
+
+# ---------------------------------------------------------------------------
 # Global rate limiter instance
 # ---------------------------------------------------------------------------
 
@@ -245,6 +268,18 @@ def stealth_request(
     """
     if limiter is None:
         limiter = _global_limiter
+
+    # ── Fast path: stealth disabled → direct request, zero overhead ──
+    if not _STEALTH_ENABLED:
+        url = build_url(target, path)
+        headers = {"X-Vault-Token": token} if token else None
+        try:
+            return requests.request(
+                method, url, timeout=timeout, allow_redirects=allow_redirects,
+                verify=get_verify(), headers=headers,
+            )
+        except requests.exceptions.RequestException as exc:
+            return exc
 
     # ── 1. Wait out any active backoff ──────────────────────────────
     limiter.apply_backoff()
@@ -369,5 +404,5 @@ DEFAULT_TIMEOUT = 10
 
 
 def safe_request(method, target, path, allow_redirects=True):
-    """Legacy wrapper — now delegates to stealth_request."""
-    return stealth_request(method, target, path, allow_redirects=allow_redirects)
+    """Legacy wrapper — fast by default, stealth only when enabled."""
+    return stealth_request(method, target, path, allow_redirects=allow_redirects, apply_jitter=False)

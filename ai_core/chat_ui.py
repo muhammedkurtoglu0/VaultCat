@@ -151,6 +151,16 @@ class ChatUI:
                     print(f"  {'Web PoC chains will auto-execute without asking.' if self.agent._auto_pilot else 'PoCs will be suggested, not auto-executed.'}")
                     continue
 
+                if cmd in ("stealth", "gizli"):
+                    from reconnaissance.stealth_http import enable_stealth, disable_stealth, is_stealth_enabled
+                    if is_stealth_enabled():
+                        disable_stealth()
+                        print("\n  Stealth HTTP: OFF (fast direct requests)")
+                    else:
+                        enable_stealth()
+                        print("\n  Stealth HTTP: ON (jitter 1-5s, backoff, rate-limit evasion)")
+                    continue
+
                 if cmd in ("mutate", "mutasyon", "branch"):
                     self._show_mutation()
                     continue

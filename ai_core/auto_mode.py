@@ -137,11 +137,20 @@ class AutoPentestRunner:
         self._tool_executor = executor
 
     async def run(self) -> AsyncIterator[dict]:
-        """Execute the autonomous pentest and yield progress events.
+        """Execute autonomous pentest using attack tree + mutation engine.
 
-        Events follow the same schema as :meth:`PentestAgent.run` so
-        they can be rendered by :class:`ChatUI`.
+        Flow:
+        1. Recon (direct tool calls, no LLM overhead)
+        2. Build attack tree from findings + tokens
+        3. TreeWalker walks branches in risk order (A→B→S)
+        4. Failures → MutationEngine adds new branches
+        5. Escalation → regenerate tree with new privileges
+        6. Final pass: LLM agent for analysis + summary
+        7. PDF report
         """
+        from ai_core.mutation_engine import MutationEngine, gather_attack_state, BranchRisk
+        from ai_core.tree_walker import TreeWalker, RiskProfile, WalkStatus
+
         self._start_time = time.monotonic()
         self._total_turns = 0
         self._phases_seen.clear()
@@ -151,107 +160,124 @@ class AutoPentestRunner:
         self._report.clear()
 
         yield {"type": "status", "message": "=" * 54}
-        yield {"type": "status", "message": "  AUTO MODE — Autonomous Read-Only Pentest"}
+        yield {"type": "status", "message": "  AUTO MODE — Attack Tree + Mutation Engine"}
         yield {"type": "status", "message": "=" * 54}
         yield {"type": "status", "message": f"  Target     : {self.vault_addr}"}
-        yield {"type": "status", "message": f"  Token      : {'present' if self.token else 'none (unauthenticated only)'}"}
-        yield {"type": "status", "message": f"  Max Risk   : {self.max_risk}"}
-        yield {"type": "status", "message": f"  Max Turns  : {self.max_turns}"}
-        yield {"type": "status", "message": f"  Timeout    : {self.timeout_seconds}s"}
+        yield {"type": "status", "message": f"  Token      : {'present' if self.token else 'none'}"}
+        yield {"type": "status", "message": f"  Max Steps  : {self.max_turns}"}
+        yield {"type": "status", "message": f"  Strategy   : Tree walker (A->B->S) + LLM mutation on failure"}
         yield {"type": "status", "message": "=" * 54}
 
-        # ── Build the agent ─────────────────────────────────────────────
-        self._agent = PentestAgent(
-            vault_addr=self.vault_addr,
-            token=self.token,
-            provider=self.provider,
-            model=self.model,
-        )
+        # ── 1. Initial recon ────────────────────────────────────────────
         if self._tool_executor:
-            self._agent.set_tool_executor(self._tool_executor)
+            yield {"type": "status", "message": "\n--- Phase 1: Initial Recon ---"}
+            recon_tools = ["run_unauthenticated_recon"]
+            if self.hijack_path:
+                recon_tools.append("run_hijack_scan")
+            recon_tools.append("run_env_scan")
 
-        yield {"type": "status", "message": f"  Provider   : {self._agent.llm.provider}"}
-        yield {"type": "status", "message": f"  Model      : {self._agent.llm.model}"}
-        yield {"type": "status", "message": ""}
+            for tool in recon_tools:
+                if self._check_timeout():
+                    break
+                try:
+                    params = {"vault_addr": self.vault_addr}
+                    if self.hijack_path and tool == "run_hijack_scan":
+                        params["path"] = self.hijack_path
+                    yield {"type": "tool_call", "message": f"{tool}(...)", "tool": tool, "params": params}
+                    result = await self._tool_executor(tool, params)
+                    yield {"type": "tool_result", "message": str(result)[:300]}
+                    self._total_turns += 1
+                    self._phases_seen.add("recon")
+                except Exception as exc:
+                    yield {"type": "error", "message": f"{tool} failed: {exc}"}
 
-        # ── Initial objective ───────────────────────────────────────────
-        hijack_note = ""
-        if self.hijack_path:
-            hijack_note = (
-                f" Also scan {self.hijack_path} for leaked Vault credentials "
-                f"(files, env vars, git history)."
+        # ── 2. Build initial attack tree ────────────────────────────────
+        yield {"type": "status", "message": "\n--- Phase 2: Building Attack Tree ---"}
+        state = gather_attack_state()
+        engine = MutationEngine()
+        root = engine.start_tree(
+            self.vault_addr,
+            {"token_count": len(state["tokens"]), "findings_count": len(state["findings"])},
+        )
+
+        # Seed branches from findings
+        for finding in state["findings"][:15]:
+            sev = finding.get("severity", "INFO")
+            title = finding.get("title", "")
+            mod = finding.get("module", "")
+
+            if any(w in title.lower() for w in ("denied", "blocked", "fail")):
+                continue
+
+            risk = BranchRisk.AGGRESSIVE if sev in ("CRITICAL", "HIGH") else (
+                BranchRisk.BALANCED if sev == "MEDIUM" else BranchRisk.STEALTH
             )
 
-        initial_objective = (
-            f"You are running in AUTONOMOUS mode against {self.vault_addr}. "
-            f"Your job is to perform a COMPLETE penetration test without any user interaction. "
-            f"Start with Phase 1 (unauthenticated recon), then move through all phases. "
-            f"{hijack_note}"
-            f"Token status: {'Token available for authenticated audits' if self.token else 'No token — stick to unauthenticated recon only'}. "
-            f"IMPORTANT: This is READ-ONLY mode. Do NOT attempt state-changing operations. "
-            f"After completing all phases, provide a structured SUMMARY of all findings. "
-            f"CRITICAL: Call tools aggressively. After each tool result, immediately call the NEXT "
-            f"logical tool without pausing. Chain as many tools as needed in sequence. "
-            f"Only stop when the penetration test is FULLY COMPLETE across all phases."
+            tool_map = {
+                "recon": "run_unauthenticated_recon",
+                "capability": "run_capability_audit",
+                "privilege": "run_priv_esc_scan",
+                "priv_esc": "run_priv_esc_scan",
+                "kv_enum": "run_kv_enumeration",
+                "ttl": "run_ttl_audit",
+                "auth": "run_auth_config_audit",
+                "policy": "read_single_policy",
+                "secret": "run_secret_exfiltration",
+                "env": "run_env_scan",
+            }
+            tool = tool_map.get(mod, "run_raw_vault_request") if mod else "run_raw_vault_request"
+
+            engine.add_branch(root, tool, title[:150], risk=risk, phase="audit",
+                            expected_outcome=f"Investigate: {title[:100]}")
+
+        # Add token-specific branches
+        for t in state["tokens"]:
+            engine.add_branch(root, "run_capability_audit",
+                f"Audit token: {t.get('power_level', 'unknown')} ({t.get('token', '')[:12]}...)",
+                risk=BranchRisk.AGGRESSIVE, phase="audit",
+                expected_outcome="Map token capabilities and find escalation paths")
+
+        yield {"type": "status", "message": f"  Tree: {engine.tree_summary()['total_nodes']} nodes seeded"}
+
+        # ── 3. Walk the tree ────────────────────────────────────────────
+        yield {"type": "status", "message": "\n--- Phase 3: Walking Attack Tree ---"}
+        walker = TreeWalker(
+            tool_executor=self._tool_executor,
+            risk_profile=RiskProfile.AGGRESSIVE,
+            max_depth=4,
+            max_total_steps=self.max_turns,
         )
+        walk_result = await walker.walk(root, self.vault_addr, engine)
 
-        # ── Outer loop — feed continuation prompts ──────────────────────
-        objective = initial_objective
-        continuation_idx = 0
-        completed = False
+        self._total_turns += walk_result.total_steps
+        self._phases_seen.update(["recon", "audit", "report"])
 
-        while self._total_turns < self.max_turns and not completed:
-            # Wall-clock timeout
-            if self._check_timeout():
-                yield {"type": "warning", "message": "Timeout reached — generating partial report."}
-                break
+        yield {"type": "status", "message": f"  Steps: {walk_result.total_steps} | Success: {walk_result.successes} | Fail: {walk_result.failures} | Escalations: {walk_result.escalations}"}
 
-            yield {"type": "status", "message": f"\n--- Turn group {self._total_turns + 1}+ ---"}
+        # ── 4. LLM Agent summary pass ───────────────────────────────────
+        if self._tool_executor:
+            yield {"type": "status", "message": "\n--- Phase 4: Agent Analysis ---"}
+            self._agent = PentestAgent(
+                vault_addr=self.vault_addr, token=self.token,
+                provider=self.provider, model=self.model,
+            )
+            self._agent.set_tool_executor(self._tool_executor)
 
+            summary_objective = (
+                f"Autonomous attack tree walk complete against {self.vault_addr}. "
+                f"Steps executed: {walk_result.total_steps}, "
+                f"successes: {walk_result.successes}, failures: {walk_result.failures}, "
+                f"escalations: {walk_result.escalations}, "
+                f"final token power: {walk_result.final_token_power}. "
+                f"Review ALL findings with get_findings, analyse the risk score, "
+                f"and provide a structured penetration test summary. "
+                f"Use tables. Be concise. One message only."
+            )
             try:
-                async for event in self._agent.run(objective):
+                async for event in self._agent.run(summary_objective):
                     yield event
-
-                    if event.get("type") == "tool_call":
-                        self._total_turns += 1
-                        self._track_phase(event)
-
-                    elif event.get("type") == "tool_result":
-                        pass  # already counted in tool_call
-
-                    elif event.get("type") == "message":
-                        content = event.get("message", "")
-                        if self._is_complete(content) and self._all_phases_covered():
-                            completed = True
-                            yield {"type": "complete", "message": "Autonomous pentest completed — generating PDF report."}
-
-                    elif event.get("type") == "error":
-                        # Non-fatal — try next continuation
-                        yield {"type": "warning", "message": "Agent reported error, continuing with next prompt."}
-                        break  # break inner loop, try next continuation
-
-                    elif event.get("type") == "complete":
-                        if self._all_phases_covered():
-                            completed = True
-                        break  # agent signalled done, check outer loop condition
-
-            except Exception as exc:
-                yield {"type": "error", "message": f"Agent error: {exc}"}
-                break
-
-            # If we're not done, feed a continuation prompt
-            if not completed and self._total_turns < self.max_turns:
-                prompt = _CONTINUATION_PROMPTS[continuation_idx % len(_CONTINUATION_PROMPTS)]
-                continuation_idx += 1
-                objective = (
-                    f"{prompt}\n\n"
-                    f"Context: You are at turn {self._total_turns}/{self.max_turns}. "
-                    f"Completed phases so far: {sorted(self._phases_seen) or 'none'}. "
-                    f"Target: {self.vault_addr}. "
-                    f"{'Token is available.' if self.token else 'No token.'} "
-                    f"Continue the penetration test autonomously. "
-                    f"Call the next logical tool immediately — do NOT ask questions, just act."
-                )
+            except Exception:
+                pass
 
         # ── Finalize ─────────────────────────────────────────────────────
         yield {"type": "status", "message": ""}
