@@ -142,7 +142,7 @@ class TestLLMClientInit:
     def test_default_model_deepseek(self):
         client = LLMClient(provider="deepseek", api_key="sk-test")
         assert client.provider == "deepseek"
-        assert client.model == "deepseek-chat"
+        assert client.model == "deepseek-v4-flash"
 
     def test_custom_model(self):
         client = LLMClient(provider="openai", model="gpt-4o", api_key="sk-test")

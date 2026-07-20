@@ -234,6 +234,189 @@ class Report:
             print(f"\n[!] Could not write Markdown report: {error}")
             return None
 
+    def export_pdf_report(self, output_path: str, target=None):
+        """Export findings as a professional PDF report.
+
+        Uses fpdf2 with a Unicode-capable system font for Turkish
+        character support.  Falls back to ASCII-only output if no
+        suitable font is found.
+        """
+        from fpdf import FPDF
+
+        report_path = _resolve_report_path(output_path)
+        summary = self.get_risk_summary()
+        risk = calculate_risk(self._visible_findings())
+        visible = self._visible_findings()
+        font_path = _find_unicode_font()
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=20)
+
+        # ── Try to load a Unicode font ──────────────────────────────────
+        if font_path:
+            try:
+                pdf.add_font("Uni", "", font_path)
+                pdf.add_font("Uni", "B", font_path)  # same file, bold simulated
+                body_font = "Uni"
+                title_font = "Uni"
+                _use_unicode = True
+            except Exception:
+                body_font = "Helvetica"
+                title_font = "Helvetica"
+                _use_unicode = False
+        else:
+            body_font = "Helvetica"
+            title_font = "Helvetica"
+            _use_unicode = False
+
+        # ── Cover / Title page ──────────────────────────────────────────
+        pdf.add_page()
+        pdf.ln(40)
+        pdf.set_font(title_font, "B", 28)
+        pdf.cell(0, 14, "Vault Pentest Report", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(8)
+        pdf.set_font(body_font, "", 14)
+        if target:
+            pdf.cell(0, 10, f"Target: {target}", align="C", new_x="LMARGIN", new_y="NEXT")
+        from datetime import datetime
+        pdf.cell(0, 10, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(6)
+
+        # Risk score highlight
+        pdf.set_font(title_font, "B", 48)
+        pdf.cell(0, 20, f"{risk['score']}/100", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font(body_font, "", 16)
+        pdf.cell(0, 10, f"Grade: {risk['grade']}", align="C", new_x="LMARGIN", new_y="NEXT")
+
+        # ── Risk Summary table ──────────────────────────────────────────
+        pdf.add_page()
+        pdf.set_font(title_font, "B", 18)
+        pdf.cell(0, 12, "Risk Summary", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(4)
+
+        col_w = [70, 40]
+        pdf.set_font(body_font, "B", 11)
+        pdf.set_fill_color(50, 50, 50)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(col_w[0], 9, "Severity", border=1, fill=True)
+        pdf.cell(col_w[1], 9, "Count", border=1, fill=True, align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0)
+
+        sev_colors = {
+            "CRITICAL": (220, 50, 50),
+            "HIGH": (230, 140, 50),
+            "MEDIUM": (220, 200, 50),
+            "LOW": (100, 160, 220),
+            "INFO": (160, 160, 160),
+            "PASS": (80, 180, 80),
+        }
+
+        for severity in SEVERITY_ORDER:
+            count = summary.get(severity, 0)
+            if count == 0:
+                pdf.set_font(body_font, "", 10)
+            else:
+                pdf.set_font(body_font, "B", 10)
+            r, g, b = sev_colors.get(severity, (100, 100, 100))
+            pdf.set_fill_color(r, g, b)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(col_w[0], 8, f"  {severity}", border=1, fill=True)
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_fill_color(245, 245, 245)
+            pdf.cell(col_w[1], 8, str(count), border=1, fill=True, align="C", new_x="LMARGIN", new_y="NEXT")
+
+        pdf.ln(4)
+        pdf.set_font(body_font, "B", 12)
+        pdf.cell(0, 8, f"Total Findings: {summary['total']}", new_x="LMARGIN", new_y="NEXT")
+
+        # ── Findings ────────────────────────────────────────────────────
+        if visible:
+            pdf.add_page()
+            pdf.set_font(title_font, "B", 18)
+            pdf.cell(0, 12, "Findings", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(4)
+
+            for idx, finding in enumerate(visible, start=1):
+                sev = finding.get("severity", "INFO")
+                title = finding.get("title", "")
+                desc = finding.get("description", "")
+                evidence = finding.get("evidence", "")
+                mod = finding.get("module", "")
+
+                # Severity label with color
+                r, g, b = sev_colors.get(sev, (100, 100, 100))
+                pdf.set_fill_color(r, g, b)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font(body_font, "B", 10)
+                pdf.cell(28, 7, f" {sev} ", border=1, fill=True)
+                pdf.set_text_color(0, 0, 0)
+                pdf.set_font(body_font, "B", 11)
+                # Title next to severity badge
+                safe_title = title if _use_unicode else title.encode("ascii", errors="replace").decode()
+                pdf.cell(0, 7, f"  {idx}. {safe_title}", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(1)
+
+                # Description
+                pdf.set_font(body_font, "", 9)
+                safe_desc = desc if _use_unicode else desc.encode("ascii", errors="replace").decode()
+                pdf.set_x(15)
+                pdf.multi_cell(0, 5, safe_desc)
+                pdf.ln(1)
+
+                # Evidence
+                if evidence:
+                    pdf.set_font(body_font, "", 8)
+                    pdf.set_text_color(100, 100, 100)
+                    safe_ev = evidence[:200] if _use_unicode else evidence[:200].encode("ascii", errors="replace").decode()
+                    pdf.set_x(15)
+                    pdf.multi_cell(0, 4, f"Evidence: {safe_ev}")
+                    pdf.set_text_color(0, 0, 0)
+
+                # Module
+                if mod:
+                    pdf.set_font(body_font, "", 8)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.set_x(15)
+                    pdf.cell(0, 4, f"Module: {mod}", new_x="LMARGIN", new_y="NEXT")
+                    pdf.set_text_color(0, 0, 0)
+
+                pdf.ln(3)
+
+        # ── Overall Risk Assessment ──────────────────────────────────────
+        pdf.add_page()
+        pdf.set_font(title_font, "B", 18)
+        pdf.cell(0, 12, "Overall Risk Assessment", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(6)
+        pdf.set_font(body_font, "", 11)
+
+        grade_text = {
+            "A": "Excellent security posture. No significant findings.",
+            "B": "Good security with minor issues to address.",
+            "C": "Moderate risk — several findings require attention.",
+            "D": "Serious risk — critical vulnerabilities present.",
+            "F": "Critical failure — immediate remediation required.",
+        }.get(risk["grade"][0] if risk["grade"] else "C",
+              "Risk assessment based on automated pentest findings.")
+
+        pdf.multi_cell(0, 6,
+            f"Risk Score: {risk['score']} / 100\n"
+            f"Grade: {risk['grade']}\n\n"
+            f"{grade_text}\n\n"
+            f"This report was generated automatically by the Vault Pentest Tool.\n"
+            f"Findings are categorized by severity and include evidence where available.\n"
+            f"Review each finding and prioritize remediation based on risk level."
+        )
+
+        # ── Write ───────────────────────────────────────────────────────
+        try:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            pdf.output(str(report_path))
+            print(f"\n[+] PDF report written: {report_path}")
+            return report_path
+        except OSError as error:
+            print(f"\n[!] Could not write PDF report: {error}")
+            return None
+
 
 # ── module-level singleton (backward-compatible) ─────────────────────────────
 
@@ -319,8 +502,68 @@ def export_markdown_report(output_path: str, target=None):
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def export_pdf_report(output_path: str, target=None):
+    """Module-level wrapper for PDF export. Delegates to the default Report."""
+    return _default_report.export_pdf_report(output_path, target=target)
+
+
 def _resolve_report_path(output_path: str) -> Path:
     report_path = Path(output_path)
     if report_path.parent == Path("."):
         return Path("reports") / report_path
     return report_path
+
+
+# ── PDF font helper ───────────────────────────────────────────────────────────
+
+def _find_unicode_font() -> str | None:
+    """Locate a TTF font with Turkish/Unicode support.
+
+    Searches common locations across Windows, macOS, and Linux.
+    Returns the path to the first found font, or None.
+    """
+    import os
+    import glob
+    import platform
+
+    candidates: list[str] = []
+
+    if platform.system() == "Windows":
+        candidates = [
+            r"C:\Windows\Fonts\segoeui.ttf",
+            r"C:\Windows\Fonts\arial.ttf",
+            r"C:\Windows\Fonts\calibri.ttf",
+            r"C:\Windows\Fonts\times.ttf",
+        ]
+    elif platform.system() == "Darwin":
+        candidates = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/SFNSDisplay.ttf",
+            "/Library/Fonts/Arial.ttf",
+        ]
+    else:  # Linux
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ]
+
+    # Also check project-bundled font
+    project_root = Path(__file__).resolve().parent.parent
+    bundled = project_root / "fonts" / "DejaVuSans.ttf"
+    if bundled.exists():
+        return str(bundled)
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    # Glob fallback for DejaVu on Linux
+    if platform.system() == "Linux":
+        for pattern in [
+            "/usr/share/fonts/**/DejaVuSans.ttf",
+            "/usr/share/fonts/**/dejavu/DejaVuSans.ttf",
+        ]:
+            for match in glob.glob(pattern, recursive=True):
+                return match
+
+    return None

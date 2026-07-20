@@ -581,12 +581,45 @@ def chat(
     target: Optional[str] = typer.Option(None, "--target", help="Vault address"),
     token: Optional[str] = typer.Option(None, "--token", help="Vault token"),
     addr: Optional[str] = typer.Option(None, "--addr", help="Vault address (legacy)"),
-    provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider (ollama, openai, anthropic, deepseek)"),
-    model: Optional[str] = typer.Option(None, "--model", help="LLM model name"),
+    provider: Optional[str] = typer.Option(
+        None, "--provider",
+        help="LLM provider. If not set, you will be asked interactively. (ollama, openai, anthropic, deepseek)",
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model",
+        help="LLM model name. If not set, you will be asked interactively.",
+    ),
     skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
+    # ── Auto mode ──
+    auto: bool = typer.Option(
+        False, "--auto",
+        help="Run fully autonomous pentest — no interactive prompts. Exits when complete.",
+    ),
+    pdf_report: Optional[str] = typer.Option(
+        None, "--pdf-report",
+        help="PDF report output path (default: reports/pentest_report_<timestamp>.pdf)",
+    ),
+    hijack_path: Optional[str] = typer.Option(
+        None, "--hijack-path",
+        help="Scan a local path for leaked credentials during auto mode",
+    ),
+    auto_max_risk: str = typer.Option(
+        "read_only", "--auto-max-risk",
+        help="Maximum risk level for auto mode (read_only, state_changing, destructive)",
+    ),
+    auto_max_turns: int = typer.Option(
+        30, "--auto-max-turns",
+        help="Maximum LLM turns during auto mode",
+    ),
 ) -> None:
     """Start AI-powered pentest chat agent."""
     resolved_target = target or addr
+
+    # Auto mode requires a target
+    if auto and not resolved_target:
+        print("❌ --auto mode requires --target <url>. Nothing to do.")
+        raise typer.Exit(code=1)
+
     if skip_tls_verify:
         from core.tls_config import set_insecure_mode
         set_insecure_mode()
@@ -594,11 +627,17 @@ def chat(
     elif resolved_target and resolved_target.startswith("https://"):
         from core.tls_config import set_insecure_mode
         set_insecure_mode()
+
     start_chat_session(
-        vault_addr=target or addr,
+        vault_addr=resolved_target,
         token=token,
         provider=provider,
         model=model,
+        auto=auto,
+        pdf_report=pdf_report,
+        hijack_path=hijack_path,
+        auto_max_risk=auto_max_risk,
+        auto_max_turns=auto_max_turns,
     )
 
 

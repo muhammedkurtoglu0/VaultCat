@@ -348,7 +348,7 @@ The `ai_core/` module provides an LLM-driven agent that plans and executes pente
 ```bash
 python main.py chat
 python main.py chat --target https://localhost:8200 --skip-tls-verify --provider deepseek
-python main.py chat --provider deepseek --model deepseek-chat
+python main.py chat --provider deepseek --model deepseek-v4-pro
 python main.py chat --provider openai --model gpt-4o-mini
 python main.py chat --provider anthropic --model claude-sonnet-5
 ```
@@ -368,7 +368,7 @@ Supported providers:
 | Provider | Env Var | Default Model |
 |----------|---------|---------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
-| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | Ollama (local) | `OLLAMA_HOST` | (auto-detect) |
 

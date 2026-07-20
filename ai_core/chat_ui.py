@@ -22,6 +22,7 @@ except ImportError:
 from ai_core.agent import PentestAgent
 from ai_core.llm_engine import LLMClient, detect_provider
 from ai_core.memory import Memory
+from ai_core.models import get_models, get_default_model, list_providers, get_provider_name
 from ai_core.tools import ALL_TOOLS
 
 
@@ -34,20 +35,35 @@ class ChatUI:
         token: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        auto: bool = False,
+        pdf_report: str | None = None,
+        hijack_path: str | None = None,
+        auto_max_risk: str = "read_only",
+        auto_max_turns: int = 30,
     ):
         self.vault_addr = vault_addr
         self.token = token
+        # Track whether provider/model were explicitly passed (vs auto-detected)
+        self._provider_explicit = provider is not None
+        self._model_explicit = model is not None
         self.provider = provider or detect_provider()
-        self.model = model
+        self.model = model or get_default_model(self.provider)
         self.memory = Memory()
         self.agent = PentestAgent(
             vault_addr=vault_addr,
             token=token,
             provider=self.provider,
-            model=model,
+            model=self.model,
         )
         self.agent.set_tool_executor(self._execute_tool)
         self.running = True
+
+        # Auto mode config
+        self.auto = auto
+        self.pdf_report = pdf_report
+        self.hijack_path = hijack_path
+        self.auto_max_risk = auto_max_risk
+        self.auto_max_turns = auto_max_turns
 
         if vault_addr:
             self.memory.set_context("vault_addr", vault_addr)
@@ -57,18 +73,27 @@ class ChatUI:
     # ── public entry point ──────────────────────────────────────────────
 
     def start(self):
-        """Main interactive loop."""
+        """Main entry point — interactive or auto mode."""
+        if self.auto:
+            self._start_auto()
+            return
+
+        # ── Interactive provider/model selection (when not passed via CLI) ──
+        if not self._provider_explicit or not self._model_explicit:
+            self._select_provider_and_model()
+
         print("\n" + "=" * 60)
-        print("🛡️  VAULT AI PENTEST AGENT")
+        print("  VAULT AI PENTEST AGENT")
         print("=" * 60)
-        print(f"\n🧠 Provider : {self.provider}")
-        print(f"🤖 Model    : {self.agent.llm.model}")
-        print(f"📍 Target   : {self.vault_addr or 'set target <url>'}")
-        print(f"🔑 Token    : {self.token[:12] + '...' if self.token and len(self.token) > 12 else self.token or 'none'}")
-        print(f"🔧 Tools    : {len(ALL_TOOLS)} available")
-        print("\n💬 The agent decides WHAT to do, WHEN, and WHY.")
-        print("💬 Just tell it your objective — it handles everything.")
-        print("💬 'help', 'modules', 'findings', 'status', 'exit'")
+        print(f"\n  Provider : {self.provider}")
+        print(f"  Model    : {self.agent.llm.model}")
+        print(f"  Target   : {self.vault_addr or 'set target <url>'}")
+        token_display = self.token[:12] + '...' if self.token and len(self.token) > 12 else self.token or 'none'
+        print(f"  Token    : {token_display}")
+        print(f"  Tools    : {len(ALL_TOOLS)} available")
+        print("\n  The agent decides WHAT to do, WHEN, and WHY.")
+        print("  Just tell it your objective — it handles everything.")
+        print("  Commands: help, modules, findings, status, auto, fix, set, exit")
         print("=" * 60 + "\n")
 
         while self.running:
@@ -82,7 +107,7 @@ class ChatUI:
                 cmd = user_input.lower()
 
                 if cmd in ("exit", "quit", "q"):
-                    print("\n👾 AGENT: Shutting down. Goodbye!")
+                    print("\n[AGENT] Shutting down. Goodbye!")
                     break
 
                 if cmd in ("help", "yardım", "?"):
@@ -101,6 +126,14 @@ class ChatUI:
                     self._show_status()
                     continue
 
+                if cmd in ("auto", "otomatik"):
+                    self._start_auto_from_chat()
+                    continue
+
+                if cmd in ("remediate", "fix", "çözüm", "cozum"):
+                    self._show_remediation(user_input[4:].strip())
+                    continue
+
                 if cmd.startswith("set "):
                     self._handle_set(user_input[4:])
                     continue
@@ -114,6 +147,250 @@ class ChatUI:
                 print(f"\n❌ ERROR: {e}")
                 import traceback
                 traceback.print_exc()
+
+    # ── interactive provider / model selection ───────────────────────────
+
+    def _select_provider_and_model(self):
+        """Show interactive menus so the user can pick a provider and model.
+
+        Called at the start of ``start()`` when the user did NOT pass both
+        ``--provider`` and ``--model`` via the CLI.  The auto-detected
+        provider and default model are pre-selected so the user can just
+        press Enter to accept them.
+        """
+        import os
+
+        # ── 1. Pick provider ──────────────────────────────────────────
+        providers = list_providers()
+        if not self._provider_explicit:
+            print("\n" + "=" * 54)
+            print("  🤖 SELECT AI PROVIDER")
+            print("=" * 54)
+
+            for i, p in enumerate(providers, 1):
+                pid = p["id"]
+                # Check availability
+                env_var = {
+                    "anthropic": "ANTHROPIC_API_KEY",
+                    "openai": "OPENAI_API_KEY",
+                    "deepseek": "DEEPSEEK_API_KEY",
+                }.get(pid, "")
+                available = True
+                if env_var:
+                    available = bool(os.environ.get(env_var, "").strip())
+                elif pid == "ollama":
+                    try:
+                        from ai_core.models import _detect_ollama_models
+                        available = len(_detect_ollama_models()) > 0
+                    except Exception:
+                        available = False
+
+                icon = " ✅" if available else " ⚠️"
+                marker = "  ← varsayılan" if pid == self.provider else ""
+                print(f"  [{i}] {p['name']}{icon}{marker}")
+                print(f"      {p['description']}")
+
+            # Show env var hints for unavailable providers
+            for p in providers:
+                pid = p["id"]
+                env_var = {
+                    "anthropic": "ANTHROPIC_API_KEY",
+                    "openai": "OPENAI_API_KEY",
+                    "deepseek": "DEEPSEEK_API_KEY",
+                }.get(pid, "")
+                if env_var and not os.environ.get(env_var, "").strip():
+                    print(f"      💡 {pid}: set {env_var} env var")
+
+            print()
+
+            while True:
+                try:
+                    choice = input(
+                        f"  Sağlayıcı numarası [1-{len(providers)}, Enter={self.provider}]: "
+                    ).strip()
+                    if not choice:
+                        break  # keep current (auto-detected) provider
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(providers):
+                        self.provider = providers[idx]["id"]
+                        # Pick a sensible default model for the new provider
+                        default = get_default_model(self.provider)
+                        self.model = default
+                        break
+                    print(f"  1-{len(providers)} arası bir sayı girin.")
+                except ValueError:
+                    print(f"  1-{len(providers)} arası bir sayı girin.")
+                except (KeyboardInterrupt, EOFError):
+                    print("\n  Çıkış yapılıyor...")
+                    sys.exit(0)
+
+        # ── 2. Pick model ─────────────────────────────────────────────
+        if not self._model_explicit or not self._provider_explicit:
+            models = get_models(self.provider)
+            default_model = self.model or get_default_model(self.provider)
+
+            if not models:
+                print(
+                    f"\n  ⚠️  {get_provider_name(self.provider)} için model bulunamadı."
+                )
+                if default_model:
+                    print(f"  Varsayılan kullanılıyor: {default_model}")
+                    self.model = default_model
+                return
+
+            print(f"\n{'─' * 54}")
+            print(f"  📦 SELECT {get_provider_name(self.provider).upper()} MODEL")
+            print(f"{'─' * 54}")
+
+            for i, m in enumerate(models, 1):
+                marker = "  ← varsayılan" if m.id == default_model else ""
+                tags_str = ""
+                if m.tags:
+                    tags_str = f" [{', '.join(m.tags)}]"
+                print(f"  [{i}] {m.name}{marker}")
+                print(f"      {m.description}{tags_str}")
+
+            print()
+            while True:
+                try:
+                    choice = input(
+                        f"  Model numarası [1-{len(models)}, Enter={default_model or models[0].id}]: "
+                    ).strip()
+                    if not choice:
+                        self.model = default_model or models[0].id
+                        break
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(models):
+                        self.model = models[idx].id
+                        break
+                    print(f"  1-{len(models)} arası bir sayı girin.")
+                except ValueError:
+                    print(f"  1-{len(models)} arası bir sayı girin.")
+                except (KeyboardInterrupt, EOFError):
+                    print("\n  Çıkış yapılıyor...")
+                    sys.exit(0)
+
+        # ── 3. Apply selection ─────────────────────────────────────────
+        # Reinitialize LLM client with chosen provider & model
+        self.agent.llm = LLMClient(provider=self.provider, model=self.model)
+        self._provider_explicit = True
+        self._model_explicit = True
+        print(f"\n  ✅ {get_provider_name(self.provider)} / {self.model} seçildi.\n")
+
+    # ── auto mode ─────────────────────────────────────────────────────────
+
+    def _start_auto(self):
+        """Run autonomous pentest from CLI (--auto). Exits when done."""
+        exit_code = self._run_auto()
+        sys.exit(exit_code)
+
+    def _start_auto_from_chat(self):
+        """Run autonomous pentest from within interactive chat (typing 'auto')."""
+        if not self.vault_addr:
+            print("[ERROR] Set a target first: set target http://VAULT_IP:8200")
+            return
+        if not self.token:
+            print("[WARN] No token set — only unauthenticated recon will run.")
+            print("       Set a token first for full audit: set token hvs.xxx")
+        print("\n[*] Starting autonomous pentest. Press Ctrl+C to abort.\n")
+        exit_code = self._run_auto()
+        print(f"\n[*] Auto mode finished (exit code: {exit_code}). Back to chat.\n")
+
+    def _run_auto(self) -> int:
+        """Core autonomous pentest runner. Returns exit code (0=clean, 1=findings, 2=error)."""
+        import io
+        import sys as _sys
+        from ai_core.auto_mode import run_auto_pentest
+
+        # Force UTF-8 stdout so Unicode characters from tools don't crash
+        # on Windows terminals with cp1254/cp1252.
+        if hasattr(_sys.stdout, "buffer"):
+            try:
+                _sys.stdout = io.TextIOWrapper(
+                    _sys.stdout.buffer, encoding="utf-8", errors="replace"
+                )
+            except Exception:
+                pass
+
+        if not self.vault_addr:
+            return 1
+
+        # Use current provider/model (already set from CLI or interactive menus)
+        if not self._provider_explicit and not self._model_explicit:
+            pass  # already set in __init__ or _select_provider_and_model
+
+        # Reinitialize agent with current provider/model
+        self.agent.llm = LLMClient(provider=self.provider, model=self.model)
+
+        print("\n" + "=" * 60)
+        print("  VAULT AI PENTEST — AUTO MODE")
+        print("=" * 60)
+        print(f"\n  Provider : {self.provider}")
+        print(f"  Model    : {self.model}")
+        print(f"  Target   : {self.vault_addr}")
+        token_display = self.token[:12] + '...' if self.token and len(self.token) > 12 else self.token or 'none'
+        print(f"  Token    : {token_display}")
+        print(f"  Max Risk : {self.auto_max_risk}")
+        print(f"  Max Turns: {self.auto_max_turns}")
+        print(f"  PDF      : {self.pdf_report or 'auto-generated'}")
+        print("=" * 60 + "\n")
+
+        # Run the autonomous pentest
+        exit_code = 0
+        async def _run():
+            nonlocal exit_code
+            async for event in run_auto_pentest(
+                vault_addr=self.vault_addr,
+                token=self.token,
+                provider=self.provider,
+                model=self.model,
+                hijack_path=self.hijack_path,
+                max_risk=self.auto_max_risk,
+                max_turns=self.auto_max_turns,
+                pdf_report=self.pdf_report,
+                tool_executor=self._execute_tool,
+            ):
+                etype = event.get("type", "")
+
+                if etype == "status":
+                    print(event["message"])
+                elif etype == "thinking":
+                    print(f"\n{event['message']}")
+                elif etype == "tool_call":
+                    print(f"\n>> {event['message']}")
+                elif etype == "tool_result":
+                    result = event["message"]
+                    if len(result) > 300:
+                        result = result[:300] + "..."
+                    print(f"   -> {result}")
+                elif etype == "message":
+                    print(f"\n[AGENT] {event['message']}")
+                elif etype == "complete":
+                    print(f"\n[DONE] {event['message']}")
+                elif etype == "warning":
+                    print(f"\n[WARN] {event['message']}")
+                elif etype == "error":
+                    print(f"\n[ERROR] {event['message']}")
+                elif etype == "pdf_report":
+                    print(f"\n[PDF] Report: {event['path']}")
+                elif etype == "exit_code":
+                    exit_code = event.get("code", 0)
+
+        try:
+            asyncio.run(_run())
+        except KeyboardInterrupt:
+            print("\n\n[WARN] Auto mode interrupted by user.")
+            return 2
+        except Exception as exc:
+            print(f"\n[ERROR] Auto mode failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            return 2
+
+        print(f"\n{'=' * 60}")
+        print(f"  AUTO MODE COMPLETE — exit code: {exit_code}")
+        print(f"{'=' * 60}")
+        return exit_code
 
     # ── agent runner ────────────────────────────────────────────────────
 
@@ -246,26 +523,26 @@ class ChatUI:
 
     def _show_help(self):
         print(f"""
-📖 COMMANDS:
+  COMMANDS:
 
-    <anything>  → Tell the agent what to do (it decides HOW)
-    modules     → List all 18 tools the agent can use
-    findings    → Show accumulated pentest findings
-    status      → Show current target, token, provider, model
-    set target  → Set the Vault target URL
-    set token   → Set a Vault token
-    set model   → Change the LLM model
-    set provider→ Change the LLM provider (ollama/openai/anthropic)
-    exit        → Quit
+    <anything>  -> Tell the agent what to do (it decides HOW)
+    modules     -> List all tools the agent can use
+    findings    -> Show accumulated pentest findings
+    status      -> Show current target, token, provider, model
+    auto        -> Run fully autonomous pentest + generate PDF report
+    set target  -> Set the Vault target URL
+    set token   -> Set a Vault token
+    set model   -> Change the LLM model
+    set provider-> Change the LLM provider (ollama/openai/anthropic/deepseek)
+    exit        -> Quit
 
-📌 EXAMPLES:
-    ▶ "Scan http://localhost:8200 and find every vulnerability"
-    ▶ "I found this token hvs.abc123 — assess its power and escalate"
-    ▶ "Do a full penetration test on this Vault instance"
-    ▶ "Check if this version has any known CVEs"
-    ▶ "After recon, automatically exploit whatever you find"
+  EXAMPLES:
+    > "Scan http://localhost:8200 and find every vulnerability"
+    > "I found this token hvs.abc123 — assess its power and escalate"
+    > "Do a full penetration test on this Vault instance"
+    > auto
 
-🧠 Provider: {self.provider}  Model: {self.agent.llm.model}  Tools: {len(ALL_TOOLS)}
+  Provider: {self.provider}  Model: {self.agent.llm.model}  Tools: {len(ALL_TOOLS)}
 """)
 
     def _show_tools(self):
@@ -306,6 +583,66 @@ class ChatUI:
             if desc:
                 print(f"     {desc[:120]}")
 
+    def _show_remediation(self, filter_text: str = ""):
+        """Feed current findings to the agent and ask for remediation advice.
+
+        The agent responds with specific, actionable fix steps for each
+        finding.  If *filter_text* is provided (e.g. a finding number or
+        keyword), the agent focuses on only those findings.
+        """
+        from core.report import findings as global_findings
+
+        findings = self.memory.findings or global_findings
+        if not findings:
+            print("\n  No findings yet — nothing to remediate.")
+            print("  Run some scans first (or try 'auto' for a full assessment).")
+            return
+
+        # Build a compact findings summary for the agent
+        lines = []
+        for i, f in enumerate(findings, 1):
+            sev = f.get("severity", "INFO")
+            title = f.get("title", "")
+            desc = f.get("description", "")[:200]
+            evidence = f.get("evidence", "")[:150]
+            lines.append(f"{i}. [{sev}] {title}")
+            if desc:
+                lines.append(f"   {desc}")
+            if evidence:
+                lines.append(f"   Evidence: {evidence}")
+
+        findings_text = "\n".join(lines)
+
+        focus = ""
+        if filter_text:
+            focus = (
+                f"\nCRITICAL: The user specifically asked about: '{filter_text}'. "
+                f"Focus your analysis on findings matching this. "
+                f"Still mention other CRITICAL/HIGH findings briefly if they are related."
+            )
+
+        prompt = (
+            f"I need REMEDIATION ADVICE for the following Vault pentest findings. "
+            f"Target: {self.vault_addr or 'unknown'}. "
+            f"Token level: {'root' if self.token else 'none'}. "
+            f"\n\n"
+            f"=== FINDINGS ({len(findings)} total) ===\n{findings_text}\n=== END ===\n"
+            f"{focus}\n"
+            f"IMPORTANT — your task:\n"
+            f"1. Analyze the findings and identify the ROOT CAUSE patterns (not one-by-one, but grouped by type).\n"
+            f"2. For each root cause, give a CONCRETE fix with exact Vault CLI commands or API calls.\n"
+            f"3. Prioritize: CRITICAL/HIGH first, then MEDIUM, then LOW.\n"
+            f"4. Use TABLES to present fixes clearly. Format:\n"
+            f"   | # | Finding | Severity | Root Cause | Fix (CLI command) |\n"
+            f"5. After the table, give a PRIORITY ACTION PLAN (step 1, step 2, step 3 — what to do first).\n"
+            f"6. Be specific — no vague advice like 'review policies'. Give exact commands.\n"
+            f"7. If findings show leaked credentials, explain HOW to rotate them.\n"
+            f"Respond in the user's language (Turkish if they speak Turkish)."
+        )
+
+        print(f"\n  Analyzing {len(findings)} findings for remediation...\n")
+        asyncio.run(self._run_agent(prompt))
+
     def _show_status(self):
         llm = self.agent.llm
         print(f"""
@@ -321,16 +658,17 @@ class ChatUI:
 
     def _handle_set(self, command: str):
         parts = command.strip().split(" ", 1)
-        if len(parts) != 2:
+        if len(parts) < 1:
             print("❌ Usage: set <param> <value>")
             print("   set target http://vault:8200")
             print("   set token hvs.abc123...")
-            print("   set model llama3.1:70b")
-            print("   set provider openai")
+            print("   set model <name>     (no value = interactive pick)")
+            print("   set provider <name>  (shows model list after)")
             print("   set tls-verify off")
             return
 
-        key, value = parts[0].strip(), parts[1].strip()
+        key = parts[0].strip()
+        value = parts[1].strip() if len(parts) > 1 else ""
 
         if key == "target":
             self.vault_addr = value
@@ -347,12 +685,24 @@ class ChatUI:
             self.memory.set_context("token", value)
             print(f"✅ Token set: {value[:12] if len(value) > 12 else value}...")
         elif key == "model":
-            self.agent.llm.model = value
-            print(f"✅ Model set: {value}")
+            if not value:
+                # Interactive model selection for current provider
+                self._pick_model_for_provider(self.provider)
+            else:
+                self.agent.llm.model = value
+                self.model = value
+                print(f"✅ Model set: {value}")
         elif key == "provider":
-            self.agent.llm = LLMClient(provider=value, model=self.agent.llm.model)
+            if not value:
+                print("❌ Usage: set provider <openai|anthropic|deepseek|ollama>")
+                return
+            if value not in ("openai", "anthropic", "deepseek", "ollama"):
+                print(f"❌ Unknown provider: {value}")
+                print("   Valid: openai, anthropic, deepseek, ollama")
+                return
             self.provider = value
-            print(f"✅ Provider set: {value}")
+            # Show model selection after provider change
+            self._pick_model_for_provider(value)
         elif key == "tls-verify":
             if value.lower() in ("off", "false", "skip", "0", "no"):
                 from core.tls_config import set_insecure_mode
@@ -365,6 +715,50 @@ class ChatUI:
         else:
             print(f"❌ Unknown parameter: {key}")
             print("   Valid: target, token, model, provider")
+
+    def _pick_model_for_provider(self, provider: str):
+        """Show model selection menu for a specific provider."""
+        models = get_models(provider)
+        default_model = get_default_model(provider)
+
+        if not models:
+            print(f"  ⚠️  {get_provider_name(provider)} için model bulunamadı.")
+            if default_model:
+                print(f"  Varsayılan kullanılıyor: {default_model}")
+                self.model = default_model
+                self.agent.llm = LLMClient(provider=provider, model=default_model)
+            return
+
+        print(f"\n  📦 {get_provider_name(provider).upper()} MODELS:")
+        for i, m in enumerate(models, 1):
+            marker = "  ← varsayılan" if m.id == default_model else ""
+            tags_str = f" [{', '.join(m.tags)}]" if m.tags else ""
+            print(f"  [{i}] {m.name}{marker}")
+            print(f"      {m.description}{tags_str}")
+
+        print()
+        while True:
+            try:
+                choice = input(
+                    f"  Model numarası [1-{len(models)}, Enter={default_model or models[0].id}]: "
+                ).strip()
+                if not choice:
+                    self.model = default_model or models[0].id
+                    break
+                idx = int(choice) - 1
+                if 0 <= idx < len(models):
+                    self.model = models[idx].id
+                    break
+                print(f"  1-{len(models)} arası bir sayı girin.")
+            except ValueError:
+                print(f"  1-{len(models)} arası bir sayı girin.")
+            except (KeyboardInterrupt, EOFError):
+                self.model = default_model or models[0].id
+                break
+
+        # Apply
+        self.agent.llm = LLMClient(provider=provider, model=self.model)
+        print(f"  ✅ {get_provider_name(provider)} / {self.model} seçildi.\n")
 
 
 async def _invoke_mcp_handler(handler, params: dict) -> str:
@@ -389,9 +783,24 @@ def start_chat_session(
     token: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    auto: bool = False,
+    pdf_report: str | None = None,
+    hijack_path: str | None = None,
+    auto_max_risk: str = "read_only",
+    auto_max_turns: int = 30,
 ):
-    """Launch the interactive AI pentest chat session."""
-    chat = ChatUI(vault_addr=vault_addr, token=token, provider=provider, model=model)
+    """Launch the interactive AI pentest chat session (or auto mode)."""
+    chat = ChatUI(
+        vault_addr=vault_addr,
+        token=token,
+        provider=provider,
+        model=model,
+        auto=auto,
+        pdf_report=pdf_report,
+        hijack_path=hijack_path,
+        auto_max_risk=auto_max_risk,
+        auto_max_turns=auto_max_turns,
+    )
     chat.start()
 
 

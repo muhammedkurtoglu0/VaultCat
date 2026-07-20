@@ -18,7 +18,7 @@ class DeepSeekPlanner(OpenAIPlanner):
     """
 
     def __init__(self, llm_client: LLMClient):
-        super().__init__(llm_client, model="deepseek-chat")
+        super().__init__(llm_client, model="deepseek-v4-flash")
 
     @property
     def provider_name(self) -> str:

@@ -573,11 +573,11 @@ async def run_raw_vault_request(
             ensure_ascii=False,
         )
 
-    allowed_methods = {"GET", "POST", "PUT", "DELETE"}
+    allowed_methods = {"GET", "POST", "PUT", "DELETE", "LIST"}
     method = method.upper()
     if method not in allowed_methods:
         return json.dumps(
-            {"status": "error", "message": f"Invalid method: {method}. Use GET/POST/PUT/DELETE."},
+            {"status": "error", "message": f"Invalid method: {method}. Use GET/POST/PUT/DELETE/LIST."},
             ensure_ascii=False,
         )
 

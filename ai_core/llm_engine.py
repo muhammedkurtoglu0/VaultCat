@@ -196,7 +196,7 @@ class LLMClient:
         defaults = {
             "openai": "gpt-4o-mini",
             "anthropic": os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-5"),
-            "deepseek": "deepseek-chat",
+            "deepseek": "deepseek-v4-flash",
         }
         if self.provider in defaults:
             return defaults[self.provider]

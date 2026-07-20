@@ -289,7 +289,7 @@ TOOL_READ_SINGLE_POLICY = ToolDef(
 TOOL_RUN_RAW_VAULT_REQUEST = ToolDef(
     name="run_raw_vault_request",
     description=(
-        "Ham Vault API istegi gonder (GET/POST/PUT/DELETE). "
+        "Ham Vault API istegi gonder (GET/POST/PUT/DELETE/LIST). "
         "Token OPSIYONELDIR — AppRole/login gibi unauthenticated islemler icin "
         "token='' gonder, X-Vault-Token header eklenmez. "
         "Kullaniciya manuel curl komutu onermek yerine BU TOOL'U KULLAN. "
@@ -304,7 +304,7 @@ TOOL_RUN_RAW_VAULT_REQUEST = ToolDef(
     ),
     parameters=[
         ToolParam("vault_addr", "string", "Target Vault URL", required=True),
-        ToolParam("method", "string", "HTTP method: GET/POST/PUT/DELETE", required=True),
+        ToolParam("method", "string", "HTTP method: GET/POST/PUT/DELETE/LIST", required=True),
         ToolParam("path", "string", "Vault API path, e.g. 'auth/approle/login'", required=True),
         ToolParam("token", "string", "Vault token (bos birakilirsa unauthenticated)"),
         ToolParam("body", "object", "JSON body for POST/PUT requests"),
