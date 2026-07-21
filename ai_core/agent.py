@@ -184,6 +184,7 @@ class PentestAgent:
         self._plan_tool_call_count = 0
         self._searched_web: set[str] = set()  # cache keys for already-searched queries
         self._searched_cves: set[str] = set()  # CVE IDs already searched
+        self._session_queries: set[str] = set()  # normalized queries searched this session
 
         if vault_addr:
             self.memory.set_context("vault_addr", vault_addr)
@@ -414,6 +415,24 @@ class PentestAgent:
                         except Exception as exc:
                             yield {"type": "warning", "message": f"Web search failed: {exc}"}
 
+                    # ── web_search context enrichment ─────────────────
+                    # When the LLM explicitly calls web_search, inject
+                    # supplementary context notes (repeat-detection,
+                    # version-mismatch warnings).  The LLM's query and
+                    # parameters are NEVER modified — only informational
+                    # user messages are appended.
+                    enrichment_notes: list[str] = []
+                    if name == "web_search":
+                        query = str(arguments.get("query", "")).strip()
+                        if query:
+                            repeat_note = self._note_repeat_query(query)
+                            if repeat_note:
+                                enrichment_notes.append(repeat_note)
+
+                            version_note = self._note_version_mismatch(query)
+                            if version_note:
+                                enrichment_notes.append(version_note)
+
                     # Parse result for a quick summary
                     result_summary = self._summarize_result(tool_result)
 
@@ -436,6 +455,14 @@ class PentestAgent:
                         "content": tool_result[:2000],
                         "tool_call_id": call_id,
                     })
+
+                    # ── Append web_search enrichment notes (if any) ──
+                    for note in enrichment_notes:
+                        messages.append({
+                            "role": "user",
+                            "content": note,
+                        })
+
                     # Prompt LLM to analyze — BRIEFLY, no option lists
                     messages.append({
                         "role": "user",
@@ -728,6 +755,88 @@ class PentestAgent:
 
         # Generic fallback
         return f"HashiCorp Vault {tool_name} error"
+
+    # ── web_search context enrichment ─────────────────────────────────────
+
+    @staticmethod
+    def _normalize_query(query: str) -> str:
+        """Normalize a query for dedup: lowercase, trim, collapse whitespace."""
+        return " ".join(query.strip().lower().split())
+
+    def _note_repeat_query(self, query: str) -> str | None:
+        """Return a context note if *query* was already searched this session.
+
+        The query is **never** blocked or modified — this only produces an
+        informational note so the LLM can avoid re-analyzing stale results.
+        """
+        norm = self._normalize_query(query)
+        if norm in self._session_queries:
+            return (
+                f"[WEB_SEARCH NOTE] This query was already searched earlier in "
+                f"this session: \"{query}\". The results may be returning from "
+                f"the 24-hour cache. If the previous search was adequate, "
+                f"reference those findings instead of re-analyzing."
+            )
+        # Track for future calls
+        self._session_queries.add(norm)
+        return None
+
+    def _note_version_mismatch(self, query: str) -> str | None:
+        """Return a version-mismatch note if *query* references a Vault version
+        different from what was previously discovered in this session.
+
+        The LLM's query is **never** changed — this is purely an informational
+        note for the LLM to consider.
+        """
+        import re
+
+        # Extract version from query (e.g. "1.15.3" or "v1.18.0")
+        m = re.search(r'\bv?(\d+\.\d+\.\d+)\b', query)
+        if not m:
+            return None
+        query_version = m.group(1)
+
+        # Collect known versions from memory findings and global report
+        known_versions: set[str] = set()
+
+        # 1. Memory findings
+        for f in self.memory.findings:
+            title = f.get("title", "")
+            desc = f.get("description", "")
+            for v in re.findall(r'\b\d+\.\d+\.\d+\b', f"{title} {desc}"):
+                known_versions.add(v)
+
+        # 2. Global report findings
+        try:
+            from core.report import findings as global_findings
+            for f in global_findings:
+                title = f.get("title", "")
+                desc = f.get("description", "")
+                for v in re.findall(r'\b\d+\.\d+\.\d+\b', f"{title} {desc}"):
+                    known_versions.add(v)
+        except ImportError:
+            pass
+
+        # 3. Memory context
+        for key in ("vault_version", "version", "detected_version"):
+            ctx_val = self.memory.get_context(key)
+            if ctx_val:
+                for v in re.findall(r'\b\d+\.\d+\.\d+\b', str(ctx_val)):
+                    known_versions.add(v)
+
+        # Check for mismatch
+        for kv in known_versions:
+            if kv != query_version:
+                return (
+                    f"[WEB_SEARCH NOTE] The LLM's query references Vault version "
+                    f"{query_version}, but this session previously detected version "
+                    f"{kv}. There may be a version mismatch — verify the correct "
+                    f"target version before acting on search results."
+                )
+
+        return None
+
+    # ── completion marker ─────────────────────────────────────────────────
 
     @staticmethod
     def _is_completion_marker(text: str) -> bool:

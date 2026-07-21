@@ -224,3 +224,141 @@ class TestAgentPlanControls:
 
     def test_max_plan_tool_calls(self, agent: PentestAgent):
         assert agent.MAX_PLAN_TOOL_CALLS == 15
+
+
+# ---------------------------------------------------------------------------
+# PentestAgent — web_search context enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestAgentWebSearchEnrichment:
+    """Test _note_repeat_query and _note_version_mismatch enrichment helpers."""
+
+    @pytest.fixture
+    def agent(self):
+        return PentestAgent(
+            vault_addr=FAKE_VAULT_ADDR,
+            token=FAKE_TOKEN,
+            provider="openai",
+        )
+
+    # ── Repeat query detection ──────────────────────────────────────────
+
+    def test_repeat_query_returns_note(self, agent: PentestAgent):
+        """Second call with same normalized query returns a note."""
+        first = agent._note_repeat_query("Vault CVE-2024-2048 exploit")
+        assert first is None  # first time, no note
+
+        second = agent._note_repeat_query("Vault CVE-2024-2048 exploit")
+        assert second is not None
+        assert "already searched" in second
+
+    def test_different_query_returns_no_note(self, agent: PentestAgent):
+        """Different queries should never trigger the repeat note."""
+        agent._note_repeat_query("Vault CVE-2024-2048")
+        result = agent._note_repeat_query("Vault CVE-2025-9999")
+        assert result is None
+
+    def test_repeat_query_case_insensitive(self, agent: PentestAgent):
+        """Normalization is case-insensitive."""
+        agent._note_repeat_query("Vault CVE-2024-2048 Exploit")
+        result = agent._note_repeat_query("vault cve-2024-2048 exploit")
+        assert result is not None
+        assert "already searched" in result
+
+    def test_repeat_query_whitespace_insensitive(self, agent: PentestAgent):
+        """Normalization collapses whitespace."""
+        agent._note_repeat_query("  Vault   CVE-2024-2048  ")
+        result = agent._note_repeat_query("Vault CVE-2024-2048")
+        assert result is not None
+        assert "already searched" in result
+
+    def test_query_is_tracked_in_set(self, agent: PentestAgent):
+        """After _note_repeat_query, the normalized query is in the set."""
+        assert len(agent._session_queries) == 0
+        agent._note_repeat_query("Vault config best practices")
+        assert "vault config best practices" in agent._session_queries
+
+    def test_query_is_tracked_even_on_first_call(self, agent: PentestAgent):
+        """First call tracks the query (returns None but adds to set)."""
+        agent._note_repeat_query("First time query")
+        assert "first time query" in agent._session_queries
+
+    # ── Version mismatch notes ──────────────────────────────────────────
+
+    def test_version_mismatch_returns_note(self, agent: PentestAgent):
+        """When memory has a different version, a mismatch note is returned."""
+        # Populate memory with a version finding
+        agent.memory.add_finding({
+            "severity": "MEDIUM",
+            "title": "Vault version 1.15.6 has known CVEs",
+            "description": "Detected Vault server version 1.15.6",
+        })
+        note = agent._note_version_mismatch("HashiCorp Vault 1.18.0 exploit CVE-2024")
+        assert note is not None
+        assert "1.18.0" in note
+        assert "1.15.6" in note
+        assert "version mismatch" in note.lower()
+
+    def test_version_match_returns_none(self, agent: PentestAgent):
+        """When memory version matches query version, no note."""
+        agent.memory.add_finding({
+            "severity": "MEDIUM",
+            "title": "Vault version 1.15.6",
+            "description": "Running Vault 1.15.6",
+        })
+        note = agent._note_version_mismatch("Vault 1.15.6 exploit")
+        assert note is None
+
+    def test_no_version_in_query_returns_none(self, agent: PentestAgent):
+        """When query has no version number, no mismatch note."""
+        agent.memory.add_finding({
+            "severity": "MEDIUM",
+            "title": "Vault version 1.15.6",
+        })
+        note = agent._note_version_mismatch("Vault authentication bypass")
+        assert note is None
+
+    def test_no_version_in_memory_returns_none(self, agent: PentestAgent):
+        """When memory has no version info, no mismatch note."""
+        note = agent._note_version_mismatch("Vault 1.15.6 exploit")
+        assert note is None
+
+    def test_version_from_context_key(self, agent: PentestAgent):
+        """Version from memory context (detected_version) is also checked."""
+        agent.memory.set_context("detected_version", "1.18.2")
+        note = agent._note_version_mismatch("Vault 1.15.0 vulnerability")
+        assert note is not None
+        assert "1.18.2" in note
+        assert "1.15.0" in note
+
+    def test_multiple_known_versions_one_mismatch(self, agent: PentestAgent):
+        """When multiple versions are known, any mismatch triggers note."""
+        agent.memory.add_finding({
+            "title": "Server A running Vault 1.15.6",
+        })
+        agent.memory.add_finding({
+            "title": "Server B running Vault 1.18.2",
+        })
+        # Query matches 1.18.2 but not 1.15.6 → mismatch detected
+        note = agent._note_version_mismatch("Vault 1.18.2 exploit")
+        assert note is not None
+
+    # ── Query/preservation immutability ─────────────────────────────────
+
+    def test_note_methods_never_mutate_query(self, agent: PentestAgent):
+        """The enrichment methods return notes but never modify the input."""
+        query = "Vault CVE-2024-2048 exploit"
+        original = query
+
+        agent._note_repeat_query(query)
+        agent._note_version_mismatch(query)
+
+        assert query == original
+
+    def test_normalize_query_is_pure(self, agent: PentestAgent):
+        """_normalize_query returns a new string, never mutates input."""
+        original = "  Vault   CVE  "
+        result = agent._normalize_query(original)
+        assert result == "vault cve"
+        assert original == "  Vault   CVE  "  # unchanged

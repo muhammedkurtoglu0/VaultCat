@@ -11,7 +11,7 @@ The default workflow assumes an external tester starts with only a target URL:
 - No Docker access
 - No Kubernetes access
 
-The tool focuses on safe attack surface mapping, fingerprinting, unauthenticated misconfiguration checks, and optional authenticated assessment when a token is explicitly provided.
+The tool focuses on attack surface mapping, fingerprinting, unauthenticated misconfiguration checks, optional authenticated assessment, and **controlled active exploitation** when explicitly authorized.
 
 The current development direction prioritizes Vault credential hijacking risk assessment:
 
@@ -22,11 +22,11 @@ The current development direction prioritizes Vault credential hijacking risk as
 - Detect Vault Database Secrets Engine clues, including dynamic database credential paths, role definitions, TTLs, creation statements, and leaked static DB plugin credentials.
 - Treat placeholders, environment-variable references, and generated code variables as context instead of concrete exposed credentials.
 - Validate discovered material only when explicitly requested and authorized.
-- Avoid secret read, write, delete, brute force, or destructive actions.
+- Secret read, write, and destructive actions are available through **active execution modules**, gated behind explicit `--confirm-active` and `--active-max-risk` flags.
 
 ## Ethics and Authorization
 
-Use this tool only on systems you own or have explicit permission to assess. It does not perform brute force, password cracking, destructive exploitation, or data modification by default.
+Use this tool only on systems you own or have explicit permission to assess. Read-only modules run freely; state-changing and destructive operations require the `--confirm-active` flag (enforced at runtime). It does not perform brute force or password cracking.
 
 ## Install
 
@@ -295,21 +295,41 @@ python main.py --target http://localhost:8200 --token YOUR_TOKEN --module vault_
 python main.py --target http://localhost:8200 --module vault_seal.unseal_vault --confirm-active
 ```
 
+### Auto-Pilot Safety
+
+When `--auto-pilot` is enabled, the AI agent auto-executes PoC chains from web search results:
+- Only **high** and **medium** confidence chains are executed
+- Only `read_only` and `state_changing` steps run automatically
+- **Destructive** chains are always skipped — reported but never auto-executed
+
 ### Available Modules
+
+22 modules registered in `active_execution/registry.py`. Each carries an explicit risk level enforced at runtime:
 
 | Module ID | Risk | Description |
 |-----------|------|-------------|
-| `privilege_escalation.token_abuse` | state_changing | Auto-detect wildcard sudo paths, create backdoor policies, generate root-equivalent tokens |
-| `secret_exfiltration.kv_dump` | state_changing | Enumerate + dump all KV secrets, Transit keys, PKI certs |
-| `database_credential_harvest.dynamic_creds` | state_changing | Generate dynamic DB users from all accessible roles |
-| `cloud_key_exfiltration.key_dump` | state_changing | Locate + exfiltrate cloud provider keys |
-| `vault_seal.seal_status` | read_only | Check whether Vault is sealed |
-| `vault_seal.seal_vault` | state_changing | Seal Vault (DoS — all tokens invalid, all engines stop) |
-| `vault_seal.unseal_vault` | state_changing | Unseal Vault with Shamir key (recovery) |
-| `audit_backdoor.disable` | destructive | Disable all audit devices to hide activity |
-| `token_exploit.creation` | state_changing | Create, renew, lookup, orphan tokens |
-| `policy_exploit.modification` | state_changing | List, read, clone, escalate policies |
-| `persistence.backdoor` | state_changing | Deploy persistent auth backdoor |
+| `privilege_escalation.token_abuse` | `state_changing` | Auto-detect wildcard sudo paths, create backdoor policies, generate root-equivalent tokens |
+| `secret_exfiltration.kv_dump` | `read_only` | Enumerate + dump all KV secrets, Transit keys, PKI certs |
+| `database_credential_harvest.dynamic_creds` | `state_changing` | Generate dynamic DB users from all accessible roles |
+| `cloud_key_exfiltration.key_dump` | `state_changing` | Locate + exfiltrate cloud provider keys (AWS/Azure/GCP) |
+| `vault_seal.seal_status` | `read_only` | Check whether Vault is sealed |
+| `vault_seal.seal_vault` | `state_changing` | Seal Vault (DoS — all tokens invalid, all engines stop) |
+| `vault_seal.unseal_vault` | `state_changing` | Unseal Vault with Shamir key (recovery) |
+| `audit_backdoor.disable` | `destructive` | Disable all audit devices to hide activity |
+| `token_exploit.creation` | `state_changing` | Create, renew, lookup, orphan tokens |
+| `policy_exploit.modification` | `state_changing` | List, read, clone, escalate policies |
+| `persistence.backdoor` | `destructive` | Deploy persistent auth backdoor (AppRole/userpass) |
+| `multi_persistence.backdoor` | `destructive` | Deploy multiple concurrent backdoors across auth methods |
+| `pivot_engine.cross_service` | `destructive` | Cross-service pivot: Vault → DB → OS shell (PostgreSQL `COPY FROM PROGRAM`) |
+| `database_pivot.exploit` | `destructive` | Direct database exploitation via harvested credentials |
+| `database_exploit.exploit` | `destructive` | Database engine exploitation (privilege escalation within DB) |
+| `cloud_pivot.exploit` | `destructive` | Cloud infrastructure pivot via exfiltrated IAM keys |
+| `cloud_exploit.exploit` | `destructive` | Cloud provider exploitation (IAM privilege escalation) |
+| `raft_storage.exploit` | `destructive` | Raft storage manipulation (snapshot extraction, tampering) |
+| `unseal_key.exfiltration` | `destructive` | Exfiltrate Shamir unseal key material from Vault internals |
+| `payload_module.reverse_shell` | `destructive` | Deploy reverse shell payload via compromised Vault access |
+| `cve_scanner.scan` | `state_changing` | Active CVE exploitation attempts against known Vault CVEs |
+| `unauthenticated.attack` | `read_only` | Unauthenticated attack surface scanning (no credentials needed) |
 
 ## Vault Pentest Lab
 
@@ -467,18 +487,24 @@ Starts a FastMCP server on `127.0.0.1:8000` exposing 26 MCP tools: recon, audit,
 
 ### Web Search & PoC-to-Action
 
-The agent automatically searches the web when it encounters CVEs, errors, or unknown versions. Results are parsed for executable PoC code (curl, requests, vault CLI) and converted into `run_raw_vault_request` calls.
+The agent uses `web_search` as a regular tool — the LLM decides when to search based on context, not regex patterns. Results are parsed for executable PoC code (curl, requests, vault CLI) and converted into `run_raw_vault_request` calls.
 
 **Default: DuckDuckGo** — free, no API key, works out of the box.  
 **Optional: Tavily** — 1000 queries/month free. Set `TAVILY_API_KEY` in `.env` (copy from `.env.example`). If Tavily fails or key is missing, DuckDuckGo is used as fallback.
 
+**Domain reliability scoring** — results are scored/sorted by domain trust. Official sources (`developer.hashicorp.com`, `nvd.nist.gov`, `github.com/hashicorp`, `cve.mitre.org`, `github.com/advisories`) get priority; random blogs rank lower but are never filtered out. Pass `prefer_domains` to customize.
+
+**Full-page fetch** (`fetch_top_n`) — optionally fetch and extract the full text (up to 5000 chars) of the top N results. Uses trafilatura (preferred) with BeautifulSoup fallback for HTML cleaning. Enables PoC parser to find exploit code buried deep in pages beyond the snippet.
+
+**Context enrichment** — before executing a `web_search` call, the agent injects context notes: repeat-query detection (session-level dedup) and version-mismatch warnings (when the query references a Vault version different from what was previously discovered). The LLM's query is **never modified or blocked** — only supplementary information is added.
+
 | Component | File | Role |
 |-----------|------|------|
-| Search engine | `ai_core/web_search.py` | DuckDuckGo (default) + Tavily (opt-in), 24h MD5 cache |
-| PoC parser | `ai_core/poc_parser.py` | Extracts curl/requests/vault CLI from text → `PoCAction` |
+| Search engine | `ai_core/web_search.py` | DuckDuckGo (default) + Tavily (opt-in), 24h MD5 cache, domain scoring, full-page fetch |
+| PoC parser | `ai_core/poc_parser.py` | Extracts curl/requests/vault CLI from text + full_text → `PoCAction` |
 | PoC sequencer | `ai_core/poc_sequencer.py` | Chains actions: producer→consumer, dependency detection |
 
-**Flow:** web search → parse PoCs → sequence into chains → offer to execute (or auto-execute in `--auto-pilot` mode).
+**Flow:** LLM calls web_search → domain scoring + optional full-page fetch → parse PoCs → sequence into chains → offer to execute (or auto-execute in `--auto-pilot` mode).
 
 ```bash
 # Disable web search (privacy / air-gapped)

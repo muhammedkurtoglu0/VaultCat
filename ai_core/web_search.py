@@ -22,10 +22,23 @@ import os
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 # Cache directory
 _CACHE_DIR = Path("cache/web_search")
 _CACHE_TTL_SECONDS = 86400  # 24 hours
+
+# Default preferred domains — official Vault / CVE sources get higher priority.
+# These are used when ``prefer_domains`` is not explicitly passed to
+# :func:`search_web` / :func:`search_web_sync`.
+DEFAULT_PREFER_DOMAINS: list[str] = [
+    "developer.hashicorp.com",
+    "discuss.hashicorp.com",
+    "nvd.nist.gov",
+    "github.com/hashicorp",
+    "cve.mitre.org",
+    "github.com/advisories",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -51,17 +64,190 @@ def _get_tavily_key() -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Domain reliability scoring
+# ---------------------------------------------------------------------------
+
+
+def _score_result(result: dict, prefer_domains: list[str]) -> int:
+    """Assign a relevance score to a single search result based on its URL.
+
+    Scoring rules (additive):
+    * +10  — a preferred domain appears in the URL netloc or anywhere in the URL
+    * +5   — ``cve`` or ``advisory`` appears in the URL (case-insensitive)
+
+    A result can earn multiple +10 bonuses if several preferred domains match
+    (e.g. ``github.com/hashicorp`` matching both in-path and in-domain).
+    """
+    url = result.get("url", "")
+    if not url:
+        return 0
+
+    score = 0
+    url_lower = url.lower()
+
+    # Parse netloc once for domain checks
+    try:
+        parsed = urlparse(url)
+        netloc = (parsed.netloc or "").lower()
+    except Exception:
+        netloc = ""
+
+    for pd in prefer_domains:
+        pd_lower = pd.lower()
+        if pd_lower in netloc or pd_lower in url_lower:
+            score += 10
+
+    # Bonus for CVE / advisory URLs (check both "advisory" and the common
+    # plural "advisories" used by e.g. github.com/advisories).
+    if "cve" in url_lower:
+        score += 5
+    if "advisory" in url_lower or "advisories" in url_lower:
+        score += 5
+
+    return score
+
+
+def _sort_by_score(results: list[dict], prefer_domains: list[str]) -> list[dict]:
+    """Stable-sort results descending by domain relevance score.
+
+    When scores are equal the original order is preserved (Python's ``sort``
+    with ``reverse=True`` is stable).
+    """
+    if not prefer_domains:
+        return results
+
+    scored = [(_score_result(r, prefer_domains), r) for r in results]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [r for _, r in scored]
+
+
+# ---------------------------------------------------------------------------
+# Full-page fetch (opt-in)
+# ---------------------------------------------------------------------------
+
+
+def _extract_text(html_bytes: bytes) -> str | None:
+    """Extract readable text from HTML content.
+
+    Tries **trafilatura** first (best accuracy for article/main-content
+    extraction).  Falls back to **BeautifulSoup** with tag stripping
+    (``script``, ``style``, ``nav``, ``footer``, ``header``, ``aside``,
+    ``noscript`` are removed before text extraction).
+    """
+    # 1. trafilatura (preferred — main-content extraction)
+    try:
+        import trafilatura
+
+        text = trafilatura.extract(html_bytes, output_format="txt")
+        if text and text.strip():
+            return text.strip()
+    except Exception:
+        pass
+
+    # 2. BeautifulSoup fallback (basic tag stripping)
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html_bytes, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+        if text:
+            return text
+    except Exception:
+        pass
+
+    return None
+
+
+def _fetch_page_text(url: str) -> str | None:
+    """Fetch and extract readable text from a single URL.
+
+    Returns up to 5000 characters of extracted text, or *None* on any error
+    (timeout, HTTP error, connection failure, content too large, parse
+    failure).  All errors are swallowed and logged — this is intentionally
+    best-effort so a single bad URL never blocks the whole search pipeline.
+    """
+    import requests
+
+    try:
+        resp = requests.get(url, timeout=8, stream=True)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"[web_search] Fetch error for {url}: {exc}")
+        return None
+
+    # Honour Content-Length if declared
+    content_length_str = resp.headers.get("Content-Length")
+    if content_length_str:
+        try:
+            cl = int(content_length_str)
+            if cl > 200_000:
+                print(f"[web_search] Skipping {url}: Content-Length={cl} > 200KB")
+                resp.close()
+                return None
+        except ValueError:
+            pass
+
+    # Stream with a hard cap
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > 200_000:
+                    print(f"[web_search] Truncating {url} at 200KB")
+                    break
+    except Exception as exc:
+        print(f"[web_search] Stream error for {url}: {exc}")
+        resp.close()
+        return None
+    finally:
+        resp.close()
+
+    content = b"".join(chunks)
+    if not content:
+        return None
+
+    # Extract text from HTML
+    text = _extract_text(content)
+    if not text:
+        return None
+
+    # Cap at 5000 characters
+    return text[:5000]
+
+
+# ---------------------------------------------------------------------------
 # Cache layer
 # ---------------------------------------------------------------------------
 
 
-def _cache_key(query: str, max_results: int) -> str:
-    raw = f"{query.strip().lower()}|{max_results}"
+def _cache_key(
+    query: str,
+    max_results: int,
+    prefer_domains: list[str] | None = None,
+    fetch_top_n: int = 0,
+) -> str:
+    """Build a deterministic cache key that includes domain preferences.
+
+    Two identical queries with different *prefer_domains* produce different
+    cache entries — each preference set may yield a different sort order.
+    The *fetch_top_n* parameter is also included so cached results remember
+    whether full-text was fetched.
+    """
+    if prefer_domains is None:
+        pd_key = "_default"
+    else:
+        pd_key = ",".join(sorted(prefer_domains))
+    raw = f"{query.strip().lower()}|{max_results}|{pd_key}|{fetch_top_n}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _cache_get(query: str, max_results: int) -> list[dict] | None:
-    key = _cache_key(query, max_results)
+def _cache_get(query: str, max_results: int, prefer_domains: list[str] | None = None, fetch_top_n: int = 0) -> list[dict] | None:
+    key = _cache_key(query, max_results, prefer_domains, fetch_top_n)
     cache_file = _CACHE_DIR / f"{key}.json"
     if not cache_file.exists():
         return None
@@ -82,9 +268,9 @@ def _cache_get(query: str, max_results: int) -> list[dict] | None:
     return None
 
 
-def _cache_set(query: str, max_results: int, results: list[dict]) -> None:
+def _cache_set(query: str, max_results: int, results: list[dict], prefer_domains: list[str] | None = None, fetch_top_n: int = 0) -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    key = _cache_key(query, max_results)
+    key = _cache_key(query, max_results, prefer_domains, fetch_top_n)
     cache_file = _CACHE_DIR / f"{key}.json"
     try:
         cache_file.write_text(
@@ -170,16 +356,40 @@ def _search_tavily_sync(query: str, max_results: int = 5) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def search_web(query: str, max_results: int = 5) -> list[dict]:
+async def search_web(
+    query: str,
+    max_results: int = 5,
+    prefer_domains: list[str] | None = None,
+    fetch_top_n: int = 0,
+) -> list[dict]:
     """Search the web with 24-hour cache.  Returns list of result dicts.
 
-    Each result: ``{"title": str, "url": str, "snippet": str}``
+    Each result: ``{"title": str, "url": str, "snippet": str, "full_text": str | None}``
+
+    Parameters
+    ----------
+    query:
+        Search query string.
+    max_results:
+        Maximum number of results to return (default 5).
+    prefer_domains:
+        Optional list of preferred domain / URL patterns.  Results matching
+        these patterns are scored higher and sorted to the top.  When
+        *None* (the default), :data:`DEFAULT_PREFER_DOMAINS` is used, which
+        prioritises official Vault and CVE sources.
+    fetch_top_n:
+        If > 0, fetch the full page content for the top *N* scored results
+        (in parallel via ``asyncio.gather``).  Extracted text (up to 5000
+        chars) is stored in the ``"full_text"`` key.  Default 0 (no fetch).
     """
+    if prefer_domains is None:
+        prefer_domains = DEFAULT_PREFER_DOMAINS
+
     if not query or not query.strip():
         return []
 
     # Check cache first
-    cached = _cache_get(query, max_results)
+    cached = _cache_get(query, max_results, prefer_domains, fetch_top_n)
     if cached is not None:
         return cached
 
@@ -191,18 +401,58 @@ async def search_web(query: str, max_results: int = 5) -> list[dict]:
     if not results and _get_tavily_key():
         results = await asyncio.to_thread(_search_tavily_sync, query, max_results)
 
+    # Sort by domain preference
+    results = _sort_by_score(results, prefer_domains)
+
+    # Ensure every result has a full_text slot (None by default)
+    for r in results:
+        r.setdefault("full_text", None)
+
+    # Fetch full page text for top-N results (parallel)
+    if fetch_top_n > 0 and results:
+        urls_to_fetch = [r["url"] for r in results[:fetch_top_n] if r.get("url")]
+        if urls_to_fetch:
+            texts = await asyncio.gather(
+                *[asyncio.to_thread(_fetch_page_text, u) for u in urls_to_fetch],
+            )
+            for i, text in enumerate(texts):
+                results[i]["full_text"] = text
+
     # Cache the result (even if empty — don't retry every time)
-    _cache_set(query, max_results, results)
+    _cache_set(query, max_results, results, prefer_domains, fetch_top_n)
 
     return results
 
 
-def search_web_sync(query: str, max_results: int = 5) -> list[dict]:
-    """Synchronous wrapper — useful for non-async contexts (planners, CLI)."""
+def search_web_sync(
+    query: str,
+    max_results: int = 5,
+    prefer_domains: list[str] | None = None,
+    fetch_top_n: int = 0,
+) -> list[dict]:
+    """Synchronous wrapper — useful for non-async contexts (planners, CLI).
+
+    Parameters
+    ----------
+    query:
+        Search query string.
+    max_results:
+        Maximum number of results to return (default 5).
+    prefer_domains:
+        Optional list of preferred domain / URL patterns.  When *None*,
+        :data:`DEFAULT_PREFER_DOMAINS` is used.
+    fetch_top_n:
+        If > 0, fetch full page content for the top *N* scored results
+        (sequential).  Extracted text (up to 5000 chars) is stored in the
+        ``"full_text"`` key.  Default 0 (no fetch).
+    """
+    if prefer_domains is None:
+        prefer_domains = DEFAULT_PREFER_DOMAINS
+
     if not query or not query.strip():
         return []
 
-    cached = _cache_get(query, max_results)
+    cached = _cache_get(query, max_results, prefer_domains, fetch_top_n)
     if cached is not None:
         return cached
 
@@ -210,5 +460,18 @@ def search_web_sync(query: str, max_results: int = 5) -> list[dict]:
     if not results and _get_tavily_key():
         results = _search_tavily_sync(query, max_results)
 
-    _cache_set(query, max_results, results)
+    results = _sort_by_score(results, prefer_domains)
+
+    # Ensure every result has a full_text slot (None by default)
+    for r in results:
+        r.setdefault("full_text", None)
+
+    # Fetch full page text for top-N results (sequential)
+    if fetch_top_n > 0 and results:
+        for i in range(min(fetch_top_n, len(results))):
+            url = results[i].get("url")
+            if url:
+                results[i]["full_text"] = _fetch_page_text(url)
+
+    _cache_set(query, max_results, results, prefer_domains, fetch_top_n)
     return results

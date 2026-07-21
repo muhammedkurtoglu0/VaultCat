@@ -486,11 +486,15 @@ TOOL_WEB_SEARCH = ToolDef(
         "Search the web for Vault CVE details, exploit techniques, error message "
         "solutions, and configuration references. Results are cached for 24 hours. "
         "Use this when you encounter an unknown CVE, error code, or need exploit "
-        "documentation. Parameters: query (search string), max_results (1-10, default 5)."
+        "documentation. Parameters: query (search string), max_results (1-10, default 5), "
+        "prefer_domains (optional list of preferred domains for higher ranking), "
+        "fetch_top_n (optional, fetch full page content for top N results, default 0)."
     ),
     parameters=[
         ToolParam(name="query", type="string", description="Search query string", required=True),
         ToolParam(name="max_results", type="integer", description="Max results (1-10)", required=False),
+        ToolParam(name="prefer_domains", type="array", description="Preferred domains for higher ranking (e.g. developer.hashicorp.com, nvd.nist.gov). Uses official Vault/CVE sources by default.", required=False),
+        ToolParam(name="fetch_top_n", type="integer", description="If > 0, fetch full page content for the top N results (adds full_text field)", required=False),
     ],
     phase="meta",
 )

@@ -710,16 +710,28 @@ async def refresh_nvd_cache() -> str:
         "referansları ve hata mesajları için kullanılır. Sonuçlar 24 saat önbelleklenir."
     ),
 )
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(
+    query: str,
+    max_results: int = 5,
+    prefer_domains: list[str] | None = None,
+    fetch_top_n: int = 0,
+) -> str:
     try:
         from ai_core.web_search import search_web
 
-        results = await search_web(query, max_results=max_results)
+        results = await search_web(query, max_results=max_results,
+                                   prefer_domains=prefer_domains,
+                                   fetch_top_n=fetch_top_n)
         return json.dumps({
             "query": query,
             "total": len(results),
             "results": [
-                {"title": r["title"], "url": r["url"], "snippet": r["snippet"]}
+                {
+                    "title": r["title"],
+                    "url": r["url"],
+                    "snippet": r["snippet"],
+                    "full_text": r.get("full_text"),
+                }
                 for r in results
             ],
         }, ensure_ascii=False)

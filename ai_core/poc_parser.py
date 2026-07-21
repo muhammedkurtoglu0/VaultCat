@@ -250,6 +250,10 @@ def parse_web_results(
     all_actions: list[PoCAction] = []
     for r in results:
         text = f"{r.get('title', '')} {r.get('snippet', '')}"
+        # Include full_text when available (fetched page content)
+        full = r.get("full_text")
+        if full:
+            text += f"\n{full}"
         actions = parse_poc_actions(
             text,
             source_url=r.get("url", ""),
