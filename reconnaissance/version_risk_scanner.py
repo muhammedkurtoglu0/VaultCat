@@ -8,6 +8,10 @@ from reconnaissance.http_utils import safe_request
 
 MODULE_NAME = "version_risk_scanner"
 MIN_RECOMMENDED_VERSION = "1.15.0"
+# Vault has never shipped a 2.x release — every real deployment reports 1.x.
+# A higher major version means the health endpoint is lying (mock, honeypot,
+# or a non-Vault service imitating the Vault API).
+LATEST_KNOWN_MAJOR_VERSION = 1
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
 RECOMMENDATION = (
     "Review the detected Vault version against HashiCorp security advisories and upgrade policy."
@@ -57,6 +61,20 @@ def scan_version_risk(target, context=None):
         module=MODULE_NAME,
         target=target
     ))
+
+    if parsed_version[0] > LATEST_KNOWN_MAJOR_VERSION:
+        findings.append(add_finding(
+            "HIGH",
+            "Vault reports an impossible version — possible fake or honeypot",
+            "The health endpoint reports a Vault major version that has never "
+            "been released (Vault has only shipped 1.x). This target is likely "
+            "a mock, honeypot, or a non-Vault service imitating the Vault API. "
+            "Treat all other signals from this target with suspicion.",
+            recommendation="Verify the target's identity out-of-band before trusting any response from it.",
+            evidence=evidence,
+            module=MODULE_NAME,
+            target=target
+        ))
 
     baseline_version = _parse_version(MIN_RECOMMENDED_VERSION)
     if baseline_version and parsed_version < baseline_version:

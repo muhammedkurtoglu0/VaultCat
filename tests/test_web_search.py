@@ -129,14 +129,21 @@ class TestAgentAutoTrigger:
         assert agent._should_search_web("") is False
         assert agent._should_search_web(None) is False  # type: ignore
 
-    def test_triggers_on_403(self, agent):
+    def test_no_trigger_on_403(self, agent):
+        """403 is Vault's expected unauthenticated answer — must NOT trigger
+        a web search (previously produced noise queries)."""
         assert agent._should_search_web(
             "HTTP 403 Forbidden on sys/policies/acl"
-        ) is True
+        ) is False
 
-    def test_triggers_on_permission_denied(self, agent):
+    def test_no_trigger_on_permission_denied(self, agent):
         assert agent._should_search_web(
             "permission denied on secret/data/admin"
+        ) is False
+
+    def test_triggers_on_5xx(self, agent):
+        assert agent._should_search_web(
+            '{"status": "failed", "http_status": 500, "path": "v1/sys/health"}'
         ) is True
 
     def test_triggers_on_version(self, agent):
@@ -168,12 +175,13 @@ class TestAgentAutoTrigger:
         assert "CVE-2024-2048" in q
         assert "exploit" in q.lower()
 
-    def test_build_search_query_error(self, agent):
+    def test_build_search_query_generic_fallback(self, agent):
+        """Non-CVE, non-version results fall back to a generic tool query."""
         q = agent._build_web_search_query(
             "run_kv_enumeration",
             "permission denied on secret/data/admin"
         )
-        assert "permission denied" in q.lower()
+        assert "run_kv_enumeration" in q
 
 
 # ---------------------------------------------------------------------------

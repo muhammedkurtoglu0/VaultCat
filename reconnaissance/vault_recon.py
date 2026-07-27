@@ -24,7 +24,12 @@ async def vault_recon(vault_addr, timeout=DEFAULT_TIMEOUT):
     base_url = vault_addr.rstrip("/")
     client_timeout = aiohttp.ClientTimeout(total=timeout)
 
-    async with aiohttp.ClientSession(timeout=client_timeout) as session:
+    # Respect the global TLS setting (--skip-tls-verify) — otherwise the
+    # async collector fails against self-signed lab/internal Vaults.
+    from core.tls_config import get_verify
+    connector = None if get_verify() else aiohttp.TCPConnector(ssl=False)
+
+    async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
         tasks = {
             name: _fetch_json(session, base_url + path, aiohttp)
             for name, path in ENDPOINTS.items()

@@ -135,12 +135,13 @@ def fetch_vault_cves_from_nvd(force_refresh: bool = False) -> list[dict]:
 def _build_query_params() -> dict:
     """Build the NVD API query parameters for Vault CVEs.
 
-    Strategy: search by keyword for 'hashicorp vault' and filter
-    to CRITICAL / HIGH severity CVEs that have CVSS v3 scores.
+    Strategy: search by keyword for 'hashicorp vault'.  Severity is
+    filtered CLIENT-side — the NVD API 2.0 rejects comma-separated
+    ``cvssV3Severity`` values with a 404, which previously made every
+    fetch return zero results.
     """
     params: dict = {
         "keywordSearch": "hashicorp vault",
-        "cvssV3Severity": "CRITICAL,HIGH,MEDIUM",
         "noRejected": "",  # flag parameter, no value needed
     }
     api_key = _nvd_api_key()
@@ -165,6 +166,9 @@ def _nvd_request(params: dict) -> Optional[dict]:
     except ValueError:
         return None
 
+
+# Severities kept after the client-side filter (see _build_query_params).
+_KEEP_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
 
 _last_request_time: float = 0.0
 
@@ -191,6 +195,9 @@ def _parse_nvd_vulnerability(vuln: dict) -> Optional[dict]:
 
     summary = _english_description(cve.get("descriptions", []))
     severity = _cvss_severity(cve.get("metrics", {}))
+    if severity not in _KEEP_SEVERITIES:
+        return None
+
     references = _reference_urls(cve.get("references", []))
     affected_ranges = _extract_version_ranges(cve.get("configurations", []))
 
@@ -254,7 +261,12 @@ def _extract_version_ranges(configurations: list[dict]) -> list[dict]:
                 if not cpe.get("vulnerable", True):
                     continue
                 criteria = cpe.get("criteria", "")
-                if "hashicorp:vault" not in criteria.lower():
+                # Match the Vault *server* product exactly.  A substring
+                # check on "hashicorp:vault" would also match vault-action,
+                # vault-ssh-helper etc. (e.g. CVE-2021-32074 is about the
+                # GitHub Action, not the server).
+                parts = criteria.lower().split(":")
+                if len(parts) < 5 or parts[3] != "hashicorp" or parts[4] != "vault":
                     continue
 
                 introduced = cpe.get("versionStartIncluding") or cpe.get(

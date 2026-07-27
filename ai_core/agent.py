@@ -700,8 +700,13 @@ class PentestAgent:
 
         Triggers on:
         - CVE IDs (e.g. CVE-2024-2048) not yet searched
-        - HTTP 403/500/permission denied errors not yet searched
+        - HTTP 5xx server errors not yet searched
         - Vault version strings without existing exploit info
+
+        Deliberately does NOT trigger on 403 / permission denied: during
+        unauthenticated testing a 403 is Vault's *expected* answer, and
+        searching for it produced noise queries like
+        "HashiCorp Vault permission denied fix run_raw_vault_request".
         """
         if getattr(self, '_disable_web', False):
             return False
@@ -721,8 +726,8 @@ class PentestAgent:
             if cve_id not in self._searched_cves:
                 return True
 
-        # Check: HTTP error codes that might benefit from web search
-        if any(err in obs_lower for err in ("403", "500", "permission denied", "access denied")):
+        # Check: server-side errors (5xx) that might indicate a known bug/CVE
+        if '"http_status": 5' in obs_lower or "http 5" in obs_lower or " 500 " in obs_lower:
             err_key = self._search_cache_key("error", observation[:200])
             if err_key not in self._searched_web:
                 return True
@@ -743,10 +748,6 @@ class PentestAgent:
         cve_match = re.search(r'CVE-\d{4}-\d{4,}', result, re.IGNORECASE)
         if cve_match:
             return f"HashiCorp Vault {cve_match.group(0)} exploit"
-
-        # Error-based query
-        if "permission denied" in result.lower():
-            return f"HashiCorp Vault permission denied fix {tool_name}"
 
         # Version-based query
         ver_match = re.search(r'(?:version|vault)[:\s]+(\d+\.\d+\.\d+)', result, re.IGNORECASE)

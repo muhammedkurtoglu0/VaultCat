@@ -559,7 +559,11 @@ async def run_raw_vault_request(
         "sys/unseal": "vault_seal.unseal_vault",
         "sys/seal-status": "vault_seal.seal_status",
     }
+    # Tolerate paths passed with a leading "v1/" (LLMs often include it):
+    # "v1/sys/health" would otherwise become /v1/v1/sys/health and 403/404.
     _clean_path = path.strip("/")
+    if _clean_path.startswith("v1/"):
+        _clean_path = _clean_path[3:]
     if _clean_path in _module_paths:
         return json.dumps(
             {
@@ -582,7 +586,11 @@ async def run_raw_vault_request(
         )
 
     base_url = vault_addr.rstrip("/")
-    url = f"{base_url}/v1/{path.lstrip('/')}"
+    if _clean_path == "ui" or _clean_path.startswith("ui/"):
+        # The Vault UI is served at /ui, not under /v1
+        url = f"{base_url}/{_clean_path}"
+    else:
+        url = f"{base_url}/v1/{_clean_path}"
     headers = {"Content-Type": "application/json"}
     if namespace:
         headers["X-Vault-Namespace"] = namespace
