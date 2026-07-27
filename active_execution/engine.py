@@ -57,9 +57,8 @@ class ActiveExecutionEngine:
                 step, context, max_risk, confirm_state_changing
             )
             results.append(result)
-            if result.status in ("error", "failed", "blocked"):
-                # Stop chain on failure unless the step is optional
-                break
+            # Continue on failure/blocked — consistent with the sync path;
+            # a blocked or failed step must not starve the remaining steps.
         return results
 
     # ── internal ────────────────────────────────────────────────────────
@@ -225,5 +224,7 @@ def _sync_context_to_global_store(context) -> None:
         ("captured_token", "unknown"),
     ):
         token = getattr(context, attr, None)
+        # The "token not in …" pre-check is a best-effort fast-path; the real
+        # check-then-act atomicity lives inside add_token (RLock-protected).
         if token and _looks_like_vault_token(token) and token not in global_store.tokens:
             global_store.add_token(token, source=f"active_exec.{attr}", power_level=power)

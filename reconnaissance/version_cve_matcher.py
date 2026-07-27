@@ -293,8 +293,8 @@ def _resolve_advisory_pool(use_nvd: bool = True) -> list[dict]:
             fetch_vault_cves_from_nvd,
         )
 
-        # Try live NVD first
-        live_cves = fetch_vault_cves_from_nvd(force_refresh=True)
+        # Try live NVD first (honours the 24h cache TTL unless stale)
+        live_cves = fetch_vault_cves_from_nvd(force_refresh=False)
         if live_cves:
             return live_cves
 

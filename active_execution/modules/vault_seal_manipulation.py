@@ -27,6 +27,7 @@ class SealStatusModule(BaseExecutionModule):
             module_id="vault_seal.seal_status",
             title="Vault Seal Status",
             risk_level=RiskLevel.READ_ONLY,
+            domain="seal",
             description="Check whether the target Vault instance is sealed or unsealed.",
             default_enabled=True,
         )
@@ -66,6 +67,7 @@ class SealVaultModule(BaseExecutionModule):
             module_id="vault_seal.seal_vault",
             title="Seal Vault (DoS)",
             risk_level=RiskLevel.STATE_CHANGING,
+            domain="seal",
             description=(
                 "SEAL the target Vault instance. All tokens become invalid, "
                 "all secrets engines stop, Vault is completely unavailable "
@@ -129,6 +131,7 @@ class UnsealVaultModule(BaseExecutionModule):
             module_id="vault_seal.unseal_vault",
             title="Unseal Vault",
             risk_level=RiskLevel.STATE_CHANGING,
+            domain="seal",
             description=(
                 "UNSEAL Vault using a Shamir unseal key. No token required — "
                 "only the unseal key is needed. Pass the key via params: "

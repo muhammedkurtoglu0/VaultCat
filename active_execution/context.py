@@ -1,3 +1,4 @@
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -15,6 +16,9 @@ class ExecutionContext:
     findings: list = field(default_factory=list)
     store: object = None  # DynamicCredentialStore (lazy import)
 
+    # Thread-safety: protects ``self.findings`` from concurrent mutation.
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
     def __post_init__(self):
         # Auto-resolve token from global store if none provided
         if not self.token and self.store:
@@ -23,6 +27,8 @@ class ExecutionContext:
                 self.token = best
 
     def add_finding(self, title: str, description: str, severity: str, evidence=None):
+        """Append a finding.  Thread-safe — multiple agents can call this
+        concurrently on the same context without corrupting the list."""
         finding = {
             "severity": severity,
             "title": title,
@@ -30,5 +36,6 @@ class ExecutionContext:
         }
         if evidence is not None:
             finding["evidence"] = evidence
-        self.findings.append(finding)
+        with self._lock:
+            self.findings.append(finding)
         return finding

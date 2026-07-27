@@ -12,6 +12,7 @@ class CloudPivotModule(BaseExecutionModule):
             module_id="cloud_pivot.exploit",
             title="Cloud Pivot - Connect and Enumerate Resources",
             risk_level=RiskLevel.DESTRUCTIVE,
+            domain="cloud",
             description=(
                 "Uses harvested cloud credentials to connect to AWS, Azure, or GCP "
                 "and enumerate resources (EC2 instances, VMs, projects)."

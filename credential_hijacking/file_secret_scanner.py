@@ -174,7 +174,7 @@ def _scan_file_chunked(file_path: Path, file_size: int) -> list[dict]:
     try:
         with file_path.open("rb") as fh:
             carry = b""
-            offset = 0
+            base_line = 0  # newline count in file bytes before the current chunk
             while True:
                 raw = fh.read(CHUNK_SIZE)
                 if not raw:
@@ -182,7 +182,6 @@ def _scan_file_chunked(file_path: Path, file_size: int) -> list[dict]:
 
                 # Prepend overlap from previous chunk
                 chunk = carry + raw
-                chunk_offset = max(0, offset - len(carry))
 
                 # Decode
                 if b"\x00" in chunk[:4096]:
@@ -194,16 +193,18 @@ def _scan_file_chunked(file_path: Path, file_size: int) -> list[dict]:
                         text = chunk.decode("utf-8", errors="ignore")
 
                 if text is not None:
-                    for m in _scan_text(file_path, text, line_offset=0):
-                        # Recalculate line number from chunk_offset
+                    for m in _scan_text(file_path, text, line_offset=base_line):
                         key = (m["pattern"], m["value"], m["line"])
                         if key not in seen:
                             seen.add(key)
                             matches.append(m)
 
-                # Carry overlap to next chunk
+                # Carry overlap to next chunk and advance the line base past
+                # the bytes that will not be re-scanned.  Byte-level counting
+                # is exact for UTF-8 (0x0A never appears inside a multi-byte
+                # sequence).
                 carry = raw[-OVERLAP:] if len(raw) > OVERLAP else raw
-                offset += len(raw)
+                base_line += chunk[: len(chunk) - len(carry)].count(b"\n")
 
     except OSError:
         return matches

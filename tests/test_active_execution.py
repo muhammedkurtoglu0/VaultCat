@@ -1,3 +1,5 @@
+import pytest
+
 from active_execution.context import ExecutionContext
 from active_execution.engine import ActiveExecutionEngine
 from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
@@ -452,3 +454,176 @@ def test_active_execution_engine_accepts_parameters_alias_and_normalizes_excepti
 
     assert results[0].status == "error"
     assert "boom" in results[0].message
+
+
+# ---------------------------------------------------------------------------
+# Domain system tests
+# ---------------------------------------------------------------------------
+
+
+# All expected domains from the taxonomy
+EXPECTED_DOMAINS = {
+    "database", "cloud", "token", "persistence",
+    "seal", "secrets", "pivot", "general",
+}
+
+
+def _register_sample_modules(registry: ActiveExecutionRegistry):
+    """Register one module per domain for testing."""
+    from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+    from active_execution.modules.secret_exfiltration import SecretExfiltrationModule
+    from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
+    from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
+    from active_execution.modules.persistence import PersistenceModule
+    from active_execution.modules.vault_seal_manipulation import SealStatusModule
+    from active_execution.modules.pivot_engine import PivotEngineModule
+    from active_execution.modules.cve_scanner import CVEScannerModule
+
+    registry.register(PrivilegeEscalationModule())
+    registry.register(SecretExfiltrationModule())
+    registry.register(DatabaseCredentialHarvestModule())
+    registry.register(CloudKeyExfiltrationModule())
+    registry.register(PersistenceModule())
+    registry.register(SealStatusModule())
+    registry.register(PivotEngineModule())
+    registry.register(CVEScannerModule())
+
+
+class TestDomainField:
+    """Verify every registered module has a valid non-empty domain."""
+
+    def test_all_modules_have_valid_domain(self):
+        """Every module from the sample set must declare a known domain."""
+        registry = ActiveExecutionRegistry()
+        _register_sample_modules(registry)
+
+        for m in registry.list_modules():
+            assert m.domain, (
+                f"Module '{m.module_id}' has empty/missing domain"
+            )
+            assert m.domain in EXPECTED_DOMAINS, (
+                f"Module '{m.module_id}' has unknown domain '{m.domain}'; "
+                f"expected one of {EXPECTED_DOMAINS}"
+            )
+
+    def test_domain_is_accessible_as_attribute(self):
+        """domain must be a plain str attribute on the module instance."""
+        from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+        m = PrivilegeEscalationModule()
+        assert isinstance(m.domain, str)
+        assert m.domain == "token"
+
+
+class TestListByDomain:
+    """Test ActiveExecutionRegistry.list_by_domain."""
+
+    @pytest.fixture
+    def registry(self):
+        r = ActiveExecutionRegistry()
+        _register_sample_modules(r)
+        return r
+
+    def test_database_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("database")
+        ids = {m.module_id for m in mods}
+        assert "database_credential_harvest.dynamic_creds" in ids
+        assert len(mods) >= 1
+
+    def test_cloud_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("cloud")
+        ids = {m.module_id for m in mods}
+        assert "cloud_key_exfiltration.key_dump" in ids
+        assert len(mods) >= 1
+
+    def test_token_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("token")
+        ids = {m.module_id for m in mods}
+        assert "privilege_escalation.token_abuse" in ids
+        assert len(mods) >= 1
+
+    def test_persistence_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("persistence")
+        ids = {m.module_id for m in mods}
+        assert "persistence.backdoor" in ids
+        assert len(mods) >= 1
+
+    def test_seal_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("seal")
+        ids = {m.module_id for m in mods}
+        assert "vault_seal.seal_status" in ids
+        assert len(mods) >= 1
+
+    def test_secrets_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("secrets")
+        ids = {m.module_id for m in mods}
+        assert "secret_exfiltration.kv_dump" in ids
+
+    def test_pivot_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("pivot")
+        ids = {m.module_id for m in mods}
+        assert "pivot_engine.cross_service" in ids
+
+    def test_general_domain_returns_correct_modules(self, registry):
+        mods = registry.list_by_domain("general")
+        ids = {m.module_id for m in mods}
+        assert "cve_scanner.scan" in ids
+
+    def test_unknown_domain_returns_empty_list(self, registry):
+        mods = registry.list_by_domain("nonexistent_domain")
+        assert mods == []
+
+    def test_empty_registry_returns_empty_list(self):
+        r = ActiveExecutionRegistry()
+        assert r.list_by_domain("token") == []
+
+
+class TestDomainsSet:
+    """Test ActiveExecutionRegistry.domains()."""
+
+    @pytest.fixture
+    def registry(self):
+        r = ActiveExecutionRegistry()
+        _register_sample_modules(r)
+        return r
+
+    def test_domains_contains_expected_categories(self, registry):
+        domains = registry.domains()
+        expected = {"token", "secrets", "database", "cloud",
+                     "persistence", "seal", "pivot", "general"}
+        assert domains == expected, (
+            f"Expected domains {expected}, got {domains}"
+        )
+
+    def test_empty_registry_domains_is_empty(self):
+        r = ActiveExecutionRegistry()
+        assert r.domains() == set()
+
+    def test_single_module_domain(self):
+        r = ActiveExecutionRegistry()
+        from active_execution.modules.persistence import PersistenceModule
+        r.register(PersistenceModule())
+        assert r.domains() == {"persistence"}
+
+
+class TestDomainBackwardCompat:
+    """Verify domain addition does not break existing module attributes."""
+
+    def test_module_id_unchanged(self):
+        from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+        m = PrivilegeEscalationModule()
+        assert m.module_id == "privilege_escalation.token_abuse"
+
+    def test_risk_level_unchanged(self):
+        from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+        m = PrivilegeEscalationModule()
+        assert m.risk_level == RiskLevel.STATE_CHANGING
+
+    def test_title_unchanged(self):
+        from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
+        m = DatabaseCredentialHarvestModule()
+        assert "Database Credentials Harvest" in m.title
+
+    def test_default_enabled_unchanged(self):
+        from active_execution.modules.vault_seal_manipulation import SealStatusModule
+        m = SealStatusModule()
+        assert m.default_enabled is True

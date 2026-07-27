@@ -20,7 +20,7 @@ except ImportError:
         pass
 
 from ai_core.agent import PentestAgent
-from ai_core.dynamic_session import DynamicCredentialStore
+from ai_core.dynamic_session import global_store
 from ai_core.llm_engine import LLMClient, detect_provider
 from ai_core.memory import Memory
 from ai_core.models import get_models, get_default_model, list_providers, get_provider_name
@@ -43,6 +43,7 @@ class ChatUI:
         auto_max_turns: int = 30,
         disable_web: bool = False,
         auto_pilot: bool = False,
+        interval: int | None = None,
     ):
         self.vault_addr = vault_addr
         self.token = token
@@ -55,9 +56,10 @@ class ChatUI:
         self.model = model or get_default_model(self.provider)
         self.memory = Memory()
 
-        # Dynamic credential store — tracks all discovered tokens/creds
-        # and auto-escalates to the highest-privilege token.
-        self.session = DynamicCredentialStore()
+        # Dynamic credential store — the global singleton shared with the
+        # agent, tree walker, and active execution engine so tokens
+        # discovered anywhere are visible everywhere.
+        self.session = global_store
         if token:
             self.session.add_user_token(token)
 
@@ -78,6 +80,7 @@ class ChatUI:
         self.hijack_path = hijack_path
         self.auto_max_risk = auto_max_risk
         self.auto_max_turns = auto_max_turns
+        self.interval = interval  # continuous cron-like mode (seconds)
 
         if vault_addr:
             self.memory.set_context("vault_addr", vault_addr)
@@ -107,7 +110,7 @@ class ChatUI:
         print(f"  Tools    : {len(ALL_TOOLS)} available")
         print("\n  The agent decides WHAT to do, WHEN, and WHY.")
         print("  Just tell it your objective — it handles everything.")
-        print("  Commands: help, modules, findings, status, auto, pilot, walk, mutate, fix, set, exit")
+        print("  Commands: help, modules, findings, status, auto, pilot, walk, orchestrate, smart, mutate, fix, set, exit")
         print("=" * 60 + "\n")
 
         while self.running:
@@ -169,6 +172,14 @@ class ChatUI:
                     self._start_tree_walk()
                     continue
 
+                if cmd in ("orchestrate", "parallel", "fanout", "paralel"):
+                    self._start_orchestrator(use_llm=False)
+                    continue
+
+                if cmd in ("smart", "akilli", "akıllı", "orchestrate-llm"):
+                    self._start_orchestrator(use_llm=True)
+                    continue
+
                 if cmd in ("remediate", "fix", "çözüm", "cozum"):
                     self._show_remediation(user_input[4:].strip())
                     continue
@@ -213,6 +224,8 @@ class ChatUI:
                     "anthropic": "ANTHROPIC_API_KEY",
                     "openai": "OPENAI_API_KEY",
                     "deepseek": "DEEPSEEK_API_KEY",
+                    "kimi": "KIMI_API_KEY",
+                    "cursor": "CURSOR_API_KEY",
                 }.get(pid, "")
                 available = True
                 if env_var:
@@ -236,6 +249,8 @@ class ChatUI:
                     "anthropic": "ANTHROPIC_API_KEY",
                     "openai": "OPENAI_API_KEY",
                     "deepseek": "DEEPSEEK_API_KEY",
+                    "kimi": "KIMI_API_KEY",
+                    "cursor": "CURSOR_API_KEY",
                 }.get(pid, "")
                 if env_var and not os.environ.get(env_var, "").strip():
                     print(f"      💡 {pid}: set {env_var} env var")
@@ -336,9 +351,15 @@ class ChatUI:
         print(f"\n[*] Auto mode finished (exit code: {exit_code}). Back to chat.\n")
 
     def _run_auto(self) -> int:
-        """Core autonomous pentest runner. Returns exit code (0=clean, 1=findings, 2=error)."""
+        """Core autonomous pentest runner. Returns exit code (0=clean, 1=findings, 2=error).
+
+        When ``self.interval`` is set, runs in a continuous loop:
+        auto pentest → PDF report → sleep(interval) → repeat.
+        Each iteration produces a timestamped PDF. Ctrl+C stops the loop.
+        """
         import io
         import sys as _sys
+        from datetime import datetime
         from ai_core.auto_mode import run_auto_pentest
 
         # Force UTF-8 stdout so Unicode characters from tools don't crash
@@ -361,8 +382,12 @@ class ChatUI:
         # Reinitialize agent with current provider/model
         self.agent.llm = LLMClient(provider=self.provider, model=self.model)
 
+        is_continuous = self.interval and self.interval >= 10
+
         print("\n" + "=" * 60)
         print("  VAULT AI PENTEST — AUTO MODE")
+        if is_continuous:
+            print(f"  CONTINUOUS MODE — every {self.interval}s")
         print("=" * 60)
         print(f"\n  Provider : {self.provider}")
         print(f"  Model    : {self.model}")
@@ -371,65 +396,136 @@ class ChatUI:
         print(f"  Token    : {token_display}")
         print(f"  Max Risk : {self.auto_max_risk}")
         print(f"  Max Turns: {self.auto_max_turns}")
-        print(f"  PDF      : {self.pdf_report or 'auto-generated'}")
+        print(f"  PDF      : {self.pdf_report or 'auto-generated (per-iteration timestamped)'}")
+        if is_continuous:
+            print(f"  Interval : {self.interval}s (Ctrl+C to stop)")
         print("=" * 60 + "\n")
 
-        # Run the autonomous pentest
-        exit_code = 0
-        async def _run():
-            nonlocal exit_code
-            async for event in run_auto_pentest(
-                vault_addr=self.vault_addr,
-                token=self.token,
-                provider=self.provider,
-                model=self.model,
-                hijack_path=self.hijack_path,
-                max_risk=self.auto_max_risk,
-                max_turns=self.auto_max_turns,
-                pdf_report=self.pdf_report,
-                tool_executor=self._execute_tool,
-            ):
-                etype = event.get("type", "")
+        # ── Continuous loop or single run ────────────────────────────────
+        iteration = 0
+        total_findings_all_runs = 0
+        last_exit_code = 0
 
-                if etype == "status":
-                    print(event["message"])
-                elif etype == "thinking":
-                    print(f"\n{event['message']}")
-                elif etype == "tool_call":
-                    print(f"\n>> {event['message']}")
-                elif etype == "tool_result":
-                    result = event["message"]
-                    if len(result) > 300:
-                        result = result[:300] + "..."
-                    print(f"   -> {result}")
-                elif etype == "message":
-                    print(f"\n[AGENT] {event['message']}")
-                elif etype == "complete":
-                    print(f"\n[DONE] {event['message']}")
-                elif etype == "warning":
-                    print(f"\n[WARN] {event['message']}")
-                elif etype == "error":
-                    print(f"\n[ERROR] {event['message']}")
-                elif etype == "pdf_report":
-                    print(f"\n[PDF] Report: {event['path']}")
-                elif etype == "exit_code":
-                    exit_code = event.get("code", 0)
+        while True:
+            iteration += 1
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        try:
-            asyncio.run(_run())
-        except KeyboardInterrupt:
-            print("\n\n[WARN] Auto mode interrupted by user.")
-            return 2
-        except Exception as exc:
-            print(f"\n[ERROR] Auto mode failed: {exc}")
-            import traceback
-            traceback.print_exc()
-            return 2
+            if is_continuous:
+                print(f"\n{'═' * 54}")
+                print(f"  ITERATION {iteration} — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"{'═' * 54}")
 
-        print(f"\n{'=' * 60}")
-        print(f"  AUTO MODE COMPLETE — exit code: {exit_code}")
-        print(f"{'=' * 60}")
-        return exit_code
+            # Build per-iteration PDF path
+            if is_continuous:
+                base = self.pdf_report
+                if not base:
+                    base = "pentest_report"
+                # Strip .pdf extension, add timestamp + iteration
+                if base.lower().endswith(".pdf"):
+                    base = base[:-4]
+                iter_pdf = f"reports/{base}_{ts}_iter{iteration:03d}.pdf"
+            else:
+                iter_pdf = self.pdf_report
+
+            # Run the autonomous pentest
+            exit_code = 0
+            findings_count = 0
+
+            async def _run():
+                nonlocal exit_code, findings_count
+                async for event in run_auto_pentest(
+                    vault_addr=self.vault_addr,
+                    token=self.token,
+                    provider=self.provider,
+                    model=self.model,
+                    hijack_path=self.hijack_path,
+                    max_risk=self.auto_max_risk,
+                    max_turns=self.auto_max_turns,
+                    pdf_report=iter_pdf,
+                    tool_executor=self._execute_tool,
+                ):
+                    etype = event.get("type", "")
+
+                    if etype == "status":
+                        print(event["message"])
+                    elif etype == "thinking":
+                        print(f"\n{event['message']}")
+                    elif etype == "tool_call":
+                        print(f"\n>> {event['message']}")
+                    elif etype == "tool_result":
+                        result = event["message"]
+                        if len(result) > 300:
+                            result = result[:300] + "..."
+                        print(f"   -> {result}")
+                    elif etype == "message":
+                        print(f"\n[AGENT] {event['message']}")
+                    elif etype == "complete":
+                        print(f"\n[DONE] {event['message']}")
+                    elif etype == "warning":
+                        print(f"\n[WARN] {event['message']}")
+                    elif etype == "error":
+                        print(f"\n[ERROR] {event['message']}")
+                    elif etype == "pdf_report":
+                        print(f"\n[PDF] Report: {event['path']}")
+                    elif etype == "exit_code":
+                        exit_code = event.get("code", 0)
+                    elif etype == "findings_count":
+                        findings_count = event.get("count", 0)
+
+            try:
+                asyncio.run(_run())
+            except KeyboardInterrupt:
+                print("\n\n[WARN] Interrupted by user.")
+                if is_continuous:
+                    print(f"  Ran {iteration} iteration(s), {total_findings_all_runs} total findings across all runs.")
+                return 2
+            except Exception as exc:
+                print(f"\n[ERROR] Auto mode failed: {exc}")
+                import traceback
+                traceback.print_exc()
+                if is_continuous:
+                    print(f"[WARN] Continuing to next iteration in {self.interval}s...")
+                    try:
+                        import time as _time
+                        _time.sleep(self.interval)
+                    except KeyboardInterrupt:
+                        return 2
+                    continue
+                return 2
+
+            last_exit_code = exit_code
+            total_findings_all_runs += findings_count
+
+            # ── Single run: exit ──────────────────────────────────────
+            if not is_continuous:
+                print(f"\n{'=' * 60}")
+                print(f"  AUTO MODE COMPLETE — exit code: {exit_code}")
+                print(f"{'=' * 60}")
+                return exit_code
+
+            # ── Continuous: print iteration summary ───────────────────
+            print(f"\n{'─' * 54}")
+            print(f"  Iteration {iteration} complete")
+            print(f"  Findings this run : {findings_count}")
+            print(f"  Total all runs    : {total_findings_all_runs}")
+            print(f"  PDF               : {iter_pdf}")
+            print(f"  Next run in       : {self.interval}s (Ctrl+C to stop)")
+            print(f"{'─' * 54}")
+
+            # ── Reset state for next iteration ────────────────────────
+            from core.report import clear_findings
+            clear_findings()
+
+            # Sleep between iterations
+            try:
+                import time as _time
+                _time.sleep(self.interval)
+            except KeyboardInterrupt:
+                print(f"\n\n[INFO] Continuous mode stopped by user.")
+                print(f"  Total iterations : {iteration}")
+                print(f"  Total findings   : {total_findings_all_runs}")
+                print(f"  Last exit code   : {last_exit_code}")
+                return 0 if total_findings_all_runs == 0 else 1
 
     # ── agent runner ────────────────────────────────────────────────────
 
@@ -546,6 +642,14 @@ class ChatUI:
             run_secret_exfiltration,
             run_ttl_audit,
             run_unauthenticated_recon,
+            run_compliance_check,
+            run_network_probe,
+            export_full_report,
+            send_notification,
+            run_audit_log_scan,
+            run_container_scan,
+            get_threat_intel,
+            generate_diff_report,
         )
 
         tool_map = {
@@ -570,6 +674,15 @@ class ChatUI:
             "get_risk_score": get_risk_score,
             "refresh_nvd_cache": refresh_nvd_cache,
             "web_search": web_search,
+            # Security MCP tools
+            "run_compliance_check": run_compliance_check,
+            "run_network_probe": run_network_probe,
+            "export_full_report": export_full_report,
+            "send_notification": send_notification,
+            "run_audit_log_scan": run_audit_log_scan,
+            "run_container_scan": run_container_scan,
+            "get_threat_intel": get_threat_intel,
+            "generate_diff_report": generate_diff_report,
         }
 
         handler = tool_map.get(tool_name)
@@ -593,7 +706,9 @@ class ChatUI:
     status      -> Show current target, token, provider, model, session
     auto        -> Run fully autonomous pentest + PDF report
     pilot       -> Toggle auto-pilot mode (auto-execute web PoC chains)
-    walk        -> Walk the attack tree (risk-ordered branch execution)
+    walk        -> Walk the attack tree (sequential, risk-ordered branches)
+    orchestrate -> Run attack plan in PARALLEL via domain specialists
+    smart       -> Same as orchestrate, but each specialist uses LLM ReAct
     mutate      -> Ask LLM for alternative attack paths (dynamic branching)
     fix         -> Get remediation advice for all findings
     set target  -> Set the Vault target URL
@@ -604,7 +719,7 @@ class ChatUI:
     > "Scan this Vault and find every vulnerability"
     > "I found token hvs.abc123 — assess its power and escalate"
     > auto
-    > pilot
+    > orchestrate
     > walk
 
   Provider: {self.provider}  Model: {self.agent.llm.model}  Tools: {len(ALL_TOOLS)}
@@ -867,6 +982,173 @@ class ChatUI:
             import traceback
             traceback.print_exc()
 
+    def _start_orchestrator(self, use_llm: bool = False):
+        """Run the parallel orchestrator — domain specialists in parallel.
+
+        Builds an attack tree from the current session state, decomposes
+        it into domain groups, and spawns SpecialistAgents in parallel
+        via asyncio.gather.  Much faster than the sequential TreeWalker
+        when multiple independent domains are involved.
+
+        When *use_llm* is True, each specialist runs a ReAct loop with
+        its own LLM reasoning (slower but adaptive to unexpected results).
+        """
+        from ai_core.mutation_engine import MutationEngine, gather_attack_state
+        from ai_core.orchestrator import AttackOrchestrator
+        from ai_core.planning.plan_schema import PentestPlan, PlannedStep, AttackPhase
+        from ai_core.tools import TOOL_DOMAIN_MAP
+        from ai_core.tree_walker import AttackTreeNode, BranchRisk
+
+        if not self.vault_addr:
+            print("\n  Set a target first: set target http://VAULT_IP:8200")
+            return
+
+        state = gather_attack_state()
+        if not state["tokens"]:
+            print("\n  No tokens yet. Run recon or set a token first.")
+            return
+
+        print("\n" + "=" * 54)
+        print("  PARALLEL ORCHESTRATOR" + (" [LLM ReAct]" if use_llm else ""))
+        print("=" * 54)
+        if use_llm:
+            print(f"  Strategy : Domain specialists with LLM ReAct loop (Think->Act->Adapt)")
+        else:
+            print(f"  Strategy : Domain specialists in parallel (asyncio.gather)")
+        print(f"  Tokens   : {state['session_summary']['total_tokens']}")
+        print(f"  Best     : {state['session_summary']['best_token_power']}")
+        print(f"  Max replans: 2")
+        print("=" * 54 + "\n")
+
+        # Build attack tree (same as TreeWalker for now)
+        engine = MutationEngine()
+        root = engine.start_tree(self.vault_addr, {"token_count": len(state["tokens"])})
+
+        for finding in state["findings"][:10]:
+            sev = finding.get("severity", "INFO")
+            title = finding.get("title", "")
+            mod = finding.get("module", "")
+
+            if any(w in title.lower() for w in ("denied", "blocked", "fail")):
+                continue
+
+            if sev in ("CRITICAL", "HIGH"):
+                risk = BranchRisk.AGGRESSIVE
+            elif sev == "MEDIUM":
+                risk = BranchRisk.BALANCED
+            else:
+                risk = BranchRisk.STEALTH
+
+            tool = {
+                "recon": "run_unauthenticated_recon",
+                "capability": "run_capability_audit",
+                "privilege": "run_priv_esc_scan",
+                "priv_esc": "run_priv_esc_scan",
+                "kv_enum": "run_kv_enumeration",
+                "ttl": "run_ttl_audit",
+                "auth": "run_auth_config_audit",
+                "policy": "read_single_policy",
+                "secret": "run_secret_exfiltration",
+                "env": "run_env_scan",
+            }.get(mod, "run_raw_vault_request") if mod else "run_raw_vault_request"
+
+            engine.add_branch(
+                parent=root,
+                tool=tool,
+                reason=title[:150],
+                risk=risk,
+                phase="audit",
+                expected_outcome=f"Investigate: {title[:100]}",
+            )
+
+        # Add token-specific branches
+        for t in state["tokens"]:
+            engine.add_branch(
+                parent=root,
+                tool="run_capability_audit",
+                reason=f"Audit token: {t.get('power_level', 'unknown')}",
+                risk=BranchRisk.AGGRESSIVE,
+                phase="audit",
+                expected_outcome="Map token capabilities",
+            )
+
+        # ── Convert tree to plan ──────────────────────────────────────
+        children = list(getattr(root, "children", []) or [])
+        steps = []
+        for child in children:
+            tool_name = getattr(child, "tool", "")
+            if tool_name == "__root__":
+                continue
+            steps.append(PlannedStep(
+                tool=tool_name,
+                reason=getattr(child, "reason", "")[:200],
+                params=dict(getattr(child, "params", {}) or {}),
+                phase=AttackPhase.AUDIT,
+                risk="state_changing",
+                on_failure="skip",
+                max_retries=0,
+            ))
+
+        print(f"  Decomposed into {len(steps)} steps across domains...")
+        domain_count = len({
+            next(iter(TOOL_DOMAIN_MAP.get(s.tool, {"general"})))
+            for s in steps
+        })
+        print(f"  Spawning specialists for {domain_count} domains...\n")
+
+        # ── Run orchestrator ─────────────────────────────────────────
+        async def _run():
+            orch = AttackOrchestrator(
+                vault_addr=self.vault_addr,
+                token=self.token,
+                tool_executor=self._execute_tool,
+                max_replans=2,
+                llm_client=self.agent.llm if use_llm else None,
+                use_llm=use_llm,
+            )
+            plan = PentestPlan(vault_addr=self.vault_addr)
+            plan.steps = steps
+            plan.attack_narrative = (
+                "LLM-powered ReAct orchestration" if use_llm
+                else "Interactive parallel orchestration"
+            )
+
+            result = await orch.execute_plan(plan)
+
+            print(f"\n{'=' * 54}")
+            print(f"  ORCHESTRATOR COMPLETE")
+            print(f"{'=' * 54}")
+            print(f"  Domains    : {sorted(result.domains_involved)}")
+            print(f"  Steps      : {result.total_steps}")
+            print(f"  Successes  : {result.successes}")
+            print(f"  Failures   : {result.failures}")
+            print(f"  Escalated  : {result.escalated}")
+            print(f"  New tokens : {len(result.new_tokens)}")
+            print(f"  Duration   : {result.execution_time_ms:.0f}ms")
+            print(f"  Replans    : {result.replan_count}")
+            print(f"{'=' * 54}")
+
+            # Per-domain breakdown
+            print(f"\n  PER-DOMAIN RESULTS:")
+            for domain, sr in sorted(result.specialist_results.items()):
+                icon = "[+]" if sr.status == "completed" else "[~]" if sr.status == "partial" else "[-]"
+                print(f"  {icon} {domain:14s} | steps:{sr.steps_total} ok:{sr.steps_succeeded} fail:{sr.steps_failed} | escalated:{sr.escalated}")
+
+            # Synthesized findings
+            if result.synthesized_findings:
+                print(f"\n  TOP FINDINGS:")
+                for f in result.synthesized_findings[:5]:
+                    print(f"    [{f.get('severity', '?')}] {f.get('title', '')}")
+
+        try:
+            asyncio.run(_run())
+        except KeyboardInterrupt:
+            print("\n[WARN] Orchestrator interrupted.")
+        except Exception as exc:
+            print(f"\n[ERROR] Orchestrator failed: {exc}")
+            import traceback
+            traceback.print_exc()
+
     def _show_status(self):
         llm = self.agent.llm
         sess = self.session.status_summary()
@@ -924,9 +1206,9 @@ class ChatUI:
             if not value:
                 print("❌ Usage: set provider <openai|anthropic|deepseek|ollama>")
                 return
-            if value not in ("openai", "anthropic", "deepseek", "ollama"):
+            if value not in ("openai", "anthropic", "deepseek", "kimi", "cursor", "ollama"):
                 print(f"❌ Unknown provider: {value}")
-                print("   Valid: openai, anthropic, deepseek, ollama")
+                print("   Valid: openai, anthropic, deepseek, kimi, cursor, ollama")
                 return
             self.provider = value
             # Show model selection after provider change
@@ -1018,6 +1300,7 @@ def start_chat_session(
     auto_max_turns: int = 30,
     disable_web: bool = False,
     auto_pilot: bool = False,
+    interval: int | None = None,
 ):
     """Launch the interactive AI pentest chat session (or auto mode)."""
     chat = ChatUI(
@@ -1032,6 +1315,7 @@ def start_chat_session(
         auto_max_turns=auto_max_turns,
         disable_web=disable_web,
         auto_pilot=auto_pilot,
+        interval=interval,
     )
     chat.start()
 

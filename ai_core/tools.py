@@ -480,6 +480,114 @@ TOOL_REFRESH_NVD_CACHE = ToolDef(
     phase="meta",
 )
 
+# ── Security MCP tools ──────────────────────────────────────────────────
+
+TOOL_RUN_COMPLIANCE_CHECK = ToolDef(
+    name="run_compliance_check",
+    description=(
+        "CIS-aligned Vault configuration audit. Checks TLS, audit logging, "
+        "root token usage, seal status, and CORS configuration. Read-only."
+    ),
+    parameters=[
+        ToolParam(name="vault_addr", type="string", description="Target Vault URL", required=True),
+        ToolParam(name="token", type="string", description="Vault token for authenticated checks", required=False),
+    ],
+    phase="audit",
+)
+
+TOOL_RUN_NETWORK_PROBE = ToolDef(
+    name="run_network_probe",
+    description=(
+        "Lightweight network scan of Vault target: port accessibility, HTTP "
+        "response timing, TLS certificate chain analysis, rate-limiting detection."
+    ),
+    parameters=[
+        ToolParam(name="vault_addr", type="string", description="Target Vault URL", required=True),
+        ToolParam(name="ports", type="array", description="Ports to scan (default: 8200,8201,443,80)", required=False),
+    ],
+    phase="recon",
+)
+
+TOOL_EXPORT_FULL_REPORT = ToolDef(
+    name="export_full_report",
+    description=(
+        "Export all findings as JSON + Markdown + PDF in a single call. "
+        "Returns paths to all three report formats."
+    ),
+    parameters=[
+        ToolParam(name="output_prefix", type="string", description="Output file prefix", required=False),
+        ToolParam(name="target", type="string", description="Target URL for report metadata", required=False),
+    ],
+    phase="meta",
+)
+
+TOOL_SEND_NOTIFICATION = ToolDef(
+    name="send_notification",
+    description=(
+        "Send pentest results summary via webhook (Slack, Discord, Teams). "
+        "Includes top critical/high findings and risk score."
+    ),
+    parameters=[
+        ToolParam(name="webhook_url", type="string", description="Webhook URL", required=True),
+        ToolParam(name="target", type="string", description="Target identifier", required=False),
+        ToolParam(name="notification_type", type="string", description="slack, discord, teams, or generic", required=False),
+    ],
+    phase="meta",
+)
+
+TOOL_RUN_AUDIT_LOG_SCAN = ToolDef(
+    name="run_audit_log_scan",
+    description=(
+        "Scan Vault audit logs for anomalies and security events. "
+        "Detects suspicious token usage, policy changes, auth modifications."
+    ),
+    parameters=[
+        ToolParam(name="audit_log_path", type="string", description="Path to local audit log file", required=False),
+        ToolParam(name="vault_addr", type="string", description="Vault address for API-based check", required=False),
+        ToolParam(name="token", type="string", description="Vault token", required=False),
+        ToolParam(name="max_lines", type="integer", description="Max lines to scan (default 10000)", required=False),
+    ],
+    phase="audit",
+)
+
+TOOL_RUN_CONTAINER_SCAN = ToolDef(
+    name="run_container_scan",
+    description=(
+        "Docker/K8s container security scan for Vault. Checks root user, "
+        "IPC_LOCK, memory limits, privileged mode, port exposure."
+    ),
+    parameters=[
+        ToolParam(name="container_name", type="string", description="Docker container name (default: vault-target)", required=False),
+        ToolParam(name="vault_addr", type="string", description="Target Vault URL", required=False),
+    ],
+    phase="audit",
+)
+
+TOOL_GET_THREAT_INTEL = ToolDef(
+    name="get_threat_intel",
+    description=(
+        "Fetch latest Vault-related CVEs and threat intelligence from "
+        "NVD cache and version-based CVE matching."
+    ),
+    parameters=[
+        ToolParam(name="vault_version", type="string", description="Vault version to match CVEs against", required=False),
+    ],
+    phase="meta",
+)
+
+TOOL_GENERATE_DIFF_REPORT = ToolDef(
+    name="generate_diff_report",
+    description=(
+        "Compare current findings with a previous JSON report. "
+        "Shows new findings, resolved findings, and severity changes."
+    ),
+    parameters=[
+        ToolParam(name="previous_json_path", type="string", description="Path to previous JSON report", required=True),
+        ToolParam(name="target", type="string", description="Target URL", required=False),
+    ],
+    phase="meta",
+)
+
 TOOL_WEB_SEARCH = ToolDef(
     name="web_search",
     description=(
@@ -498,6 +606,69 @@ TOOL_WEB_SEARCH = ToolDef(
     ],
     phase="meta",
 )
+
+# ── Domain-to-tool mapping for specialist agents ──────────────────────────
+# Maps every MCP tool name to the domain(s) it serves.  ``"*"`` means the
+# tool is universal — available to every specialist regardless of domain.
+# Used by :class:`AttackOrchestrator` to decompose plans and by
+# :class:`SpecialistAgent` to build its filtered tool list.
+
+TOOL_DOMAIN_MAP: dict[str, set[str]] = {
+    # ── Recon — typically run once, assigned to general ────────────────
+    "run_unauthenticated_recon":     {"general"},
+    "run_hijack_scan":               {"general"},
+    "run_env_scan":                  {"general"},
+
+    # ── Audit — token domain ───────────────────────────────────────────
+    "run_capability_audit":          {"token"},
+    "run_priv_esc_scan":             {"token"},
+    "run_policy_auditor":            {"token"},
+    "read_single_policy":            {"token"},
+    "run_auth_config_audit":         {"token", "cloud"},
+
+    # ── Audit — secrets domain ─────────────────────────────────────────
+    "run_kv_enumeration":            {"secrets"},
+    "run_ttl_audit":                 {"secrets", "general"},
+
+    # ── Active execution — domain-specific ─────────────────────────────
+    "run_privilege_escalation":      {"token"},
+    "run_secret_exfiltration":       {"secrets"},
+    "run_database_credential_harvest":{"database"},
+    "run_cloud_key_exfiltration":    {"cloud"},
+
+    # ── Raw API — broad access, available to most domains ─────────────
+    "run_raw_vault_request":         {"token", "secrets", "database",
+                                       "cloud", "persistence", "seal",
+                                       "pivot", "general"},
+
+    # ── Active module gateway — domain filtering at runtime via registry
+    "list_active_modules":           {"*"},
+    "run_active_module":             {"*"},
+
+    # ── Universal — all specialists ────────────────────────────────────
+    "web_search":                    {"*"},
+    "get_findings":                  {"*"},
+    "get_risk_score":                {"*"},
+    "refresh_nvd_cache":             {"*"},
+
+    # ── Security MCP operations — domain-specific ──────────────────────
+    "run_compliance_check":          {"general"},
+    "run_network_probe":             {"general"},
+    "run_audit_log_scan":            {"general"},
+    "run_container_scan":            {"general"},
+    "get_threat_intel":              {"general"},
+
+    # ── Reporting / notifications — universal ─────────────────────────
+    "export_full_report":            {"*"},
+    "send_notification":             {"*"},
+    "generate_diff_report":          {"*"},
+}
+
+# Tools that are always available regardless of domain.
+UNIVERSAL_TOOL_NAMES: set[str] = {
+    name for name, domains in TOOL_DOMAIN_MAP.items() if "*" in domains
+}
+
 
 # ── Master registry ──────────────────────────────────────────────────────
 
@@ -523,6 +694,14 @@ ALL_TOOLS: list[ToolDef] = [
     TOOL_GET_RISK_SCORE,
     TOOL_REFRESH_NVD_CACHE,
     TOOL_WEB_SEARCH,
+    TOOL_RUN_COMPLIANCE_CHECK,
+    TOOL_RUN_NETWORK_PROBE,
+    TOOL_EXPORT_FULL_REPORT,
+    TOOL_SEND_NOTIFICATION,
+    TOOL_RUN_AUDIT_LOG_SCAN,
+    TOOL_RUN_CONTAINER_SCAN,
+    TOOL_GET_THREAT_INTEL,
+    TOOL_GENERATE_DIFF_REPORT,
 ]
 
 

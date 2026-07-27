@@ -1379,6 +1379,765 @@ async def run_active_module(
     )
 
 
+# ─── Security MCP: Compliance Check ──────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_compliance_check",
+    description=(
+        "Hedef Vault'a karsi CIS Benchmark kontrollerini calistirir. "
+        "TLS, auth, audit, policy, token ve seal yapilandirmalarini "
+        "en iyi uygulamalara gore denetler. Read-only, state-changing yok."
+    ),
+)
+async def run_compliance_check(
+    vault_addr: str,
+    token: Optional[str] = None,
+) -> str:
+    """Basic CIS-aligned compliance check against a Vault instance."""
+    checks: list[dict] = []
+    passed = 0
+    failed = 0
+
+    try:
+        import requests as req
+        from core.tls_config import get_verify
+
+        base = vault_addr.rstrip("/")
+        h = {"X-Vault-Token": token} if token else {}
+        # Disable TLS verification for localhost/self-signed certs
+        verify = base.startswith("https://") and "localhost" not in base
+
+        # ── CIS 1.1: Ensure TLS is enabled ──────────────────────────
+        try:
+            r = req.get(f"{base}/v1/sys/health", headers=h, verify=verify, timeout=5)
+            is_https = base.startswith("https")
+            checks.append({
+                "id": "CIS-1.1", "title": "TLS enabled",
+                "status": "PASS" if is_https else "FAIL",
+                "detail": "Vault serves over HTTPS" if is_https else "Vault serves over HTTP — enable TLS",
+            })
+            if is_https: passed += 1
+            else: failed += 1
+        except Exception as e:
+            checks.append({"id": "CIS-1.1", "title": "TLS enabled", "status": "ERROR", "detail": str(e)})
+
+        # ── CIS 2.1: Audit device enabled ───────────────────────────
+        if token:
+            try:
+                r = req.get(f"{base}/v1/sys/audit", headers=h, verify=verify, timeout=5)
+                audit_data = r.json() if r.status_code == 200 else {}
+                has_audit = bool(audit_data.get("data", {}))
+                checks.append({
+                    "id": "CIS-2.1", "title": "Audit logging enabled",
+                    "status": "PASS" if has_audit else "FAIL",
+                    "detail": f"Audit devices: {list(audit_data.get('data', {}).keys())}" if has_audit
+                    else "No audit devices enabled — enable audit logging",
+                })
+                if has_audit: passed += 1
+                else: failed += 1
+            except Exception:
+                checks.append({"id": "CIS-2.1", "title": "Audit logging enabled", "status": "SKIP", "detail": "Token cannot read sys/audit"})
+
+        # ── CIS 3.1: Root token not in use ──────────────────────────
+        if token:
+            try:
+                r = req.get(f"{base}/v1/auth/token/lookup-self", headers=h, verify=verify, timeout=5)
+                if r.status_code == 200:
+                    data = r.json().get("data", {})
+                    is_root = "root" in data.get("policies", [])
+                    checks.append({
+                        "id": "CIS-3.1", "title": "Root token not in active use",
+                        "status": "FAIL" if is_root else "PASS",
+                        "detail": "Root token in use — create named admin policies instead" if is_root
+                        else "Token is not root",
+                    })
+                    if not is_root: passed += 1
+                    else: failed += 1
+            except Exception:
+                checks.append({"id": "CIS-3.1", "title": "Root token not in use", "status": "SKIP", "detail": "Cannot verify token identity"})
+
+        # ── CIS 4.1: Seal status check ──────────────────────────────
+        try:
+            r = req.get(f"{base}/v1/sys/seal-status", headers=h, verify=verify, timeout=5)
+            if r.status_code == 200:
+                sealed = r.json().get("sealed", True)
+                checks.append({
+                    "id": "CIS-4.1", "title": "Vault is unsealed",
+                    "status": "PASS" if not sealed else "FAIL",
+                    "detail": "Vault is sealed — unseal it" if sealed else "Vault is unsealed and operational",
+                })
+                if not sealed: passed += 1
+                else: failed += 1
+        except Exception:
+            checks.append({"id": "CIS-4.1", "title": "Vault is unsealed", "status": "ERROR", "detail": "Cannot reach Vault"})
+
+        # ── CIS 5.1: CORS not wildcard ──────────────────────────────
+        if token:
+            try:
+                r = req.get(f"{base}/v1/sys/config/cors", headers=h, verify=verify, timeout=5)
+                if r.status_code == 200:
+                    cors = r.json().get("data", {})
+                    origins = cors.get("allowed_origins", [])
+                    has_wildcard = "*" in origins
+                    checks.append({
+                        "id": "CIS-5.1", "title": "CORS not wildcard",
+                        "status": "FAIL" if has_wildcard else "PASS",
+                        "detail": "Wildcard CORS origin: *" if has_wildcard
+                        else f"Allowed origins: {origins}",
+                    })
+                    if not has_wildcard: passed += 1
+                    else: failed += 1
+            except Exception:
+                checks.append({"id": "CIS-5.1", "title": "CORS not wildcard", "status": "SKIP", "detail": "Token cannot read CORS config"})
+
+        score = round((passed / max(passed + failed, 1)) * 100)
+        return json.dumps({
+            "status": "completed",
+            "compliance_score": score,
+            "passed": passed,
+            "failed": failed,
+            "total_checks": len(checks),
+            "checks": checks,
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+
+
+# ─── Security MCP: Network Probe ──────────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_network_probe",
+    description=(
+        "Hedef Vault adresine karsi hafif ag taramasi yapar. "
+        "Port erisimi, HTTP/HTTPS yanit sureleri, rate-limiting varligi, "
+        "redirect zincirleri ve TLS sertifika zincirini analiz eder. "
+        "Aktif exploitation yok — sadece ag katmani bilgi toplama."
+    ),
+)
+async def run_network_probe(
+    vault_addr: str,
+    ports: Optional[list[int]] = None,
+) -> str:
+    """Lightweight network probe of a Vault target."""
+    import socket
+    import ssl
+    import time as _time
+
+    target = vault_addr.rstrip("/")
+    # Extract host and port from URL
+    from urllib.parse import urlparse
+    parsed = urlparse(target)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 8200)
+
+    checks: list[dict] = []
+    scan_ports = ports or [port, 8200, 8201, 443, 80]
+
+    # ── Port scan ───────────────────────────────────────────────────
+    for p in scan_ports:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            start = _time.monotonic()
+            result = sock.connect_ex((host, p))
+            elapsed = (_time.monotonic() - start) * 1000
+            sock.close()
+            checks.append({
+                "port": p,
+                "open": result == 0,
+                "latency_ms": round(elapsed, 1),
+                "service": {8200: "Vault API", 8201: "Vault Cluster", 443: "HTTPS", 80: "HTTP"}.get(p, "unknown"),
+            })
+        except Exception as e:
+            checks.append({"port": p, "open": False, "error": str(e)})
+
+    # ── HTTP response timing ────────────────────────────────────────
+    try:
+        import requests as req
+        from core.tls_config import get_verify
+
+        start = _time.monotonic()
+        r = req.get(f"{target}/v1/sys/health", verify=get_verify(), timeout=5)
+        elapsed = (_time.monotonic() - start) * 1000
+
+        # Check rate-limit headers
+        rate_limit_headers = {
+            k: v for k, v in r.headers.items()
+            if "rate" in k.lower() or "limit" in k.lower()
+        }
+
+        checks.append({
+            "type": "http_response",
+            "status_code": r.status_code,
+            "response_time_ms": round(elapsed, 1),
+            "server_header": r.headers.get("Server", "not set"),
+            "rate_limiting": bool(rate_limit_headers),
+            "rate_limit_headers": rate_limit_headers,
+        })
+    except Exception as e:
+        checks.append({"type": "http_response", "error": str(e)})
+
+    # ── TLS certificate chain ───────────────────────────────────────
+    if parsed.scheme == "https":
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            ssock = ctx.wrap_socket(sock, server_hostname=host)
+            ssock.connect((host, port))
+            cert = ssock.getpeercert(binary_form=False)
+            cert_bin = ssock.getpeercert(binary_form=True)
+            ssock.close()
+
+            from cryptography import x509
+            from cryptography.hazmat.backends import default_backend
+            try:
+                parsed_cert = x509.load_der_x509_certificate(cert_bin, default_backend())
+                issuer = str(parsed_cert.issuer)
+                subject = str(parsed_cert.subject)
+                not_after = parsed_cert.not_valid_after_utc.isoformat()
+                is_self_signed = issuer == subject
+            except Exception:
+                issuer = cert.get("issuer", "unknown")
+                subject = cert.get("subject", "unknown")
+                not_after = cert.get("notAfter", "unknown")
+                is_self_signed = False
+
+            checks.append({
+                "type": "tls_certificate",
+                "subject": str(subject)[:200],
+                "issuer": str(issuer)[:200],
+                "expires": str(not_after),
+                "self_signed": is_self_signed,
+            })
+        except Exception as e:
+            checks.append({"type": "tls_certificate", "error": str(e)})
+
+    return json.dumps({
+        "status": "completed",
+        "host": host,
+        "target_port": port,
+        "checks": checks,
+    }, ensure_ascii=False)
+
+
+# ─── Security MCP: Full Report Export ─────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="export_full_report",
+    description=(
+        "Tum bulgulari JSON + Markdown + PDF olarak tek cagrida disari aktarir. "
+        "Uc rapor formatini da ayni anda uretir, dosya yollarini dondurur. "
+        "output_prefix verilmezse 'pentest_report_<timestamp>' kullanilir."
+    ),
+)
+async def export_full_report(
+    output_prefix: Optional[str] = None,
+    target: Optional[str] = None,
+) -> str:
+    """Generate JSON, Markdown, and PDF reports in one call."""
+    from datetime import datetime
+    from core.report import (
+        export_json_report,
+        export_markdown_report,
+        export_pdf_report,
+        findings,
+    )
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    prefix = output_prefix or f"pentest_report_{ts}"
+
+    result = {"status": "completed", "findings_count": len(findings), "reports": {}}
+
+    # JSON
+    json_path = export_json_report(f"{prefix}.json", target=target)
+    if json_path:
+        result["reports"]["json"] = str(json_path)
+
+    # Markdown
+    md_path = export_markdown_report(f"{prefix}.md", target=target)
+    if md_path:
+        result["reports"]["markdown"] = str(md_path)
+
+    # PDF
+    try:
+        pdf_path = export_pdf_report(f"{prefix}.pdf", target=target)
+        if pdf_path:
+            result["reports"]["pdf"] = str(pdf_path)
+    except Exception as e:
+        result["reports"]["pdf_error"] = str(e)
+
+    return json.dumps(result, ensure_ascii=False)
+
+
+# ─── Security MCP: Webhook Notification ────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="send_notification",
+    description=(
+        "Pentest sonuclarini webhook uzerinden gonderir. Slack, Discord, Teams "
+        "veya ozel webhook URL'lerine JSON payload gonderir. "
+        "Bulgulari ozetler ve en kritik 5 bulguyu iletir."
+    ),
+)
+async def send_notification(
+    webhook_url: str,
+    target: Optional[str] = None,
+    notification_type: str = "slack",
+) -> str:
+    """Send pentest results summary to a webhook (Slack/Discord/Teams)."""
+    import requests as req
+    from core.report import findings
+    from core.risk_score import calculate_risk
+
+    risk = calculate_risk(findings)
+
+    # Build summary
+    critical = [f for f in findings if f.get("severity") == "CRITICAL"][:5]
+    high = [f for f in findings if f.get("severity") == "HIGH"][:3]
+
+    summary_lines = [
+        f"🔒 Vault Pentest Complete",
+        f"Target: {target or 'unknown'}",
+        f"Risk Score: {risk['score']}/100 ({risk['grade']})",
+        f"Findings: {len(findings)} total",
+    ]
+
+    for f in critical:
+        summary_lines.append(f"  🔴 [{f['severity']}] {f['title']}")
+    for f in high:
+        summary_lines.append(f"  🟠 [{f['severity']}] {f['title']}")
+
+    summary = "\n".join(summary_lines)
+
+    # Build payload for different types
+    if notification_type == "slack":
+        payload = {"text": summary, "username": "Vault Pentest Bot"}
+    elif notification_type == "discord":
+        payload = {"content": summary, "username": "Vault Pentest Bot"}
+    elif notification_type == "teams":
+        payload = {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "title": "Vault Pentest Complete",
+            "text": summary,
+        }
+    else:
+        payload = {"text": summary, "findings_count": len(findings), "risk": risk}
+
+    try:
+        r = req.post(webhook_url, json=payload, timeout=10)
+        return json.dumps({
+            "status": "sent" if r.status_code in (200, 204) else "failed",
+            "http_status": r.status_code,
+            "notification_type": notification_type,
+            "summary": summary,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+
+
+# ─── Security MCP: Audit Log Scanner ──────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_audit_log_scan",
+    description=(
+        "Vault audit log'larini (yerel dosya veya API uzerinden) anomali ve "
+        "guvenlik olaylari icin tarar. Supheli token kullanimlari, "
+        "yetkisiz erisim denemeleri ve policy degisikliklerini tespit eder."
+    ),
+)
+async def run_audit_log_scan(
+    audit_log_path: Optional[str] = None,
+    vault_addr: Optional[str] = None,
+    token: Optional[str] = None,
+    max_lines: int = 10000,
+) -> str:
+    """Scan Vault audit logs for suspicious activity patterns."""
+    findings: list[dict] = []
+    total_lines = 0
+
+    # Patterns to detect
+    suspicious_patterns = {
+        "auth/token/create": ("Token creation", "MEDIUM"),
+        "sys/policy": ("Policy modification", "HIGH"),
+        "sys/audit": ("Audit device modification", "CRITICAL"),
+        "sys/seal": ("Seal operation", "CRITICAL"),
+        "sys/unseal": ("Unseal operation", "HIGH"),
+        "sys/auth": ("Auth method modification", "HIGH"),
+        "permission denied": ("Access denied", "LOW"),
+        "auth/userpass/login": ("Userpass login", "LOW"),
+        "auth/approle/login": ("AppRole login", "LOW"),
+    }
+
+    # ── Scan local audit log ──────────────────────────────────────────
+    if audit_log_path:
+        try:
+            import os
+            if os.path.isfile(audit_log_path):
+                with open(audit_log_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        total_lines += 1
+                        if total_lines > max_lines:
+                            break
+                        line_lower = line.lower()
+                        for pattern, (title, severity) in suspicious_patterns.items():
+                            if pattern.lower() in line_lower:
+                                try:
+                                    import json as _json
+                                    entry = _json.loads(line.strip())
+                                    findings.append({
+                                        "severity": severity,
+                                        "title": title,
+                                        "description": f"Audit log: {pattern}",
+                                        "evidence": line.strip()[:300],
+                                        "module": "audit_log_scanner",
+                                    })
+                                except Exception:
+                                    findings.append({
+                                        "severity": severity,
+                                        "title": title,
+                                        "description": f"Audit log: {pattern}",
+                                        "evidence": line.strip()[:300],
+                                        "module": "audit_log_scanner",
+                                    })
+                                break
+            else:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Audit log file not found: {audit_log_path}",
+                }, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({
+                "status": "error",
+                "message": f"Cannot read audit log: {e}",
+            }, ensure_ascii=False)
+
+    # ── Scan via Vault API (if token provided) ────────────────────────
+    elif vault_addr and token:
+        try:
+            import requests as req
+            from core.tls_config import get_verify
+
+            # Check if audit is enabled
+            r = req.get(
+                f"{vault_addr.rstrip('/')}/v1/sys/audit",
+                headers={"X-Vault-Token": token},
+                verify=get_verify(),
+                timeout=5,
+            )
+            if r.status_code == 200:
+                audit_data = r.json().get("data", {})
+                if not audit_data:
+                    findings.append({
+                        "severity": "HIGH",
+                        "title": "Audit logging not enabled",
+                        "description": "No audit devices found — Vault operations are not being logged.",
+                        "module": "audit_log_scanner",
+                    })
+                else:
+                    for audit_path in audit_data:
+                        findings.append({
+                            "severity": "INFO",
+                            "title": "Audit device found",
+                            "description": f"Audit device at {audit_path}: {audit_data[audit_path].get('type', 'unknown')}",
+                            "module": "audit_log_scanner",
+                        })
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+
+    return json.dumps({
+        "status": "completed",
+        "lines_scanned": total_lines,
+        "suspicious_events": len(findings),
+        "findings": findings,
+    }, ensure_ascii=False)
+
+
+# ─── Security MCP: Container Security Scanner ──────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_container_scan",
+    description=(
+        "Vault'un Docker/Kubernetes konteyner icinde calisip calismadigini kontrol eder. "
+        "Konteyner guvenligi en iyi uygulamalarina gore: root kullanici, "
+        "cap_add=IPC_LOCK, memory limitleri, read-only root filesystem gibi "
+        "konulari denetler. Docker socket veya Kubernetes API'ye erisim gerekir."
+    ),
+)
+async def run_container_scan(
+    container_name: Optional[str] = None,
+    vault_addr: Optional[str] = None,
+) -> str:
+    """Scan Vault container for security misconfigurations."""
+    findings: list[dict] = []
+    target_container = container_name or "vault-target"
+
+    # ── Docker inspect (if available) ────────────────────────────────
+    try:
+        import subprocess
+
+        r = subprocess.run(
+            ["docker", "inspect", target_container],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            import json as _json
+            data = _json.loads(r.stdout)
+            if data:
+                config = data[0]
+                host_config = config.get("HostConfig", {})
+                container_config = config.get("Config", {})
+
+                # Check: root user?
+                user = container_config.get("User", "root")
+                if user in ("root", "0:0", ""):
+                    findings.append({
+                        "severity": "MEDIUM",
+                        "title": "Container running as root",
+                        "description": "Vault container runs as root. Use a non-root user for production.",
+                        "module": "container_scanner",
+                    })
+
+                # Check: IPC_LOCK (needed for mlock)
+                cap_add = host_config.get("CapAdd", [])
+                if "IPC_LOCK" in cap_add:
+                    findings.append({
+                        "severity": "PASS",
+                        "title": "IPC_LOCK capability present",
+                        "description": "mlock can work correctly for memory locking.",
+                        "module": "container_scanner",
+                    })
+                else:
+                    findings.append({
+                        "severity": "LOW",
+                        "title": "IPC_LOCK missing",
+                        "description": "Add cap_add: [IPC_LOCK] for mlock support.",
+                        "module": "container_scanner",
+                    })
+
+                # Check: Memory limits
+                memory = host_config.get("Memory", 0)
+                if memory == 0:
+                    findings.append({
+                        "severity": "LOW",
+                        "title": "No memory limit set",
+                        "description": "Set a memory limit to prevent OOM attacks.",
+                        "module": "container_scanner",
+                    })
+
+                # Check: Read-only rootfs
+                if host_config.get("ReadonlyRootfs", False):
+                    findings.append({
+                        "severity": "PASS",
+                        "title": "Read-only root filesystem",
+                        "description": "Container rootfs is read-only.",
+                        "module": "container_scanner",
+                    })
+
+                # Check: Privileged mode
+                if host_config.get("Privileged", False):
+                    findings.append({
+                        "severity": "CRITICAL",
+                        "title": "Container runs in privileged mode",
+                        "description": "Privileged containers escape namespaces — remove --privileged flag.",
+                        "module": "container_scanner",
+                    })
+
+                # Check: Ports exposed
+                ports = host_config.get("PortBindings", {})
+                findings.append({
+                    "severity": "INFO",
+                    "title": f"Exposed ports: {list(ports.keys())}",
+                    "description": f"Container exposes ports: {list(ports.keys())}",
+                    "module": "container_scanner",
+                })
+
+        else:
+            # Try docker-compose
+            r2 = subprocess.run(
+                ["docker", "ps", "--filter", f"name={target_container}", "--format", "{{.Names}}\t{{.Status}}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r2.returncode == 0 and r2.stdout.strip():
+                findings.append({
+                    "severity": "INFO",
+                    "title": "Container found",
+                    "description": f"Container status: {r2.stdout.strip()}",
+                    "module": "container_scanner",
+                })
+            else:
+                findings.append({
+                    "severity": "INFO",
+                    "title": "No Docker container found",
+                    "description": "Vault may be running natively or Docker is not accessible.",
+                    "module": "container_scanner",
+                })
+    except FileNotFoundError:
+        findings.append({
+            "severity": "INFO",
+            "title": "Docker not available",
+            "description": "Docker CLI not found — cannot scan containers.",
+            "module": "container_scanner",
+        })
+    except Exception as e:
+        findings.append({
+            "severity": "INFO",
+            "title": "Container scan limited",
+            "description": f"Docker inspect failed: {e}",
+            "module": "container_scanner",
+        })
+
+    return json.dumps({
+        "status": "completed",
+        "container": target_container,
+        "findings_count": len(findings),
+        "findings": findings,
+    }, ensure_ascii=False)
+
+
+# ─── Security MCP: Threat Intelligence ─────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="get_threat_intel",
+    description=(
+        "HashiCorp Vault ile ilgili en son guvenlik tehditlerini, CVE'leri "
+        "ve guvenlik bultenlerini arar. NVD cache + web search kullanarak "
+        "guncel tehdit istihbarati saglar."
+    ),
+)
+async def get_threat_intel(
+    vault_version: Optional[str] = None,
+) -> str:
+    """Fetch latest threat intelligence for HashiCorp Vault."""
+    threats: list[dict] = []
+
+    # ── Check NVD cache ───────────────────────────────────────────────
+    try:
+        from reconnaissance.nvd_client import _load_cache
+        cache = _load_cache()
+        cves = cache.get("cves", [])
+        if cves:
+            # Filter critical/high CVEs
+            for cve in cves:
+                if cve.get("severity") in ("CRITICAL", "HIGH"):
+                    threats.append({
+                        "source": "NVD",
+                        "cve_id": cve.get("cve_id"),
+                        "severity": cve.get("severity"),
+                        "summary": cve.get("summary", "")[:200],
+                        "published": cve.get("published", ""),
+                    })
+    except Exception:
+        pass
+
+    # ── Version-specific check ────────────────────────────────────────
+    if vault_version:
+        try:
+            from reconnaissance.version_cve_matcher import match_version
+            matches = match_version(vault_version)
+            for m in matches:
+                threats.append({
+                    "source": "CVE Matcher",
+                    "cve_id": m.get("cve_id"),
+                    "severity": m.get("severity", "MEDIUM"),
+                    "summary": m.get("summary", f"CVE matches version {vault_version}")[:200],
+                    "matched_version": vault_version,
+                })
+        except Exception:
+            pass
+
+    # Sort by severity
+    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    threats.sort(key=lambda t: sev_order.get(t.get("severity", ""), 99))
+
+    return json.dumps({
+        "status": "completed",
+        "threat_count": len(threats),
+        "vault_version": vault_version,
+        "threats": threats[:20],
+        "last_updated": "check NVD cache for fetch date",
+    }, ensure_ascii=False)
+
+
+# ─── Security MCP: Diff Report ────────────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="generate_diff_report",
+    description=(
+        "Iki tarama sonucu arasindaki farki karsilastirir. "
+        "Yeni bulgular, kapanmis bulgular ve degismis severity'leri tespit eder. "
+        "onceki_json_path ve suanki bulgular arasinda diff cikarir."
+    ),
+)
+async def generate_diff_report(
+    previous_json_path: str,
+    target: Optional[str] = None,
+) -> str:
+    """Compare current findings with a previous scan JSON export."""
+    from core.report import findings as current_findings
+    import os
+
+    if not os.path.isfile(previous_json_path):
+        return json.dumps({
+            "status": "error",
+            "message": f"Previous report not found: {previous_json_path}",
+        }, ensure_ascii=False)
+
+    try:
+        with open(previous_json_path, "r", encoding="utf-8") as f:
+            prev_data = json.load(f)
+        prev_findings = prev_data.get("findings", [])
+    except Exception as e:
+        return json.dumps({
+            "status": "error", "message": f"Cannot read previous report: {e}",
+        }, ensure_ascii=False)
+
+    # Build keys for comparison: (severity, title)
+    current_keys = {(f.get("severity"), f.get("title")) for f in current_findings}
+    prev_keys = {(f.get("severity"), f.get("title")) for f in prev_findings}
+
+    new_findings = [f for f in current_findings if (f.get("severity"), f.get("title")) not in prev_keys]
+    resolved_findings = [f for f in prev_findings if (f.get("severity"), f.get("title")) not in current_keys]
+    unchanged = len(current_keys & prev_keys)
+
+    # Severity changes: same title, different severity
+    prev_by_title = {f.get("title"): f.get("severity") for f in prev_findings}
+    severity_changes = []
+    for f in current_findings:
+        title = f.get("title")
+        if title in prev_by_title and prev_by_title[title] != f.get("severity"):
+            severity_changes.append({
+                "title": title,
+                "previous_severity": prev_by_title[title],
+                "current_severity": f.get("severity"),
+            })
+
+    return json.dumps({
+        "status": "completed",
+        "previous_findings": len(prev_findings),
+        "current_findings": len(current_findings),
+        "new": len(new_findings),
+        "resolved": len(resolved_findings),
+        "unchanged": unchanged,
+        "severity_changes": len(severity_changes),
+        "new_findings": new_findings[:20],
+        "resolved_findings": resolved_findings[:20],
+        "severity_change_details": severity_changes[:20],
+    }, ensure_ascii=False)
+
+
 # ─── Servis başlatıcı ─────────────────────────────────────────────────────
 
 def start_mcp_service(host: str = "127.0.0.1", port: int = 8000):

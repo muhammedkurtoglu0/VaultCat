@@ -134,6 +134,10 @@ def detect_provider() -> str:
         return "anthropic"
     if _env("DEEPSEEK_API_KEY"):
         return "deepseek"
+    if _env("KIMI_API_KEY") or _env("MOONSHOT_API_KEY"):
+        return "kimi"
+    if _env("CURSOR_API_KEY"):
+        return "cursor"
     if _env("OPENAI_API_KEY"):
         return "openai"
     # Check if Ollama is reachable
@@ -179,6 +183,10 @@ class LLMClient:
             return _env("ANTHROPIC_API_KEY")
         if self.provider == "deepseek":
             return _env("DEEPSEEK_API_KEY")
+        if self.provider == "kimi":
+            return _env("KIMI_API_KEY") or _env("MOONSHOT_API_KEY")
+        if self.provider == "cursor":
+            return _env("CURSOR_API_KEY")
         return ""
 
     def _resolve_base_url(self) -> str:
@@ -190,6 +198,10 @@ class LLMClient:
             return _env("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
         if self.provider == "deepseek":
             return _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+        if self.provider == "kimi":
+            return _env("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
+        if self.provider == "cursor":
+            return _env("CURSOR_BASE_URL", "https://api.cursor.sh/v1")
         return "http://localhost:11434"
 
     def _default_model(self) -> str:
@@ -197,6 +209,8 @@ class LLMClient:
             "openai": "gpt-4o-mini",
             "anthropic": os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-5"),
             "deepseek": "deepseek-v4-flash",
+            "kimi": "kimi-k2-instruct",
+            "cursor": "cursor-medium",
         }
         if self.provider in defaults:
             return defaults[self.provider]
@@ -277,7 +291,7 @@ class LLMClient:
         def _call():
             if self.provider == "ollama":
                 return self._ollama_chat(system_prompt, messages, tools, temperature, max_tokens)
-            if self.provider in ("openai", "deepseek"):
+            if self.provider in ("openai", "deepseek", "kimi", "cursor"):
                 return self._openai_chat(system_prompt, messages, tools, temperature, max_tokens)
             if self.provider == "anthropic":
                 return self._anthropic_chat(system_prompt, messages, tools, temperature, max_tokens)
@@ -320,7 +334,7 @@ class LLMClient:
             if self.provider == "ollama":
                 r = requests.get(f"{self.base_url}/api/tags", timeout=5)
                 return r.status_code == 200
-            if self.provider in ("openai", "anthropic", "deepseek"):
+            if self.provider in ("openai", "anthropic", "deepseek", "kimi", "cursor"):
                 return bool(self.api_key)
         except Exception:
             pass
@@ -339,7 +353,7 @@ class LLMClient:
                 r = requests.get(f"{self.base_url}/api/tags", timeout=5)
                 status["reachable"] = r.status_code == 200
                 status["models_count"] = len(r.json().get("models", [])) if r.status_code == 200 else 0
-            elif self.provider in ("openai", "anthropic", "deepseek"):
+            elif self.provider in ("openai", "anthropic", "deepseek", "kimi", "cursor"):
                 status["reachable"] = bool(self.api_key)
             else:
                 status["reachable"] = False

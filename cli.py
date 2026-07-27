@@ -91,7 +91,7 @@ MODULE_CHOICES = [
     "pivot_engine.cross_service",
 ]
 
-PROVIDER_CHOICES = ["aws", "azure", "gcp", "ollama", "openai", "anthropic", "deepseek"]
+PROVIDER_CHOICES = ["aws", "azure", "gcp", "ollama", "openai", "anthropic", "deepseek", "kimi", "cursor"]
 SEVERITY_CHOICES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "PASS"]
 DB_TYPE_CHOICES = ["postgres", "mysql", "mssql"]
 
@@ -149,6 +149,92 @@ def _sync_session_from_context(ctx: ExecutionContext) -> None:
 
 def _resolve_target(target: str | None, addr: str | None) -> str | None:
     return target or addr
+
+
+def _run_ai_analysis(
+    vault_addr: str | None,
+    ai_provider: str,
+    ai_model: str | None,
+) -> None:
+    """Run LLM-powered analysis of scan findings and print a rich summary."""
+    from core.report import findings as current_findings
+    from core.risk_score import calculate_risk
+
+    if not current_findings:
+        print("\n[*] AI analysis skipped — no findings to analyze.")
+        return
+
+    print("\n" + "=" * 54)
+    print("  AI-POWERED FINDING ANALYSIS")
+    print("=" * 54)
+
+    try:
+        from ai_core.llm_engine import LLMClient
+        from ai_core.models import get_default_model
+
+        provider = ai_provider
+        model = ai_model or get_default_model(provider)
+
+        print(f"  Provider : {provider}")
+        print(f"  Model    : {model}")
+        print(f"  Findings : {len(current_findings)}")
+
+        client = LLMClient(provider=provider, model=model)
+        if not client.is_available():
+            print(f"\n[!] Provider '{provider}' not available — check API key.")
+            print(f"    Set {provider.upper()}_API_KEY environment variable.")
+            return
+
+        # Build a compact findings summary
+        risk = calculate_risk(current_findings)
+        sev_counts: dict[str, int] = {}
+        for f in current_findings:
+            sev = f.get("severity", "INFO")
+            sev_counts[sev] = sev_counts.get(sev, 0) + 1
+
+        findings_text = "\n".join(
+            f"[{f.get('severity', '?')}] {f.get('title', '')}"
+            for f in current_findings[:30]
+        )
+        if len(current_findings) > 30:
+            findings_text += f"\n... and {len(current_findings) - 30} more"
+
+        prompt = (
+            f"You are a Vault security expert analyzing pentest results.\n\n"
+            f"Target: {vault_addr or 'unknown'}\n"
+            f"Risk Score: {risk['score']}/100 ({risk['grade']})\n"
+            f"Severity breakdown: {sev_counts}\n"
+            f"Total findings: {len(current_findings)}\n\n"
+            f"=== TOP FINDINGS ===\n{findings_text}\n=== END ===\n\n"
+            f"Provide a concise 1-paragraph EXECUTIVE SUMMARY (business risk level).\n"
+            f"Then list the TOP 5 MOST CRITICAL issues with:\n"
+            f"  - Why it matters (one sentence)\n"
+            f"  - The SINGLE most impactful fix (Vault CLI command or config change)\n"
+            f"Use a table format where possible. Be specific — no vague advice.\n"
+            f"Respond in the same language as the findings (Turkish/English)."
+        )
+
+        print("\n  Analyzing with AI...\n")
+        response = client.chat(
+            system_prompt="You are a senior Vault security consultant. Analyze pentest findings and provide actionable, specific remediation advice with exact CLI commands.",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2048,
+        )
+
+        content = response.get("content", "")
+        if content:
+            print(content)
+        else:
+            error = response.get("raw", "unknown error")
+            print(f"\n[!] AI analysis failed: {error}")
+
+    except ImportError as e:
+        print(f"\n[!] AI analysis unavailable — missing dependency: {e}")
+    except Exception as e:
+        print(f"\n[!] AI analysis error: {e}")
+
+    print("=" * 54)
 
 
 def _export_reports(json_path: str | None, markdown_path: str | None, target: str | None) -> None:
@@ -379,12 +465,26 @@ def scan(
     exclude_dir: Optional[list[str]] = typer.Option(None, "--exclude-dir", help="Exclude dir in hijack (repeatable)"),
     max_file_size_mb: int = typer.Option(5, "--max-file-size-mb", help="Max file size for hijack scan"),
     workers: int = typer.Option(0, "--workers", help="Parallel scanner workers (0=auto)"),
+    # ── AI analysis ──
+    ai_provider: Optional[str] = typer.Option(
+        None, "--ai-provider",
+        help="LLM provider for AI-powered finding analysis after scan (openai, anthropic, deepseek, kimi, cursor, ollama)",
+    ),
+    ai_model: Optional[str] = typer.Option(
+        None, "--ai-model",
+        help="LLM model name for AI analysis. Auto-detected from provider if not set.",
+    ),
     # ── reports ──
     min_severity: Optional[str] = typer.Option(None, "--min-severity", help="Minimum severity to show/export"),
     json_report: Optional[str] = typer.Option(None, "--json", help="Export findings to JSON"),
     markdown_report: Optional[str] = typer.Option(None, "--markdown", help="Export findings to Markdown"),
+    pdf_report: Optional[str] = typer.Option(None, "--pdf-report", help="Export findings to PDF with remediation"),
 ) -> None:
-    """Run a full Vault pentest assessment."""
+    """Run a full Vault pentest assessment.
+
+    Add --ai-provider for LLM-powered analysis of findings after the scan.
+    Example: python main.py scan --target URL --token TOKEN --ai-provider deepseek
+    """
     clear_findings()
 
     # Register user token in global session for dynamic escalation
@@ -541,10 +641,22 @@ def scan(
                 if policy_text:
                     analyze_policy(policy, policy_text)
 
+    # ── AI-powered analysis ──────────────────────────────────────────
+    if ai_provider:
+        _run_ai_analysis(
+            vault_addr=vault_addr,
+            ai_provider=ai_provider,
+            ai_model=ai_model,
+        )
+
     # ── Reports ──
     print_report()
     report_target = hijack_path or vault_addr
     _export_reports(json_report, markdown_report, report_target)
+
+    if pdf_report:
+        from core.report import export_pdf_report
+        export_pdf_report(pdf_report, target=report_target)
 
 
 @app.command()
@@ -645,6 +757,11 @@ def chat(
         30, "--auto-max-turns",
         help="Maximum LLM turns during auto mode",
     ),
+    # ── Continuous / cron mode ──
+    interval: Optional[int] = typer.Option(
+        None, "--interval",
+        help="Run auto mode repeatedly every N seconds (cron-like continuous mode). Requires --auto.",
+    ),
 ) -> None:
     """Start AI-powered pentest chat agent."""
     resolved_target = target or addr
@@ -652,6 +769,15 @@ def chat(
     # Auto mode requires a target
     if auto and not resolved_target:
         print("❌ --auto mode requires --target <url>. Nothing to do.")
+        raise typer.Exit(code=1)
+
+    # --interval requires --auto
+    if interval and not auto:
+        print("❌ --interval requires --auto. Add --auto to enable autonomous mode.")
+        raise typer.Exit(code=1)
+
+    if interval and interval < 10:
+        print("❌ --interval must be >= 10 seconds.")
         raise typer.Exit(code=1)
 
     if stealth:
@@ -679,6 +805,7 @@ def chat(
         auto_max_turns=auto_max_turns,
         disable_web=disable_web,
         auto_pilot=auto_pilot,
+        interval=interval,
     )
 
 

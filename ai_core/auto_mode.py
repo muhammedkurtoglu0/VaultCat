@@ -136,20 +136,124 @@ class AutoPentestRunner:
         """
         self._tool_executor = executor
 
+    async def _orchestrate_tree(self, root: Any, engine: Any) -> tuple[Any, list[dict]]:
+        """Execute attack tree branches in parallel via AttackOrchestrator.
+
+        Returns ``(walk_result, status_messages)`` where *walk_result* is
+        compatible with the old TreeWalker result shape (has ``total_steps``,
+        ``successes``, ``failures``, ``escalations``, ``final_token_power``)
+        and *status_messages* is a list of ``{"type": "status", "message": ...}``
+        dicts for the caller to yield.
+        """
+        from ai_core.planning.plan_schema import PlannedStep, AttackPhase
+        from ai_core.orchestrator import AttackOrchestrator
+        from ai_core.dynamic_session import global_store
+
+        msgs: list[dict] = []
+
+        # Collect direct children of root as steps
+        children = list(getattr(root, "children", []) or [])
+        if not children:
+            # Empty tree — fall back to TreeWalker (it handles root-only)
+            from ai_core.tree_walker import TreeWalker, RiskProfile
+            walker = TreeWalker(
+                tool_executor=self._tool_executor,
+                risk_profile=RiskProfile.AGGRESSIVE,
+                max_depth=4,
+                max_total_steps=self.max_turns,
+            )
+            return await walker.walk(root, self.vault_addr, engine), msgs
+
+        msgs.append({"type": "status", "message": f"  Decomposing {len(children)} branches into domain groups..."})
+
+        steps = []
+        for child in children:
+            tool = getattr(child, "tool", "run_raw_vault_request")
+            reason = getattr(child, "reason", "")[:200]
+            params = dict(getattr(child, "params", {}) or {})
+            risk = str(getattr(child, "risk", "balanced"))
+            phase = str(getattr(child, "phase", "audit"))
+
+            if tool == "__root__":
+                continue
+
+            steps.append(PlannedStep(
+                tool=tool,
+                reason=reason,
+                params=params,
+                phase=AttackPhase.AUDIT if phase in ("audit",) else (
+                    AttackPhase.EXPLOIT if phase in ("exploit",) else AttackPhase.RECON
+                ),
+                risk="read_only" if risk in ("stealth",) else (
+                    "state_changing" if risk in ("balanced",) else "state_changing"
+                ),
+                on_failure="skip",  # don't abort — try other branches
+                max_retries=0,
+            ))
+
+        domain_count = len(set(self._domain_for_step(s) for s in steps))
+        msgs.append({"type": "status", "message": f"  Spawning specialists for {domain_count} domains..."})
+
+        orch = AttackOrchestrator(
+            vault_addr=self.vault_addr,
+            token=self.token,
+            tool_executor=self._tool_executor,
+            max_replans=2,
+        )
+
+        # Build a minimal plan object
+        from ai_core.planning.plan_schema import PentestPlan
+        plan = PentestPlan(vault_addr=self.vault_addr)
+        plan.steps = steps
+        plan.attack_narrative = "Attack tree parallel execution"
+
+        orch_result = await orch.execute_plan(plan)
+
+        msgs.append({"type": "status", "message": (
+            f"  Domains: {sorted(orch_result.domains_involved)} | "
+            f"Parallel execution: {orch_result.execution_time_ms:.0f}ms"
+        )})
+
+        # Build a WalkResult-compatible object for Phase 4
+        class _OrchWalkResult:
+            total_steps = orch_result.total_steps
+            successes = orch_result.successes
+            failures = orch_result.failures
+            escalations = orch_result.replan_count
+            final_token_power = "none"
+
+        result = _OrchWalkResult()
+        try:
+            best = global_store.get_best_token()
+            if best:
+                result.final_token_power = best.power_level
+        except Exception:
+            pass
+
+        return result, msgs
+
+    @staticmethod
+    def _domain_for_step(step: Any) -> str:
+        """Quick domain lookup for a step's tool."""
+        from ai_core.tools import TOOL_DOMAIN_MAP
+        tool = getattr(step, "tool", "")
+        domains = TOOL_DOMAIN_MAP.get(tool)
+        if domains and "*" not in domains:
+            return next(iter(domains))
+        return "general"
+
     async def run(self) -> AsyncIterator[dict]:
-        """Execute autonomous pentest using attack tree + mutation engine.
+        """Execute autonomous pentest using attack tree + parallel orchestrator.
 
         Flow:
         1. Recon (direct tool calls, no LLM overhead)
         2. Build attack tree from findings + tokens
-        3. TreeWalker walks branches in risk order (A→B→S)
-        4. Failures → MutationEngine adds new branches
-        5. Escalation → regenerate tree with new privileges
-        6. Final pass: LLM agent for analysis + summary
-        7. PDF report
+        3. Orchestrator spawns domain specialists in PARALLEL via asyncio.gather
+        4. Escalation → re-plan, re-orchestrate with elevated privileges
+        5. Final pass: LLM agent for analysis + summary
+        6. PDF report
         """
         from ai_core.mutation_engine import MutationEngine, gather_attack_state, BranchRisk
-        from ai_core.tree_walker import TreeWalker, RiskProfile, WalkStatus
 
         self._start_time = time.monotonic()
         self._total_turns = 0
@@ -165,7 +269,7 @@ class AutoPentestRunner:
         yield {"type": "status", "message": f"  Target     : {self.vault_addr}"}
         yield {"type": "status", "message": f"  Token      : {'present' if self.token else 'none'}"}
         yield {"type": "status", "message": f"  Max Steps  : {self.max_turns}"}
-        yield {"type": "status", "message": f"  Strategy   : Tree walker (A->B->S) + LLM mutation on failure"}
+        yield {"type": "status", "message": f"  Strategy   : Parallel domain specialists + LLM mutation on failure"}
         yield {"type": "status", "message": "=" * 54}
 
         # ── 1. Initial recon ────────────────────────────────────────────
@@ -249,15 +353,11 @@ class AutoPentestRunner:
 
         yield {"type": "status", "message": f"  Tree: {engine.tree_summary()['total_nodes']} nodes seeded"}
 
-        # ── 3. Walk the tree ────────────────────────────────────────────
-        yield {"type": "status", "message": "\n--- Phase 3: Walking Attack Tree ---"}
-        walker = TreeWalker(
-            tool_executor=self._tool_executor,
-            risk_profile=RiskProfile.AGGRESSIVE,
-            max_depth=4,
-            max_total_steps=self.max_turns,
-        )
-        walk_result = await walker.walk(root, self.vault_addr, engine)
+        # ── 3. Execute via Orchestrator (parallel domain specialists) ────
+        yield {"type": "status", "message": "\n--- Phase 3: Parallel Orchestrator ---"}
+        walk_result, orch_msgs = await self._orchestrate_tree(root, engine)
+        for msg in orch_msgs:
+            yield msg
 
         self._total_turns += walk_result.total_steps
         self._phases_seen.update(["recon", "audit", "report"])
@@ -380,8 +480,12 @@ async def run_auto_pentest(
 
     # ── Generate PDF report ─────────────────────────────────────────────
     findings = runner._report.findings
+    # Always emit findings count for the interval loop tracker
+    yield {"type": "findings_count", "count": len(findings)}
+
     if not findings:
         yield {"type": "status", "message": "\nNo findings to report — skipping PDF export."}
+        yield {"type": "exit_code", "code": 0}
         return
 
     if not pdf_report:

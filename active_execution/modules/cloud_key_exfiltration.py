@@ -38,6 +38,7 @@ class CloudKeyExfiltrationModule(BaseExecutionModule):
             module_id="cloud_key_exfiltration.key_dump",
             title="Cloud Key Exfiltration",
             risk_level=RiskLevel.STATE_CHANGING,
+            domain="cloud",
             description=(
                 "Attempts to locate and exfiltrate cloud provider keys and service account secrets."
             ),

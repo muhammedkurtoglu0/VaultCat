@@ -12,6 +12,7 @@ class UnauthenticatedAttackModule(BaseExecutionModule):
             module_id="unauthenticated.attack",
             title="Tokensiz Vault Saldırısı - Keşif + Token Avcılığı",
             risk_level=RiskLevel.READ_ONLY,
+            domain="general",
             description=(
                 "Token olmadan Vault'u keşfeder, environment ve dosya sisteminde token arar, "
                 "zafiyetleri tespit eder."

@@ -11,6 +11,7 @@ class UnsealKeyExfiltrationModule(BaseExecutionModule):
             module_id="unseal_key.exfiltration",
             title="Unseal Key Exfiltration",
             risk_level=RiskLevel.DESTRUCTIVE,
+            domain="seal",
             description="Finds Vault unseal keys from filesystem, environment, or memory",
             default_enabled=False,
         )

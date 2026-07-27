@@ -15,6 +15,7 @@ class PersistenceModule(BaseExecutionModule):
             module_id="persistence.backdoor",
             title="Vault Persistence - Install Backdoor Access",
             risk_level=RiskLevel.DESTRUCTIVE,
+            domain="persistence",
             description=(
                 "Installs persistent backdoor access to Vault by creating "
                 "a new AppRole auth method with a root-policy role."
@@ -152,7 +153,10 @@ class PersistenceModule(BaseExecutionModule):
                 data = response.json()
                 secret_id = data.get("data", {}).get("secret_id")
                 results["secret_id"] = secret_id
-                print(f"[+] [ACTIVE] Secret ID: {secret_id[:8]}...")
+                if secret_id:
+                    print(f"[+] [ACTIVE] Secret ID: {secret_id[:8]}...")
+                else:
+                    print("[!] [ACTIVE] Secret ID response contained no secret_id")
                 
         except Exception as e:
             errors.append(f"Credential retrieval error: {str(e)}")

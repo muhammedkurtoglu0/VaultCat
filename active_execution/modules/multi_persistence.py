@@ -9,6 +9,7 @@ class MultiPersistenceModule(BaseExecutionModule):
             module_id="multi_persistence.backdoor",
             title="Multi-Persistence - AppRole + Kubernetes + LDAP",
             risk_level=RiskLevel.DESTRUCTIVE,
+            domain="persistence",
             description="Installs multiple backdoor auth methods for redundancy",
             default_enabled=False,
         )

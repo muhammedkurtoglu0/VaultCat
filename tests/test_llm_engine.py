@@ -259,6 +259,10 @@ class TestHealth:
 class TestOllama:
     def test_provider_detection_fallback(self, monkeypatch):
         """Without any env vars, detect_provider falls back to ollama if reachable."""
+        # Clear all LLM API key env vars so detection truly falls through
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+                     "KIMI_API_KEY", "MOONSHOT_API_KEY", "CURSOR_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
         monkeypatch.setattr("requests.get", lambda url, **kw: type("R", (), {"status_code": 200})())
         provider = detect_provider()
         assert provider == "ollama"

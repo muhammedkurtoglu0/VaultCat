@@ -15,11 +15,8 @@ Phases (escalating):
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import re
-import time
 from typing import Any, Optional
 
 from ..context import ExecutionContext
@@ -35,12 +32,6 @@ try:
     PSYCOPG2_AVAILABLE = True
 except ImportError:
     PSYCOPG2_AVAILABLE = False
-
-try:
-    import pymysql
-    PYMYSQL_AVAILABLE = True
-except ImportError:
-    PYMYSQL_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +51,7 @@ class PivotEngineModule(BaseExecutionModule):
             module_id="pivot_engine.cross_service",
             title="Pivot Engine — Database → OS → Infrastructure Lateral Movement",
             risk_level=RiskLevel.DESTRUCTIVE,
+            domain="pivot",
             description=(
                 "Uses Vault-harvested database credentials to connect to "
                 "backend databases, escalate to OS shell via COPY PROGRAM, "

@@ -12,6 +12,7 @@ class CVEScannerModule(BaseExecutionModule):
             module_id="cve_scanner.scan",
             title="Vault CVE Tarayıcı ve Exploit - Tüm Bilinen CVE'ler",
             risk_level=RiskLevel.STATE_CHANGING,
+            domain="general",
             description=(
                 "Vault sürümünü algılar, bilinen tüm CVE'leri tarar ve "
                 "exploit edilebilir olanları sömürmeye çalışır."
@@ -238,9 +239,22 @@ class CVEScannerModule(BaseExecutionModule):
         ]
 
     def _is_version_affected(self, version: str, operator: str, target: str) -> bool:
+        def _parse(v: str) -> list[int]:
+            # Tolerate Vault build suffixes: "1.13.0+ent", "1.12.0-beta1"
+            parts = []
+            for comp in str(v).strip().lstrip("v").split("."):
+                digits = ""
+                for ch in comp:
+                    if ch.isdigit():
+                        digits += ch
+                    else:
+                        break
+                parts.append(int(digits) if digits else 0)
+            return parts
+
         try:
-            v_parts = [int(x) for x in version.split(".")]
-            t_parts = [int(x) for x in target.split(".")]
+            v_parts = _parse(version)
+            t_parts = _parse(target)
             if operator == "<":
                 return v_parts < t_parts
             elif operator == "<=":
@@ -249,7 +263,7 @@ class CVEScannerModule(BaseExecutionModule):
                 return v_parts > t_parts
             elif operator == ">=":
                 return v_parts >= t_parts
-        except:
+        except (ValueError, AttributeError):
             pass
         return False
 

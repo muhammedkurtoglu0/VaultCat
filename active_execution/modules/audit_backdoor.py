@@ -5,12 +5,28 @@ from ..context import ExecutionContext
 from ..registry import BaseExecutionModule, ExecutionResult, RiskLevel
 
 class AuditBackdoorModule(BaseExecutionModule):
+    """Disable Vault audit devices to conceal malicious activity.
+
+    .. note::
+       This module is technically **evasion / anti-forensics**, not persistence.
+       It is grouped under the ``"persistence"`` domain because it is almost
+       always deployed alongside backdoor modules (``persistence.backdoor``,
+       ``multi_persistence.backdoor``) and the same specialist agent should
+       own the full "install backdoor + cover tracks" workflow.
+    """
+
     def __init__(self):
         super().__init__(
             module_id="audit_backdoor.disable",
             title="Audit Backdoor - Disable Audit Devices",
             risk_level=RiskLevel.DESTRUCTIVE,
-            description="Disables all audit devices to hide activity",
+            domain="persistence",
+            description=(
+                "Disables all audit devices to hide activity. "
+                "Technically evasion/anti-forensics (not persistence), "
+                "but grouped under 'persistence' domain for practical "
+                "backdoor+cover-tracks workflow with a single specialist agent."
+            ),
             default_enabled=False,
         )
 

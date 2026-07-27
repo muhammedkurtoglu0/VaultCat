@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -82,6 +83,7 @@ class DynamicCredentialStore:
         self.tokens: dict[str, TokenRecord] = {}  # keyed by token value
         self.credentials: dict[str, CredentialRecord] = {}  # keyed by type:value
         self._escalation_log: list[str] = []
+        self._lock = threading.RLock()  # protects all state access
 
     # ── token management ──────────────────────────────────────────────────
 
@@ -93,54 +95,64 @@ class DynamicCredentialStore:
         capabilities: list[str] | None = None,
         policies: list[str] | None = None,
     ) -> TokenRecord | None:
-        """Register a discovered token. Returns None if already known."""
+        """Register a discovered token. Returns None if already known.
+
+        Thread-safe: the check-then-act on ``self.tokens`` is protected by
+        ``self._lock`` (``RLock``) so that two threads adding the same token
+        concurrently cannot both succeed.
+        """
         if not token or not _looks_like_vault_token(token):
             return None
 
         # Normalize
         token = token.strip().strip('"').strip("'")
 
-        if token in self.tokens:
-            return None  # already tracked
+        with self._lock:
+            if token in self.tokens:
+                return None  # already tracked
 
-        # Try to infer power level from capabilities/policies
-        if power_level == "unknown":
-            power_level = _infer_power(capabilities or [], policies or [])
+            # Try to infer power level from capabilities/policies
+            if power_level == "unknown":
+                power_level = _infer_power(capabilities or [], policies or [])
 
-        rec = TokenRecord(
-            token=token,
-            source=source,
-            power_level=power_level,
-            capabilities=capabilities or [],
-            policies=policies or [],
-        )
-        self.tokens[token] = rec
+            rec = TokenRecord(
+                token=token,
+                source=source,
+                power_level=power_level,
+                capabilities=capabilities or [],
+                policies=policies or [],
+            )
+            self.tokens[token] = rec
 
-        prev_best = self._previous_best_power()
-        new_best = POWER_RANK.get(power_level, 0)
+            prev_best = self._previous_best_power()
+            new_best = POWER_RANK.get(power_level, 0)
 
-        msg = (
-            f"[SESSION] Token discovered: {source} -> "
-            f"{token[:16]}... (power: {power_level})"
-        )
-        if new_best > prev_best:
-            msg += " *** ESCALATED ***"
-        self._escalation_log.append(msg)
+            msg = (
+                f"[SESSION] Token discovered: {source} -> "
+                f"{token[:16]}... (power: {power_level})"
+            )
+            if new_best > prev_best:
+                msg += " *** ESCALATED ***"
+            self._escalation_log.append(msg)
 
-        return rec
+            return rec
 
     def add_user_token(self, token: str) -> TokenRecord | None:
         """Register the user-provided token (initial auth)."""
         return self.add_token(token, source="user", power_level="unknown")
 
     def get_best_token(self) -> TokenRecord | None:
-        """Return the highest-privilege token currently known."""
-        if not self.tokens:
-            return None
-        return max(
-            self.tokens.values(),
-            key=lambda t: (POWER_RANK.get(t.power_level, 0), len(t.capabilities)),
-        )
+        """Return the highest-privilege token currently known.
+
+        Thread-safe: dict iteration is protected against concurrent writes.
+        """
+        with self._lock:
+            if not self.tokens:
+                return None
+            return max(
+                self.tokens.values(),
+                key=lambda t: (POWER_RANK.get(t.power_level, 0), len(t.capabilities)),
+            )
 
     def get_best_token_value(self) -> str | None:
         best = self.get_best_token()
@@ -155,19 +167,23 @@ class DynamicCredentialStore:
         source: str = "unknown",
         metadata: dict | None = None,
     ) -> CredentialRecord | None:
-        """Register a discovered credential (password, API key, etc.)."""
-        key = f"{cred_type}:{value[:30]}"
-        if key in self.credentials:
-            return None
+        """Register a discovered credential (password, API key, etc.).
 
-        rec = CredentialRecord(
-            cred_type=cred_type,
-            value=value,
-            source=source,
-            metadata=metadata or {},
-        )
-        self.credentials[key] = rec
-        return rec
+        Thread-safe: the check-then-act on ``self.credentials`` is atomic.
+        """
+        key = f"{cred_type}:{value[:30]}"
+        with self._lock:
+            if key in self.credentials:
+                return None
+
+            rec = CredentialRecord(
+                cred_type=cred_type,
+                value=value,
+                source=source,
+                metadata=metadata or {},
+            )
+            self.credentials[key] = rec
+            return rec
 
     # ── result parsing ────────────────────────────────────────────────────
 
@@ -175,31 +191,39 @@ class DynamicCredentialStore:
         """Scan a tool result for new tokens and credentials.
 
         Returns list of discovery messages (empty if nothing new).
+
+        Thread-safe: the entire scan-and-add pipeline runs under the lock
+        so no other thread can interleave a concurrent token/credential add.
         """
         messages: list[str] = []
 
-        try:
-            data = json.loads(result_text)
-        except (json.JSONDecodeError, TypeError):
-            data = result_text  # might be plain text
+        with self._lock:
+            try:
+                data = json.loads(result_text)
+            except (json.JSONDecodeError, TypeError):
+                data = result_text  # might be plain text
 
-        # ---- scan JSON for token fields ----
-        if isinstance(data, dict):
-            messages.extend(self._scan_dict_for_tokens(data, tool_name))
-            messages.extend(self._scan_dict_for_credentials(data, tool_name))
+            # ---- scan JSON for token fields ----
+            if isinstance(data, dict):
+                messages.extend(self._scan_dict_for_tokens(data, tool_name))
+                messages.extend(self._scan_dict_for_credentials(data, tool_name))
 
-        # ---- scan plain text for Vault token patterns ----
-        if isinstance(result_text, str):
-            for match in _VAULT_TOKEN_RE.finditer(result_text):
-                token = match.group(1)
-                rec = self.add_token(token, source=tool_name)
-                if rec:
-                    messages.append(f"token:{rec.power_level}:{token[:16]}...")
+            # ---- scan plain text for Vault token patterns ----
+            if isinstance(result_text, str):
+                for match in _VAULT_TOKEN_RE.finditer(result_text):
+                    token = match.group(1)
+                    rec = self.add_token(token, source=tool_name)
+                    if rec:
+                        messages.append(f"token:{rec.power_level}:{token[:16]}...")
 
-        return messages
+            return messages
 
     def _scan_dict_for_tokens(self, data: dict, source: str) -> list[str]:
-        """Recursively scan a JSON dict for token-like fields."""
+        """Recursively scan a JSON dict for token-like fields.
+
+        Caller must hold ``self._lock`` (this method mutates ``self.tokens``
+        values and iterates over ``self.tokens.values()``).
+        """
         messages: list[str] = []
         stack = [data]
 
@@ -282,21 +306,23 @@ class DynamicCredentialStore:
     # ── status ────────────────────────────────────────────────────────────
 
     def status_summary(self) -> dict:
-        best = self.get_best_token()
-        return {
-            "total_tokens": len(self.tokens),
-            "total_credentials": len(self.credentials),
-            "best_token_power": best.power_level if best else "none",
-            "best_token_preview": f"{best.token[:16]}..." if best else "none",
-            "best_token_source": best.source if best else "none",
-            "token_powers": {
-                power: sum(1 for t in self.tokens.values() if t.power_level == power)
-                for power in POWER_RANK
-            },
-            "escalation_count": sum(
-                1 for msg in self._escalation_log if "ESCALATED" in msg
-            ),
-        }
+        """Thread-safe snapshot of the current credential store state."""
+        with self._lock:
+            best = self.get_best_token()
+            return {
+                "total_tokens": len(self.tokens),
+                "total_credentials": len(self.credentials),
+                "best_token_power": best.power_level if best else "none",
+                "best_token_preview": f"{best.token[:16]}..." if best else "none",
+                "best_token_source": best.source if best else "none",
+                "token_powers": {
+                    power: sum(1 for t in self.tokens.values() if t.power_level == power)
+                    for power in POWER_RANK
+                },
+                "escalation_count": sum(
+                    1 for msg in self._escalation_log if "ESCALATED" in msg
+                ),
+            }
 
     def _previous_best_power(self) -> int:
         best = self.get_best_token()

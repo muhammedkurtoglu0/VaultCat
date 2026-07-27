@@ -17,18 +17,31 @@ class ExecutionResult:
 
 
 class BaseExecutionModule:
+    """Base class for all active execution modules.
+
+    Parameters
+    ----------
+    domain:
+        Functional category for grouping modules into specialist domains.
+        One of: ``"database"``, ``"cloud"``, ``"token"``, ``"persistence"``,
+        ``"seal"``, ``"secrets"``, ``"pivot"``, ``"general"``.
+        Used by orchestrators to fan out work to domain-specific child agents.
+    """
+
     def __init__(
         self,
         module_id: str,
         title: str,
         risk_level: RiskLevel,
         description: str,
+        domain: str,
         default_enabled: bool = False,
     ):
         self.module_id = module_id
         self.title = title
         self.risk_level = risk_level
         self.description = description
+        self.domain = domain
         self.default_enabled = default_enabled
 
     def can_run(self, context) -> bool:
@@ -60,6 +73,14 @@ class ActiveExecutionRegistry:
 
     def module_ids(self):
         return list(self._modules.keys())
+
+    def list_by_domain(self, domain: str) -> list[BaseExecutionModule]:
+        """Return all registered modules in *domain* (empty list if none)."""
+        return [m for m in self._modules.values() if m.domain == domain]
+
+    def domains(self) -> set[str]:
+        """Return the set of all domain labels across registered modules."""
+        return {m.domain for m in self._modules.values()}
 
 
 RISK_LEVEL_ORDER = {

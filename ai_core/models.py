@@ -44,6 +44,14 @@ PROVIDER_META: dict[str, dict] = {
         "name": "DeepSeek",
         "description": "DeepSeek-V4 Pro, V4 Flash, ve R1 (reasoner) — uygun maliyetli",
     },
+    "kimi": {
+        "name": "Kimi (Moonshot AI)",
+        "description": "Kimi K2.5, K2 Instruct, K2 Thinking — 128K context, OpenAI uyumlu API",
+    },
+    "cursor": {
+        "name": "Cursor",
+        "description": "Cursor IDE modelleri — OpenAI uyumlu API, hızlı kod tamamlama ve analiz",
+    },
     "ollama": {
         "name": "Ollama (Local)",
         "description": "Yerel makinede çalışan açık kaynak modeller — internet gerektirmez",
@@ -163,6 +171,61 @@ DEEPSEEK_MODELS: list[ModelInfo] = [
     ),
 ]
 
+KIMI_MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="kimi-k3",
+        name="Kimi K3",
+        description="En yeni Kimi K3 — 256K context, Moonshot amiral gemisi, en gelişmiş akıl yürütme",
+        provider="kimi",
+        tags=["flagship", "reasoning", "long-context", "latest"],
+    ),
+    ModelInfo(
+        id="kimi-k2.5",
+        name="Kimi K2.5",
+        description="Güçlü Kimi — 128K context, gelişmiş akıl yürütme, karmaşık analiz",
+        provider="kimi",
+        tags=["reasoning", "long-context"],
+    ),
+    ModelInfo(
+        id="kimi-k2-instruct",
+        name="Kimi K2 Instruct",
+        description="Dengeli Kimi — hızlı, komut takibi güçlü, günlük kullanım için ideal",
+        provider="kimi",
+        tags=["balanced", "fast", "instruction-following"],
+    ),
+    ModelInfo(
+        id="kimi-k2-thinking",
+        name="Kimi K2 Thinking",
+        description="Derin düşünme odaklı — zincirleme akıl yürütme, karmaşık problem çözme",
+        provider="kimi",
+        tags=["reasoning", "thinking", "deep-analysis"],
+    ),
+]
+
+CURSOR_MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="cursor-small",
+        name="Cursor Small",
+        description="Hızlı ve hafif — kod tamamlama, basit analizler, düşük gecikme",
+        provider="cursor",
+        tags=["fast", "cost-effective", "code"],
+    ),
+    ModelInfo(
+        id="cursor-medium",
+        name="Cursor Medium",
+        description="Dengeli — kod inceleme, refactoring, orta karmaşıklıkta görevler",
+        provider="cursor",
+        tags=["balanced", "code", "analysis"],
+    ),
+    ModelInfo(
+        id="cursor-large",
+        name="Cursor Large",
+        description="En güçlü Cursor — derin kod analizi, mimari kararlar, karmaşık görevler",
+        provider="cursor",
+        tags=["flagship", "code", "deep-analysis"],
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -180,6 +243,10 @@ def get_models(provider: str) -> list[ModelInfo]:
         return list(ANTHROPIC_MODELS)
     if provider == "deepseek":
         return list(DEEPSEEK_MODELS)
+    if provider == "kimi":
+        return list(KIMI_MODELS)
+    if provider == "cursor":
+        return list(CURSOR_MODELS)
     if provider == "ollama":
         return _detect_ollama_models()
     return []
@@ -206,6 +273,8 @@ def get_default_model(provider: str) -> Optional[str]:
         "openai": "gpt-4o-mini",
         "anthropic": "claude-sonnet-5",
         "deepseek": "deepseek-v4-flash",
+        "kimi": "kimi-k3",
+        "cursor": "cursor-medium",
     }
     if provider in defaults:
         return defaults[provider]

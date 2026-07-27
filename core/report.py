@@ -101,20 +101,22 @@ class Report:
 
     def clear(self):
         """Reset findings and severity filter for a fresh assessment run."""
-        self.findings.clear()
-        self._min_severity = None
+        with self._lock:
+            self.findings.clear()
+            self._min_severity = None
 
     # ── visible findings ───────────────────────────────────────────────
 
     def _visible_findings(self) -> list[dict]:
-        if not self._min_severity:
-            return self.findings
+        with self._lock:
+            if not self._min_severity:
+                return list(self.findings)
 
-        min_rank = SEVERITY_RANK[self._min_severity]
-        return [
-            f for f in self.findings
-            if SEVERITY_RANK.get(f.get("severity", "INFO"), 1) >= min_rank
-        ]
+            min_rank = SEVERITY_RANK[self._min_severity]
+            return [
+                f for f in self.findings
+                if SEVERITY_RANK.get(f.get("severity", "INFO"), 1) >= min_rank
+            ]
 
     # ── reporting ──────────────────────────────────────────────────────
 
@@ -367,7 +369,8 @@ class Report:
                 if evidence:
                     pdf.set_font(body_font, "", 8)
                     pdf.set_text_color(100, 100, 100)
-                    safe_ev = evidence[:200] if _use_unicode else evidence[:200].encode("ascii", errors="replace").decode()
+                    ev_str = evidence if isinstance(evidence, str) else json.dumps(evidence, ensure_ascii=False)
+                    safe_ev = ev_str[:200] if _use_unicode else ev_str[:200].encode("ascii", errors="replace").decode()
                     pdf.set_x(15)
                     pdf.multi_cell(0, 4, f"Evidence: {safe_ev}")
                     pdf.set_text_color(0, 0, 0)
@@ -381,6 +384,123 @@ class Report:
                     pdf.set_text_color(0, 0, 0)
 
                 pdf.ln(3)
+
+        # ── Remediation Recommendations ─────────────────────────────────
+        try:
+            from core.remediation_engine import (
+                get_remediation,
+                group_by_category,
+                generate_priority_action_plan,
+            )
+
+            advice_list = get_remediation(visible)
+            if advice_list:
+                grouped = group_by_category(advice_list)
+                action_plan = generate_priority_action_plan(advice_list)
+
+                pdf.add_page()
+                pdf.set_font(title_font, "B", 18)
+                pdf.cell(0, 12, "Remediation Recommendations", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(2)
+                pdf.set_font(body_font, "", 10)
+                pdf.multi_cell(0, 5,
+                    "The following actionable fix steps address the root causes "
+                    "identified during the assessment. Each finding is grouped "
+                    "by category with concrete Vault CLI commands."
+                )
+                pdf.ln(4)
+
+                for category, items in grouped.items():
+                    # Category header
+                    pdf.set_font(title_font, "B", 13)
+                    r, g, b = _category_color(category)
+                    pdf.set_text_color(r, g, b)
+                    pdf.cell(0, 8, category, new_x="LMARGIN", new_y="NEXT")
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.ln(2)
+
+                    for item in items:
+                        # Check if we need a new page (at least 40mm remaining)
+                        if pdf.get_y() > pdf.h - 40:
+                            pdf.add_page()
+
+                        # Item title with priority badge
+                        prio_labels = {1: "CRITICAL", 2: "URGENT", 3: "IMPORTANT", 4: "ROUTINE", 5: "COSMETIC"}
+                        prio_label = prio_labels.get(item.priority, "INFO")
+                        prio_r, prio_g, prio_b = {
+                            1: (220, 50, 50), 2: (230, 140, 50), 3: (220, 200, 50),
+                            4: (100, 160, 220), 5: (160, 160, 160),
+                        }.get(item.priority, (100, 100, 100))
+
+                        pdf.set_fill_color(prio_r, prio_g, prio_b)
+                        pdf.set_text_color(255, 255, 255)
+                        pdf.set_font(body_font, "B", 8)
+                        pdf.cell(20, 5, f" {prio_label} ", border=1, fill=True, new_x="RIGHT", new_y="TOP")
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.set_font(body_font, "B", 10)
+                        safe_item_title = item.title if _use_unicode else item.title.encode("ascii", errors="replace").decode()
+                        pdf.multi_cell(0, 5, f"  {safe_item_title}")
+                        pdf.ln(1)
+
+                        # Root cause
+                        pdf.set_font(body_font, "", 8)
+                        pdf.set_text_color(100, 100, 100)
+                        safe_root_cause = item.root_cause if _use_unicode else item.root_cause.encode("ascii", errors="replace").decode()
+                        pdf.set_x(18)
+                        pdf.multi_cell(0, 4, f"Root Cause: {safe_root_cause}")
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.ln(1)
+
+                        # Fix steps
+                        pdf.set_font(body_font, "", 8)
+                        for step in item.fix_steps:
+                            if pdf.get_y() > pdf.h - 15:
+                                pdf.add_page()
+                            safe_step = step if _use_unicode else step.encode("ascii", errors="replace").decode()
+                            pdf.set_x(15)
+                            pdf.set_font(body_font, "", 7.5)
+                            pdf.multi_cell(0, 3.5, safe_step)
+                        pdf.ln(2)
+
+                        # References
+                        if item.references:
+                            pdf.set_font(body_font, "", 7)
+                            pdf.set_text_color(50, 100, 180)
+                            for ref in item.references:
+                                pdf.set_x(15)
+                                pdf.cell(0, 3.5, ref, new_x="LMARGIN", new_y="NEXT")
+                            pdf.set_text_color(0, 0, 0)
+                        pdf.ln(2)
+
+                # ── Priority Action Plan ───────────────────────────────
+                pdf.add_page()
+                pdf.set_font(title_font, "B", 18)
+                pdf.cell(0, 12, "Priority Action Plan", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(4)
+                pdf.set_font(body_font, "", 10)
+                pdf.multi_cell(0, 5,
+                    "Execute the following steps in order. Address all CRITICAL items "
+                    "immediately, HIGH items within 7 days, MEDIUM within 30 days, "
+                    "and LOW items during the next maintenance window."
+                )
+                pdf.ln(4)
+
+                pdf.set_font(body_font, "", 9)
+                for line in action_plan:
+                    if pdf.get_y() > pdf.h - 15:
+                        pdf.add_page()
+                    if line.startswith("──"):
+                        pdf.set_font(body_font, "B", 10)
+                        pdf.ln(2)
+                        pdf.cell(0, 6, line, new_x="LMARGIN", new_y="NEXT")
+                        pdf.set_font(body_font, "", 9)
+                    else:
+                        pdf.cell(0, 5, line, new_x="LMARGIN", new_y="NEXT")
+
+        except ImportError:
+            pass  # remediation engine not available — skip section
+        except Exception:
+            pass  # don't let remediation errors break PDF generation
 
         # ── Overall Risk Assessment ──────────────────────────────────────
         pdf.add_page()
@@ -404,7 +524,9 @@ class Report:
             f"{grade_text}\n\n"
             f"This report was generated automatically by the Vault Pentest Tool.\n"
             f"Findings are categorized by severity and include evidence where available.\n"
-            f"Review each finding and prioritize remediation based on risk level."
+            f"Review each finding and prioritize remediation based on risk level.\n\n"
+            f"A detailed remediation plan with concrete CLI commands is included\n"
+            f"in the 'Remediation Recommendations' section above."
         )
 
         # ── Write ───────────────────────────────────────────────────────
@@ -465,10 +587,11 @@ def clear_module_findings(*module_names: str):
     own findings without wiping findings from other tools — enabling
     cross-tool finding accumulation for the AI agent.
     """
-    _default_report.findings[:] = [
-        f for f in _default_report.findings
-        if f.get("module") not in module_names
-    ]
+    with _default_report._lock:
+        _default_report.findings[:] = [
+            f for f in _default_report.findings
+            if f.get("module") not in module_names
+        ]
 
 
 def get_default_report() -> Report:
@@ -512,6 +635,29 @@ def _resolve_report_path(output_path: str) -> Path:
     if report_path.parent == Path("."):
         return Path("reports") / report_path
     return report_path
+
+
+# ── Remediation category colors ────────────────────────────────────────────────
+
+
+def _category_color(category: str) -> tuple[int, int, int]:
+    """Return a consistent color for a remediation category."""
+    palette = {
+        "TLS": (30, 120, 200),
+        "Information Disclosure": (150, 100, 50),
+        "CORS": (180, 130, 30),
+        "Authentication": (50, 150, 100),
+        "Policy / ACL": (200, 50, 50),
+        "Token Management": (200, 100, 50),
+        "Secrets Management": (100, 50, 180),
+        "Credential Leaks": (220, 30, 30),
+        "Environment Security": (80, 140, 140),
+        "Audit & Monitoring": (60, 60, 160),
+        "Seal / Unseal": (180, 60, 60),
+        "Patch Management": (40, 160, 40),
+        "General Security": (100, 100, 100),
+    }
+    return palette.get(category, (80, 80, 80))
 
 
 # ── PDF font helper ───────────────────────────────────────────────────────────

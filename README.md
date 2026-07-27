@@ -327,7 +327,7 @@ When `--auto-pilot` is enabled, the AI agent auto-executes PoC chains from web s
 | `cloud_exploit.exploit` | `destructive` | Cloud provider exploitation (IAM privilege escalation) |
 | `raft_storage.exploit` | `destructive` | Raft storage manipulation (snapshot extraction, tampering) |
 | `unseal_key.exfiltration` | `destructive` | Exfiltrate Shamir unseal key material from Vault internals |
-| `payload_module.reverse_shell` | `destructive` | Deploy reverse shell payload via compromised Vault access |
+| `payload_module.reverse_shell` | `destructive` | Deliver reverse shell ON the target via the DB pivot channel (PostgreSQL `COPY FROM PROGRAM`), callback to operator listener |
 | `cve_scanner.scan` | `state_changing` | Active CVE exploitation attempts against known Vault CVEs |
 | `unauthenticated.attack` | `read_only` | Unauthenticated attack surface scanning (no credentials needed) |
 

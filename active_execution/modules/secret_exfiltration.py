@@ -1,5 +1,7 @@
 from typing import Optional
 
+import requests
+
 from core.tls_config import vault_request
 
 from ..context import ExecutionContext
@@ -17,6 +19,7 @@ class SecretExfiltrationModule(BaseExecutionModule):
             module_id="secret_exfiltration.kv_dump",
             title="Secret Exfiltration via Captured Token",
             risk_level=RiskLevel.READ_ONLY,
+            domain="secrets",
             description=(
                 "Uses a previously captured higher-privilege token to enumerate "
                 "KV secret engines and read accessible secret values. Also supports "
