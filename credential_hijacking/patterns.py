@@ -165,6 +165,27 @@ PATTERNS = {
     ),
     "vault_agent_auto_auth": re.compile(r"\bauto_auth\s*\{", re.IGNORECASE),
     "vault_agent_file_sink": re.compile(r"\bsink\s+\"file\"\s*\{", re.IGNORECASE),
+    "vault_agent_sink_path": re.compile(
+        r'sink\s+"file"\s*\{[^}]*path\s*=\s*"([^"]+)"[^}]*\}',
+        re.IGNORECASE | re.DOTALL,
+    ),
+    "vault_agent_exit_after_auth": re.compile(
+        r'exit_after_auth\s*=\s*true', re.IGNORECASE,
+    ),
+    "vault_agent_template_config": re.compile(
+        r'template\s*\{[^}]*destination\s*=\s*"([^"]+)"[^}]*\}',
+        re.IGNORECASE | re.DOTALL,
+    ),
+    "vault_agent_role_id_file": re.compile(
+        r'role_id_file_path\s*=\s*"([^"]+)"', re.IGNORECASE,
+    ),
+    "vault_agent_secret_id_file": re.compile(
+        r'secret_id_file_path\s*=\s*"([^"]+)"', re.IGNORECASE,
+    ),
+    "vault_agent_hcl_block": re.compile(
+        r'vault\s*\{[^}]*address\s*=\s*"([^"]+)"[^}]*\}',
+        re.IGNORECASE | re.DOTALL,
+    ),
 }
 
 
@@ -420,5 +441,41 @@ FINDING_METADATA = {
         "title": "Vault Agent file token sink discovered",
         "description": "A Vault Agent file sink configuration was discovered, which may write Vault tokens to disk.",
         "recommendation": "Protect token sink files with strict permissions and avoid exposing them in artifacts.",
+    },
+    "vault_agent_sink_path": {
+        "severity": "MEDIUM",
+        "title": "Vault Agent sink file path exposed",
+        "description": "A Vault Agent file sink path was discovered, revealing where cached tokens are written.",
+        "recommendation": "Ensure sink file paths are protected with restrictive filesystem permissions (chmod 600).",
+    },
+    "vault_agent_exit_after_auth": {
+        "severity": "INFO",
+        "title": "Vault Agent exit_after_auth enabled",
+        "description": "Vault Agent is configured to exit after initial authentication — short credential window.",
+        "recommendation": "While this limits token exposure, ensure the agent is supervised for automatic restarts.",
+    },
+    "vault_agent_template_config": {
+        "severity": "MEDIUM",
+        "title": "Vault Agent template block discovered",
+        "description": "A Vault Agent template block was discovered — rendered secrets may be written to disk.",
+        "recommendation": "Audit template destinations for excessive permissions and secret exposure.",
+    },
+    "vault_agent_role_id_file": {
+        "severity": "HIGH",
+        "title": "Vault Agent AppRole Role ID file path exposed",
+        "description": "The path to an AppRole Role ID file was discovered in an agent configuration.",
+        "recommendation": "Protect Role ID files with restrictive permissions and avoid exposing paths in artifacts.",
+    },
+    "vault_agent_secret_id_file": {
+        "severity": "HIGH",
+        "title": "Vault Agent AppRole Secret ID file path exposed",
+        "description": "The path to an AppRole Secret ID file was discovered in an agent configuration.",
+        "recommendation": "Protect Secret ID files with restrictive permissions and rotate exposed credentials.",
+    },
+    "vault_agent_hcl_block": {
+        "severity": "INFO",
+        "title": "Vault Agent HCL configuration discovered",
+        "description": "A Vault Agent HCL configuration block was discovered specifying the Vault address.",
+        "recommendation": "Use this address as context for credential validation and attack surface mapping.",
     },
 }

@@ -4,6 +4,8 @@ from active_execution.registry import ActiveExecutionRegistry
 
 def register_all(registry: ActiveExecutionRegistry):
     """Register all active execution modules."""
+    from .agent_sidecar_attack import AgentSidecarAttackModule
+    from .approle_exploit import AppRoleExploitModule
     from .audit_backdoor import AuditBackdoorModule
     from .cloud_exploit import CloudExploitModule
     from .cloud_key_exfiltration import CloudKeyExfiltrationModule
@@ -12,15 +14,19 @@ def register_all(registry: ActiveExecutionRegistry):
     from .database_credential_harvest import DatabaseCredentialHarvestModule
     from .database_exploit import DatabaseExploitModule
     from .database_pivot import DatabasePivotModule
+    from .kubernetes_auth_exploit import KubernetesAuthExploitModule
+    from .jwt_oidc_exploit import JWTOIDCExploitModule
     from .multi_persistence import MultiPersistenceModule
     from .payload_module import PayloadModule
     from .persistence import PersistenceModule
     from .pivot_engine import PivotEngineModule
+    from .pki_engine_exploit import PKIEngineExploitModule
     from .policy_exploit import PolicyExploitModule
     from .privilege_escalation import PrivilegeEscalationModule
     from .raft_storage_exploit import RaftStorageExploitModule
     from .secret_exfiltration import SecretExfiltrationModule
     from .token_exploit import TokenExploitModule
+    from .transit_engine_exploit import TransitEngineExploitModule
     from .unauthenticated_attack import UnauthenticatedAttackModule
     from .unseal_key_exfiltration import UnsealKeyExfiltrationModule
     from .vault_seal_manipulation import (
@@ -30,14 +36,19 @@ def register_all(registry: ActiveExecutionRegistry):
     )
 
     registry.register(PrivilegeEscalationModule())
+    registry.register(AgentSidecarAttackModule())
+    registry.register(AppRoleExploitModule())
     registry.register(SecretExfiltrationModule())
     registry.register(DatabaseCredentialHarvestModule())
     registry.register(CloudKeyExfiltrationModule())
     registry.register(TokenExploitModule())
+    registry.register(TransitEngineExploitModule())
     registry.register(PolicyExploitModule())
     registry.register(AuditBackdoorModule())
     registry.register(CVEScannerModule())
     registry.register(DatabasePivotModule())
+    registry.register(KubernetesAuthExploitModule())
+    registry.register(JWTOIDCExploitModule())
     registry.register(CloudPivotModule())
     registry.register(PersistenceModule())
     registry.register(RaftStorageExploitModule())
@@ -47,6 +58,7 @@ def register_all(registry: ActiveExecutionRegistry):
     registry.register(MultiPersistenceModule())
     registry.register(PayloadModule())
     registry.register(PivotEngineModule())
+    registry.register(PKIEngineExploitModule())
     registry.register(UnauthenticatedAttackModule())
     registry.register(SealStatusModule())
     registry.register(SealVaultModule())

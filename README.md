@@ -1,28 +1,39 @@
-# Vault Hijacking Risk Assessment Tool
+# Vault Pentest Tool
 
-Python-based reconnaissance and credential exposure assessment tool for authorized HashiCorp Vault security testing.
+Python-based offensive security tool for authorized HashiCorp Vault penetration testing. Covers the full attack lifecycle — recon, hijack, escalate, exfiltrate, pivot, and persist — across three operational modes:
 
-The default workflow assumes an external tester starts with only a target URL:
+### 1. External Reconnaissance (Zero-Knowledge)
+Start with **only a target URL** — no credentials, no access:
+- Unauthenticated Vault fingerprinting, health/version/seal status discovery
+- TLS certificate analysis, HTTP security header audit, CORS misconfiguration detection
+- Auth method surface mapping (9 auth types via unauthenticated endpoint)
+- NVD CVE matching against discovered version (11 bundled + 36+ live)
+- Deployment fingerprinting (reverse proxy, dev-mode indicators)
 
-- No Vault token
-- No credentials
-- No shell access
-- No SSH access
-- No Docker access
-- No Kubernetes access
+### 2. Authenticated Assessment (Token-Based)
+Once a Vault token is obtained (discovered, provided, or escalated):
+- Token capability audit (`sys/capabilities-self`) with auto-probe
+- ACL policy enumeration and HCL analysis with wildcard/sudo detection
+- KV secret path enumeration with blind brute-force fallback
+- Auth method security audit (Kubernetes, AWS, LDAP, JWT, OIDC)
+- TTL governance audit (mounts + PKI roles)
+- Privilege escalation simulation (read-only)
+- **Active exploitation**: token creation, secret exfiltration, database credential harvesting, cloud key dumping, PKI certificate issuance, Transit encrypt/decrypt, seal/unseal manipulation, and more
 
-The tool focuses on attack surface mapping, fingerprinting, unauthenticated misconfiguration checks, optional authenticated assessment, and **controlled active exploitation** when explicitly authorized.
+### 3. Local / Post-Exploitation (Shell Access)
+When you have **filesystem or shell access** to a host:
+- File system scanning for Vault tokens, AppRole pairs, AWS keys, DB passwords (56 regex patterns)
+- Git history scanning for committed credentials
+- Vault Agent / Sidecar config discovery and sink token extraction
+- AppRole credential file reading (`role_id_file_path`, `secret_id_file_path`)
+- Environment variable scanning (`VAULT_TOKEN`, `VAULT_ADDR`)
+- Raft storage analysis (raft.db SQLite parsing, snapshot download, WAL inspection)
+- Cross-file credential correlation and chain detection
+- Kubernetes service account token discovery (`/var/run/secrets/kubernetes.io/serviceaccount/`)
 
-The current development direction prioritizes Vault credential hijacking risk assessment:
+---
 
-- Find Vault tokens, AppRole Role IDs, AppRole Secret IDs, Vault addresses, and Vault auth flow references in reachable artifacts.
-- Correlate AppRole Role ID + Secret ID exposure.
-- Correlate AWS IAM Vault auth references with AWS credential or role material.
-- Detect AppRole and AWS IAM integration clues in source code, README files, Terraform, CI/CD workflows, logs, archives, and git history.
-- Detect Vault Database Secrets Engine clues, including dynamic database credential paths, role definitions, TTLs, creation statements, and leaked static DB plugin credentials.
-- Treat placeholders, environment-variable references, and generated code variables as context instead of concrete exposed credentials.
-- Validate discovered material only when explicitly requested and authorized.
-- Secret read, write, and destructive actions are available through **active execution modules**, gated behind explicit `--confirm-active` and `--active-max-risk` flags.
+**All state-changing and destructive operations are gated** behind explicit `--confirm-active` and `--active-max-risk` flags. Read-only scanning runs freely. The tool does not perform brute-force or password cracking.
 
 ## Ethics and Authorization
 
@@ -70,11 +81,15 @@ python main.py --target http://localhost:8200
 
 This runs safe checks for:
 
-- Vault health endpoint exposure
-- Vault fingerprint signals
-- Vault UI exposure
-- HTTP security headers
-- A small curated list of known unauthenticated Vault endpoints
+- Vault health endpoint exposure (version, sealed/initialized status, cluster metadata)
+- Vault fingerprint signals (confirms target is HashiCorp Vault)
+- Vault UI exposure (`/ui/`, login page reachability)
+- HTTP security headers (HSTS, X-Content-Type-Options, CSP, etc.)
+- CORS misconfiguration detection (wildcard origin + credentials)
+- TLS/HTTPS configuration (certificate expiry, self-signed, HTTP→HTTPS redirect)
+- Auth method surface mapping (9 auth method types via unauthenticated endpoint)
+- Deployment indicators (reverse proxy headers, dev-mode)
+- A curated list of known unauthenticated Vault endpoints (`/v1/sys/health`, `/v1/sys/seal-status`, `/v1/sys/internal/ui/mounts`)
 
 Async health, seal, and leader metadata collection:
 
@@ -84,7 +99,7 @@ python main.py --target http://localhost:8200 --vault-recon
 
 `--vault-recon` queries `/v1/sys/health`, `/v1/sys/seal-status`, and `/v1/sys/leader` without a token and returns sealed state, cluster metadata, version, and leader metadata for authorized vulnerability management and version tracking.
 
-When a Vault version is observed, the recon workflow also compares it against a bundled offline CVE table (8 static CVEs covering Vault 1.12–1.19) and, when network is available, also queries the **NVD API 2.0** for live CVE data. Results are cached locally for 24 hours. Use `--nvd-refresh` to force-refresh, or set `NVD_API_KEY` env var to raise the rate limit.
+When a Vault version is observed, the recon workflow also compares it against a bundled offline CVE table (11 static CVEs covering Vault 1.12–1.19) and, when network is available, also queries the **NVD API 2.0** for live CVE data (36+ CVEs). Results are cached locally for 24 hours. Use `--nvd-refresh` to force-refresh, or set `NVD_API_KEY` env var to raise the rate limit.
 
 To run targeted authenticated checks without repeating the default unauthenticated recon output, add `--skip-recon`:
 
@@ -137,7 +152,7 @@ External auth configuration audit:
 python main.py --target http://localhost:8200 --token YOUR_TOKEN --auth-config-audit
 ```
 
-`--auth-config-audit` reads Kubernetes, AWS, and LDAP auth method configuration metadata when authorized. It checks for broad Kubernetes service account bindings, wildcard AWS IAM principal bindings, and observable LDAP lockout/rate-limit settings. It does not attempt logins or modify auth configuration.
+`--auth-config-audit` reads Kubernetes, AWS, LDAP, JWT, and OIDC auth method configuration metadata when authorized. It checks for broad Kubernetes service account bindings, wildcard AWS IAM principal bindings, observable LDAP lockout/rate-limit settings, OIDC discovery URLs, JWT bound issuers, bound claims, and audience validation gaps. It does not attempt logins or modify auth configuration.
 
 TTL governance audit:
 
@@ -175,19 +190,23 @@ python main.py --env-scan
 - `reconnaissance/header_scanner.py` — Security header analysis
 - `reconnaissance/endpoint_scanner.py` — Curated endpoint probing
 - `reconnaissance/vault_recon.py` — Async health/seal/leader metadata
-- `reconnaissance/version_cve_matcher.py` — Version → CVE matching
-- `reconnaissance/auth_surface_scanner.py` — Auth method surface mapping
+- `reconnaissance/version_cve_matcher.py` — Version → CVE matching (11 bundled + NVD)
+- `reconnaissance/version_risk_scanner.py` — Version risk scoring (honeypot detection)
+- `reconnaissance/auth_surface_scanner.py` — Auth method surface mapping (9 types)
 - `reconnaissance/cors_scanner.py` — CORS misconfiguration detection
-- `reconnaissance/tls_scanner.py` — TLS/HTTPS configuration
+- `reconnaissance/tls_scanner.py` — TLS/HTTPS configuration + certificate analysis
+- `reconnaissance/deployment_scanner.py` — Reverse proxy + dev-mode detection
+- `reconnaissance/nvd_client.py` — NVD API 2.0 client (24h disk cache)
+- `reconnaissance/stealth_http.py` — Stealth HTTP with adaptive backoff + jitter
 
 **Scanners (authenticated):**
-- `scanners/capability_scanner.py` — Token capability audit (sys/capabilities-self)
+- `scanners/capability_scanner.py` — Token capability audit (sys/capabilities-self) + auto-probe
 - `scanners/privilege_escalation_scanner.py` — Privilege escalation risk simulation
 - `scanners/policy_auditor.py` — ACL policy enumeration + HCL analysis (with fallback)
 - `scanners/policy_scanner.py` — HCL policy rule analyzer
-- `scanners/auth_config_scanner.py` — Kubernetes/AWS/LDAP auth config audit
+- `scanners/auth_config_scanner.py` — Kubernetes/AWS/LDAP/JWT/OIDC auth config audit
 - `scanners/ttl_scanner.py` — Mount and PKI TTL governance
-- `scanners/kv_enumerator.py` — Async KV path enumeration
+- `scanners/kv_enumerator.py` — Async KV path enumeration + blind brute-force fallback
 - `scanners/token_scanner.py` — Token validity and metadata
 - `scanners/secret_scanner.py` — Secret path checks
 - `scanners/env_scanner.py` — Local environment Vault variable scan
@@ -201,22 +220,47 @@ python main.py --env-scan
 
 **Active Execution (state-changing):**
 - `active_execution/modules/privilege_escalation.py` — Token abuse + autonomous takeover
-- `active_execution/modules/secret_exfiltration.py` — KV/transit/PKI secret dump
+- `active_execution/modules/secret_exfiltration.py` — KV/transit/PKI/SSH secret dump
 - `active_execution/modules/database_credential_harvest.py` — Dynamic DB credential harvest
 - `active_execution/modules/cloud_key_exfiltration.py` — Cloud provider key dump
 - `active_execution/modules/vault_seal_manipulation.py` — Seal/Unseal (DoS + recovery)
-- `active_execution/modules/audit_backdoor.py` — Audit device disable
+- `active_execution/modules/audit_backdoor.py` — Audit device disable + log injection + audit-hash
 - `active_execution/modules/token_exploit.py` — Token creation/renewal/lookup
-- `active_execution/modules/policy_exploit.py` — Policy manipulation
-- `active_execution/modules/persistence.py` — Auth backdoor persistence
+- `active_execution/modules/policy_exploit.py` — Policy manipulation (clone, escalate)
+- `active_execution/modules/persistence.py` — Auth backdoor persistence (AppRole)
+- `active_execution/modules/multi_persistence.py` — Multi-method backdoor (AppRole + K8s + LDAP)
+- `active_execution/modules/database_pivot.py` — DB pivot: connect + enumerate + extract
+- `active_execution/modules/database_exploit.py` — DB exploit: DML/DDL on harvested creds
+- `active_execution/modules/cloud_pivot.py` — Cloud pivot: AWS/Azure/GCP enumeration
+- `active_execution/modules/cloud_exploit.py` — Cloud exploit: IAM user/EC2/S3 creation
+- `active_execution/modules/raft_storage_exploit.py` — Raft: snapshot download, raft.db parsing
+- `active_execution/modules/cve_scanner.py` — Active CVE exploitation (12 CVEs)
+- `active_execution/modules/unauthenticated_attack.py` — Token-less attack surface scan
+- `active_execution/modules/pivot_engine.py` — Full cross-service pivot: Vault→DB→OS shell
+- `active_execution/modules/payload_module.py` — Reverse shell via PostgreSQL COPY FROM PROGRAM
+- `active_execution/modules/unseal_key_exfiltration.py` — Shamir unseal key discovery
+- **Tier 1 (v1.1):**
+- `active_execution/modules/transit_engine_exploit.py` — Transit: key audit, encrypt/decrypt PoC, datakey, HMAC, rotate
+- `active_execution/modules/agent_sidecar_attack.py` — Agent: HCL discovery, sink token theft, AppRole file reading
+- `active_execution/modules/pki_engine_exploit.py` — PKI: CA/CRL download, 9-flag role audit, cert issuance PoC
+- `active_execution/modules/kubernetes_auth_exploit.py` — K8s: JWT decode, config audit, role binding, login, CVE-2023-46835
+- **Tier 2 (v1.2):**
+- `active_execution/modules/jwt_oidc_exploit.py` — JWT/OIDC: discovery doc fetch, JWKS parse, algorithm confusion, bound_claims audit
+- `active_execution/modules/approle_exploit.py` — AppRole: config audit, bind_secret_id bypass, CIDR bypass, login
 
 **AI Core:**
 - `ai_core/agent.py` — ReAct-loop autonomous pentest agent
 - `ai_core/chat_ui.py` — Interactive terminal chat
-- `ai_core/mcp_server.py` — FastMCP server (25 tools, streamable HTTP)
-- `ai_core/llm_engine.py` — Multi-provider LLM client (Ollama/OpenAI/Anthropic/DeepSeek)
+- `ai_core/gui_app.py` — CustomTkinter desktop GUI
+- `ai_core/mcp_server.py` — FastMCP server (43 tools, streamable HTTP)
+- `ai_core/llm_engine.py` — Multi-provider LLM client (Ollama/OpenAI/Anthropic/DeepSeek/Kimi/Cursor)
 - `ai_core/planning/` — Provider-agnostic attack plan generation
 - `ai_core/session.py` — Thread-safe session management with TTL
+- `ai_core/orchestrator.py` — Parallel domain-based attack orchestrator
+- `ai_core/specialist_agent.py` — Domain-specialist agents (8 domains)
+- `ai_core/tree_walker.py` — Attack tree branch executor
+- `ai_core/mutation_engine.py` — LLM-driven dynamic attack path generation
+- `ai_core/tool_executor.py` — MCP tool execution bridge
 
 ## Vault Hijacking Risk Assessment
 
@@ -304,32 +348,41 @@ When `--auto-pilot` is enabled, the AI agent auto-executes PoC chains from web s
 
 ### Available Modules
 
-22 modules registered in `active_execution/registry.py`. Each carries an explicit risk level enforced at runtime:
+29 modules registered in `active_execution/registry.py`. Each carries an explicit risk level enforced at runtime:
 
 | Module ID | Risk | Description |
 |-----------|------|-------------|
 | `privilege_escalation.token_abuse` | `state_changing` | Auto-detect wildcard sudo paths, create backdoor policies, generate root-equivalent tokens |
-| `secret_exfiltration.kv_dump` | `read_only` | Enumerate + dump all KV secrets, Transit keys, PKI certs |
+| `secret_exfiltration.kv_dump` | `read_only` | Enumerate + dump all KV secrets, Transit keys, PKI certs, SSH roles |
 | `database_credential_harvest.dynamic_creds` | `state_changing` | Generate dynamic DB users from all accessible roles |
 | `cloud_key_exfiltration.key_dump` | `state_changing` | Locate + exfiltrate cloud provider keys (AWS/Azure/GCP) |
 | `vault_seal.seal_status` | `read_only` | Check whether Vault is sealed |
 | `vault_seal.seal_vault` | `state_changing` | Seal Vault (DoS — all tokens invalid, all engines stop) |
 | `vault_seal.unseal_vault` | `state_changing` | Unseal Vault with Shamir key (recovery) |
-| `audit_backdoor.disable` | `destructive` | Disable all audit devices to hide activity |
+| `audit_backdoor.disable` | `destructive` | Disable audit devices + log injection + audit-hash HMAC test |
 | `token_exploit.creation` | `state_changing` | Create, renew, lookup, orphan tokens |
 | `policy_exploit.modification` | `state_changing` | List, read, clone, escalate policies |
-| `persistence.backdoor` | `destructive` | Deploy persistent auth backdoor (AppRole/userpass) |
-| `multi_persistence.backdoor` | `destructive` | Deploy multiple concurrent backdoors across auth methods |
-| `pivot_engine.cross_service` | `destructive` | Cross-service pivot: Vault → DB → OS shell (PostgreSQL `COPY FROM PROGRAM`) |
+| `persistence.backdoor` | `destructive` | Deploy persistent auth backdoor (AppRole) |
+| `multi_persistence.backdoor` | `destructive` | Deploy multiple concurrent backdoors (AppRole + K8s + LDAP) |
+| `pivot_engine.cross_service` | `destructive` | Cross-service pivot: Vault → DB → OS shell (PostgreSQL COPY FROM PROGRAM) |
 | `database_pivot.exploit` | `destructive` | Direct database exploitation via harvested credentials |
 | `database_exploit.exploit` | `destructive` | Database engine exploitation (privilege escalation within DB) |
 | `cloud_pivot.exploit` | `destructive` | Cloud infrastructure pivot via exfiltrated IAM keys |
 | `cloud_exploit.exploit` | `destructive` | Cloud provider exploitation (IAM privilege escalation) |
-| `raft_storage.exploit` | `destructive` | Raft storage manipulation (snapshot extraction, tampering) |
+| `raft_storage.exploit` | `destructive` | Raft: snapshot download (API) + raft.db SQLite parsing (filesystem) |
 | `unseal_key.exfiltration` | `destructive` | Exfiltrate Shamir unseal key material from Vault internals |
-| `payload_module.reverse_shell` | `destructive` | Deliver reverse shell ON the target via the DB pivot channel (PostgreSQL `COPY FROM PROGRAM`), callback to operator listener |
-| `cve_scanner.scan` | `state_changing` | Active CVE exploitation attempts against known Vault CVEs |
+| `payload_module.reverse_shell` | `destructive` | Reverse shell ON target via PostgreSQL COPY FROM PROGRAM |
+| `cve_scanner.scan` | `state_changing` | Active CVE exploitation against 12 known Vault CVEs |
 | `unauthenticated.attack` | `read_only` | Unauthenticated attack surface scanning (no credentials needed) |
+| **Tier 1:** | | |
+| `transit_engine_exploit.operations` | `state_changing` | Transit: key metadata, exportable detection, encrypt/decrypt PoC, datakey, HMAC, rotate |
+| `agent_sidecar_attack.scan` | `read_only` | Agent: HCL config discovery, sink token extraction, AppRole file reading, env scan |
+| `pki_engine_exploit.operations` | `state_changing` | PKI: CA/CRL download, 9-flag deep role audit, cert issuance PoC |
+| `kubernetes_auth_exploit.login` | `state_changing` | K8s: JWT decode, auth config audit, SA token login, CVE-2023-46835 |
+| **Tier 2:** | | |
+| `jwt_oidc_exploit.audit` | `state_changing` | JWT/OIDC: discovery doc + JWKS fetch, algorithm confusion, bound_claims audit, login bypass |
+| `approle_exploit.bypass` | `state_changing` | AppRole: config audit, bind_secret_id bypass, CIDR bypass (X-Forwarded-For), login |
+| `raft_storage.exploit` (rewritten) | `destructive` | Was placeholder — now real: snapshot download + raft.db SQLite parsing + WAL analysis |
 
 ## Vault Pentest Lab
 
@@ -348,12 +401,12 @@ python ../main.py chat --target $VAULT_ADDR --skip-tls-verify --provider deepsee
 ```
 
 **Lab components:**
-- Vault 1.15.3 (intentionally old — CVE coverage)
+- Vault 1.15.3 (intentionally old — CVE coverage for 12 CVEs)
 - PostgreSQL 16 (database secrets engine backend)
 - 6 custom ACL policies (admin, read-only, wildcard-sudo-user, app-admin, db-reader, weak-policy)
-- 5 test tokens + AppRole credentials
-- AppRole, Userpass auth methods
-- KV v2, Database, Transit, PKI secrets engines
+- 5 test tokens + AppRole credentials (my-role with secret_id_num_uses=10)
+- AppRole + Userpass auth methods
+- KV v2, Database, Transit (key: my-key), PKI secrets engines
 - Lab artifacts for hijack scanner testing (logs, configs, terraform, CI files)
 - Self-signed TLS, CORS wildcard, missing security headers
 
@@ -366,8 +419,11 @@ The `ai_core/` module provides an LLM-driven agent that plans and executes pente
 ### Quick Start
 
 ```bash
-# Interactive chat
+# Interactive chat (terminal)
 python main.py chat --target https://vault:8200 --token hvs.xxx
+
+# Desktop GUI (CustomTkinter)
+python main.py chat --ui desktop --target https://vault:8200 --token hvs.xxx
 
 # Fully autonomous (non-interactive, cron-compatible)
 python main.py chat --auto --target https://vault:8200 --token hvs.xxx --pdf-report report.pdf
@@ -386,13 +442,15 @@ Natural language works — the agent understands intent. These commands are shor
 | Command | Action |
 |---------|--------|
 | `auto` / `otomatik` | Run fully autonomous pentest → tree walker → PDF report |
+| `orchestrate` / `smart` | Run parallel domain-specialist orchestrated attack |
 | `pilot` / `auto-pilot` | Toggle auto-execution of web PoC chains |
 | `walk` / `yuru` | Walk the attack tree (risk-ordered branches) |
 | `mutate` / `branch` | Ask LLM for alternative attack paths |
 | `fix` / `cozum` | Get remediation advice for all findings |
 | `stealth` / `gizli` | Toggle stealth HTTP (jitter + backoff) |
-| `status` | Show session: tokens, escalations, power levels |
+| `modules` / `ls` | List all available tools and active modules |
 | `findings` | Show accumulated pentest findings |
+| `status` | Show session: tokens, escalations, power levels |
 | `set target/token` | Configure target URL and Vault token |
 | `exit` | Quit |
 
@@ -469,8 +527,10 @@ Natural language works — the agent understands intent. These commands are shor
 | Provider | Env Var | Default Model |
 |----------|---------|---------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
-| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-pro` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Kimi | `KIMI_API_KEY` | (auto-detect) |
+| Cursor | `CURSOR_API_KEY` | (auto-detect) |
 | Ollama (local) | `OLLAMA_HOST` | (auto-detect) |
 
 ### MCP Server
@@ -479,7 +539,7 @@ Natural language works — the agent understands intent. These commands are shor
 python main.py mcp
 ```
 
-Starts a FastMCP server on `127.0.0.1:8000` exposing 26 MCP tools: recon, audit, active execution, raw Vault API, `web_search`, session management, findings/risk-score.
+Starts a FastMCP server on `127.0.0.1:8000` exposing 43 MCP tools: recon, audit, active execution, raw Vault API, web search, session management, findings/risk-score, remediation advice, attack planning, auto-pentest, transit/PKI/K8s/JWT/OIDC/AppRole/Agent exploitation, and more.
 
 ### LLM Engine
 
@@ -559,7 +619,7 @@ The hijack scanner currently looks for:
 - AWS IAM Vault auth clues: `auth/aws/login`, `auth/aws/role/*`, AWS credential environment variables, role ARNs, bound IAM principal ARNs, `X-Vault-AWS-IAM-Server-ID`
 - Vault Database Secrets Engine clues: `database/config/*`, `database/roles/*`, `database/creds/*`, database plugins, connection URLs, `creation_statements`, `revocation_statements`, `default_ttl`, `max_ttl`
 - Static DB credential clues: `DB_USERNAME`, `DB_PASSWORD`, `DATABASE_PASS`, `db_password`, `pg_password`, `mysql_password`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `MYSQL_USER`, `MYSQL_PASSWORD`, `PGUSER`, `PGPASSWORD`
-- Vault Agent clues: `auto_auth` and file token sinks
+- Vault Agent clues: `auto_auth`, file token sinks, `role_id_file_path`, `secret_id_file_path`, `exit_after_auth`, template destinations, HCL config blocks with Vault addresses
 
 Noise and scope controls:
 

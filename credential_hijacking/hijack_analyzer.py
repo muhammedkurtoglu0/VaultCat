@@ -298,7 +298,113 @@ def analyze_hijack_findings(matches):
                 target=file_path,
             )
 
+    # ── Vault Agent correlation ────────────────────────────────────────
+    _analyze_agent_correlations(matches)
+
     _analyze_cross_file_chains(matches)
+
+
+def _analyze_agent_correlations(matches):
+    """Detect Vault Agent configuration chains across files.
+
+    Correlates agent HCL blocks with sink paths, AppRole credential files,
+    and template destinations to identify complete attack paths.
+    """
+    agent_patterns = {
+        "vault_agent_auto_auth",
+        "vault_agent_file_sink",
+        "vault_agent_sink_path",
+        "vault_agent_exit_after_auth",
+        "vault_agent_template_config",
+        "vault_agent_role_id_file",
+        "vault_agent_secret_id_file",
+        "vault_agent_hcl_block",
+    }
+
+    agent_matches = [m for m in matches if m.get("pattern") in agent_patterns]
+    if not agent_matches:
+        return
+
+    # Group by file
+    by_file: dict[str, list[dict]] = {}
+    for m in agent_matches:
+        by_file.setdefault(m["file"], []).append(m)
+
+    for file_path, file_matches in by_file.items():
+        file_patterns = {m["pattern"] for m in file_matches}
+
+        has_auto_auth = "vault_agent_auto_auth" in file_patterns
+        has_sink = "vault_agent_file_sink" in file_patterns
+        has_sink_path = "vault_agent_sink_path" in file_patterns
+        has_hcl_block = "vault_agent_hcl_block" in file_patterns
+        has_role_file = "vault_agent_role_id_file" in file_patterns
+        has_secret_file = "vault_agent_secret_id_file" in file_patterns
+        has_template = "vault_agent_template_config" in file_patterns
+
+        # Agent config with full AppRole pair + sink
+        if has_role_file and has_secret_file and has_sink:
+            add_finding(
+                "HIGH",
+                "Vault Agent: Complete AppRole auth + token sink chain",
+                (
+                    "A single file contains a Vault Agent config with AppRole "
+                    "Role ID file path, Secret ID file path, AND a file token sink. "
+                    "This reveals the complete credential exfiltration path."
+                ),
+                evidence=f"file: {file_path}, approle_role_file: present, approle_secret_file: present, sink: present",
+                module=MODULE_NAME,
+                target=file_path,
+            )
+
+        # Agent config with sink path + auto_auth
+        if has_auto_auth and has_sink_path:
+            add_finding(
+                "MEDIUM",
+                "Vault Agent: auto_auth with token sink path revealed",
+                (
+                    "A Vault Agent config with auto_auth and an explicit sink "
+                    "file path was discovered. The sink file path indicates where "
+                    "cached tokens are written to disk."
+                ),
+                evidence=f"file: {file_path}, auto_auth: present, sink_path: present",
+                module=MODULE_NAME,
+                target=file_path,
+            )
+
+        # Template config exposure
+        if has_template:
+            add_finding(
+                "LOW",
+                "Vault Agent: template renders secrets to disk",
+                (
+                    "A Vault Agent config with template blocks was discovered. "
+                    "Templates may render secrets (passwords, keys) to disk, "
+                    "creating additional credential exposure surfaces."
+                ),
+                evidence=f"file: {file_path}, template: present",
+                module=MODULE_NAME,
+                target=file_path,
+            )
+
+    # Cross-file: auto_auth in one file, sink in another
+    all_patterns = {m["pattern"] for m in agent_matches}
+    all_files = {m["file"] for m in agent_matches}
+    if len(all_files) >= 2 and "vault_agent_auto_auth" in all_patterns and "vault_agent_sink_path" in all_patterns:
+        add_finding(
+            "LOW",
+            "Vault Agent: Config and sink references span multiple files",
+            (
+                f"Vault Agent auto_auth config and sink file path were found "
+                f"across {len(all_files)} separate files. Review all files for "
+                "the complete credential flow."
+            ),
+            evidence=(
+                f"files: {', '.join(sorted(all_files)[:5])}, "
+                f"total: {len(all_files)}"
+            ),
+            module=MODULE_NAME,
+            target=", ".join(sorted(all_files)[:3]),
+        )
 
 
 def _analyze_cross_file_chains(matches):

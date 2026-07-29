@@ -18,3 +18,5 @@ psycopg2-binary>=2.9
 duckduckgo-search>=6.0
 trafilatura>=1.6.0
 beautifulsoup4>=4.12.0
+customtkinter>=5.2.0
+cryptography>=41.0.0

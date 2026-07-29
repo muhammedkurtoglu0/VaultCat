@@ -6,7 +6,7 @@ from core.tls_config import get_verify
 
 MODULE = "auth_config_scanner"
 TIMEOUT = 5
-SUPPORTED_AUTH_TYPES = {"kubernetes", "aws", "ldap"}
+SUPPORTED_AUTH_TYPES = {"kubernetes", "aws", "ldap", "jwt", "oidc"}
 
 
 def scan_auth_config_security(vault_addr, token, namespace=None):
@@ -46,6 +46,8 @@ def scan_auth_config_security(vault_addr, token, namespace=None):
             checks.extend(_audit_aws_auth(vault_addr, token, namespace, mount))
         elif mount["type"] == "ldap":
             checks.extend(_audit_ldap_auth(vault_addr, token, namespace, mount))
+        elif mount["type"] in ("jwt", "oidc"):
+            checks.extend(_audit_jwt_oidc_auth(vault_addr, token, namespace, mount))
 
     if not checks:
         add_finding(
@@ -127,6 +129,86 @@ def _audit_kubernetes_auth(vault_addr, token, namespace, mount):
                 "Kubernetes auth role has scoped service account bindings",
                 evidence,
             ))
+
+    # Deep config audit: check auth method config for dangerous flags
+    checks.extend(_audit_kubernetes_auth_config(vault_addr, token, namespace, mount))
+
+    return checks
+
+
+def _audit_kubernetes_auth_config(vault_addr, token, namespace, mount):
+    """Deep-audit K8s auth method configuration for issuer/validation issues."""
+    checks = []
+    mount_path = mount["path"]
+
+    response = _vault_request("GET", vault_addr, f"auth/{mount_path}/config", token, namespace)
+    if response.status_code != 200:
+        checks.append(_record_inconclusive(
+            vault_addr,
+            f"Could not read Kubernetes auth config for mount {mount_path} (HTTP {response.status_code})",
+        ))
+        return checks
+
+    data = _response_data(response)
+    issuer = data.get("issuer") or data.get("kubernetes_ca_cert") or "unknown"
+    disable_iss_validation = data.get("disable_iss_validation", False)
+    disable_local_ca_jwt = data.get("disable_local_ca_jwt", False)
+    k8s_host = data.get("kubernetes_host", "")
+
+    if disable_iss_validation:
+        checks.append(_record_risk(
+            vault_addr,
+            "CRITICAL",
+            40,
+            "Kubernetes auth issuer validation is DISABLED",
+            (
+                f"Mount '{mount_path}' has disable_iss_validation=true. "
+                f"This allows ANY Kubernetes cluster's service account tokens "
+                f"to authenticate — including external/attacker-controlled K8s clusters."
+            ),
+            (
+                "Enable issuer validation: vault write auth/{mount_path}/config "
+                "issuer=https://kubernetes.default.svc.cluster.local"
+            ),
+            f"mount: {mount_path}, issuer: {issuer}, disable_iss_validation: true",
+        ))
+
+    if disable_local_ca_jwt:
+        checks.append(_record_risk(
+            vault_addr,
+            "HIGH",
+            25,
+            "Kubernetes auth local CA JWT validation is DISABLED",
+            (
+                f"Mount '{mount_path}' has disable_local_ca_jwt=true. "
+                f"JWT signatures from service account tokens are NOT verified "
+                f"against the local Kubernetes CA — any valid JWT may be accepted."
+            ),
+            "Enable JWT signature verification via the local CA to prevent token forgery.",
+            f"mount: {mount_path}, issuer: {issuer}, disable_local_ca_jwt: true",
+        ))
+
+    # Flag non-standard issuer URLs
+    if "kubernetes.default.svc" not in str(issuer) and issuer != "unknown":
+        checks.append(_record_risk(
+            vault_addr,
+            "INFO",
+            0,
+            "Kubernetes auth uses non-standard issuer URL",
+            (
+                f"Mount '{mount_path}' configured with issuer: {issuer}. "
+                f"This may indicate an external Kubernetes cluster integration."
+            ),
+            "Verify the issuer matches the intended Kubernetes API server.",
+            f"mount: {mount_path}, issuer: {issuer}, k8s_host: {k8s_host}",
+        ))
+
+    if not disable_iss_validation and not disable_local_ca_jwt:
+        checks.append(_record_pass(
+            vault_addr,
+            f"Kubernetes auth mount '{mount_path}' has proper issuer and JWT validation enabled",
+            f"issuer: {issuer}, disable_iss_validation: false, disable_local_ca_jwt: false",
+        ))
 
     return checks
 
@@ -301,6 +383,112 @@ def _extract_lockout_config(config_response, tune_response):
         if lockout_fields:
             return lockout_fields
     return {}
+
+
+def _audit_jwt_oidc_auth(vault_addr, token, namespace, mount):
+    """Audit JWT/OIDC auth method configuration."""
+    checks = []
+    mount_path = mount["path"]
+    auth_type = mount.get("type", "jwt")
+
+    # Read auth config
+    response = _vault_request("GET", vault_addr, f"auth/{mount_path}/config", token, namespace)
+    if response.status_code == 200:
+        config = _response_data(response)
+        bound_issuer = config.get("bound_issuer") or config.get("issuer") or ""
+        oidc_url = config.get("oidc_discovery_url") or ""
+        default_role = config.get("default_role") or ""
+
+        if bound_issuer and "*" in str(bound_issuer):
+            checks.append(_record_risk(
+                vault_addr, "CRITICAL", 40,
+                f"{auth_type.upper()} auth has wildcard bound issuer",
+                f"Mount '{mount_path}' has bound_issuer='{bound_issuer}' — any identity provider can issue valid tokens.",
+                "Restrict bound_issuer to your specific identity provider URL.",
+                f"mount: {mount_path}, bound_issuer: {bound_issuer}",
+            ))
+
+        if oidc_url:
+            checks.append(_record_risk(
+                vault_addr, "INFO", 0,
+                f"OIDC discovery URL configured: {oidc_url[:80]}",
+                f"Mount '{mount_path}' uses OIDC with discovery URL: {oidc_url}.",
+                "Verify the OIDC provider is trusted and properly configured.",
+                f"mount: {mount_path}, oidc_discovery_url: {oidc_url}",
+            ))
+
+        if default_role:
+            checks.append(_record_pass(
+                vault_addr,
+                f"JWT/OIDC auth mount '{mount_path}' has default_role: {default_role}",
+                f"mount: {mount_path}, default_role: {default_role}",
+            ))
+    elif response.status_code == 403:
+        checks.append(_record_inconclusive(
+            vault_addr,
+            f"Token lacks permission to read {auth_type} auth config for mount {mount_path}",
+        ))
+    else:
+        checks.append(_record_inconclusive(
+            vault_addr,
+            f"Could not read {auth_type} auth config for mount {mount_path} (HTTP {response.status_code})",
+        ))
+
+    # List and audit roles
+    role_names = _list_role_names(vault_addr, token, namespace, mount_path)
+    for role_name in role_names:
+        response = _vault_request(
+            "GET", vault_addr, f"auth/{mount_path}/role/{role_name}", token, namespace,
+        )
+        if response.status_code != 200:
+            continue
+
+        data = _response_data(response)
+        bound_claims = data.get("bound_claims", {}) or {}
+        bound_audiences = data.get("bound_audiences", []) or []
+        token_policies = data.get("token_policies", []) or []
+
+        evidence = f"mount: {mount_path}, role: {role_name}, bound_claims: {list(bound_claims.keys())}, bound_audiences: {bound_audiences}"
+
+        # Wildcard bound_claims
+        wildcard_claims = [k for k, v in bound_claims.items() if v in ("*", "")]
+        if wildcard_claims:
+            checks.append(_record_risk(
+                vault_addr, "HIGH", 25,
+                f"JWT/OIDC role has wildcard bound claims: {wildcard_claims}",
+                f"Role '{mount_path}/{role_name}' accepts any value for claims: {wildcard_claims}.",
+                "Restrict bound_claims to specific expected values.",
+                evidence,
+            ))
+
+        # Missing bound_audiences (CVE-2023-37702)
+        if not bound_audiences:
+            checks.append(_record_risk(
+                vault_addr, "MEDIUM", 10,
+                "JWT/OIDC role has no bound_audiences (CVE-2023-37702 risk)",
+                f"Role '{mount_path}/{role_name}' does not validate audience claims.",
+                "Set bound_audiences to restrict which JWT audiences are accepted.",
+                evidence,
+            ))
+
+        # Elevated policies
+        if "root" in token_policies or "admin" in str(token_policies).lower():
+            checks.append(_record_risk(
+                vault_addr, "HIGH", 25,
+                f"JWT/OIDC role grants elevated policies: {token_policies}",
+                f"Role '{mount_path}/{role_name}' grants high-privilege policies via {auth_type} auth.",
+                "Review whether these policies are appropriate for the identity provider.",
+                evidence,
+            ))
+
+        if not wildcard_claims and bound_audiences:
+            checks.append(_record_pass(
+                vault_addr,
+                f"JWT/OIDC role '{mount_path}/{role_name}' has properly scoped claims",
+                evidence,
+            ))
+
+    return checks
 
 
 def _record_risk(vault_addr, severity, risk_score, title, description, recommendation, evidence):

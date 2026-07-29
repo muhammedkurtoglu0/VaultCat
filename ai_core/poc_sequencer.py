@@ -123,6 +123,8 @@ _PRODUCER_PATTERNS: list[tuple[str, str, str]] = [
     ("POST", r"auth/approle/login", "vault_token"),
     ("POST", r"auth/userpass/login/(.+)", "vault_token"),
     ("POST", r"auth/kubernetes/login", "vault_token"),
+    ("POST", r"auth/jwt/login", "vault_token"),
+    ("POST", r"auth/oidc/login", "vault_token"),
     ("POST", r"auth/aws/login", "vault_token"),
     ("POST", r"auth/ldap/login/(.+)", "vault_token"),
     ("POST", r"auth/gcp/login", "vault_token"),

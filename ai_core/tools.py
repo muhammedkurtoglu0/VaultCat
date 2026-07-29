@@ -607,6 +607,242 @@ TOOL_WEB_SEARCH = ToolDef(
     phase="meta",
 )
 
+TOOL_RUN_DATABASE_PIVOT = ToolDef(
+    name="run_database_pivot",
+    description=(
+        "Connect to a DATABASE using discovered credentials and extract data. "
+        "Use this IMMEDIATELY after finding DB credentials (from KV, env scan, "
+        "or database_credential_harvest). Tests connection, checks SUPERUSER status, "
+        "lists tables, and reads data. If connection succeeds, follow up with "
+        "run_reverse_shell to execute OS commands on the database host. "
+        "Params: host, port, user, password, db_name."
+    ),
+    parameters=[
+        ToolParam(name="vault_addr", type="string", description="Vault URL", required=True),
+        ToolParam(name="token", type="string", description="Vault token", required=False),
+        ToolParam(name="params", type="object", description="Connection params: {host, port, user, password, db_name}", required=False),
+    ],
+    phase="active",
+    risk="state_changing",
+)
+
+TOOL_RUN_REVERSE_SHELL = ToolDef(
+    name="run_reverse_shell",
+    description=(
+        "Execute OS commands on the DATABASE HOST via PostgreSQL COPY FROM PROGRAM. "
+        "Requires database connection params (host, port, user, password, db_name) "
+        "and SUPERUSER privilege. Use IMMEDIATELY after a successful database_pivot. "
+        "Default command: whoami && id && uname -a. "
+        "For a full reverse shell, set command to a bash/python reverse shell one-liner."
+    ),
+    parameters=[
+        ToolParam(name="vault_addr", type="string", description="Vault URL", required=True),
+        ToolParam(name="token", type="string", description="Vault token", required=False),
+        ToolParam(name="params", type="object", description="Connection + command: {host, port, user, password, db_name, command}", required=False),
+    ],
+    phase="active",
+    risk="destructive",
+)
+
+TOOL_RUN_VAULT_AGENT_SCAN = ToolDef(
+    name="run_vault_agent_scan",
+    description=(
+        "Scan the LOCAL filesystem for Vault Agent / Sidecar configurations. "
+        "Discovers HCL agent config files, parses auto_auth blocks, extracts "
+        "cached tokens from file sinks, reads AppRole credential files, checks "
+        "environment variables for VAULT_TOKEN, and identifies misconfigurations. "
+        "USE THIS when you have local filesystem access to a host running Vault Agent."
+    ),
+    parameters=[
+        ToolParam("path", "string",
+                  "Directory or file to scan (default: current directory)"),
+        ToolParam("vault_addr", "string",
+                  "Vault address for optional token validation"),
+        ToolParam("validate_tokens", "boolean",
+                  "Live-validate discovered tokens (default: false)"),
+        ToolParam("max_file_size_mb", "integer",
+                  "Max file size in MB (default: 5)"),
+    ],
+    phase="hijack",
+    risk="read_only",
+)
+
+TOOL_RUN_APPROLE_EXPLOIT = ToolDef(
+    name="run_approle_exploit",
+    description=(
+        "Audit and exploit Vault AppRole auth method configurations. Audits role "
+        "settings for dangerous configs (bind_secret_id=false, unlimited uses, "
+        "missing CIDR restrictions). Tests bind_secret_id bypass (empty secret_id), "
+        "CIDR bypass via X-Forwarded-For, and performs direct login attempts. "
+        "STATE-CHANGING: creates real Vault tokens on successful login."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string", "Target Vault URL", required=True),
+        ToolParam("token", "string", "Vault token for role config reads"),
+        ToolParam("mode", "string", "'audit' (default) or 'exploit'", enum=["audit", "exploit"]),
+        ToolParam("role_id", "string", "Known AppRole role_id for exploit mode"),
+        ToolParam("secret_id", "string", "Known AppRole secret_id for login"),
+        ToolParam("namespace", "string", "Vault namespace"),
+    ],
+    phase="active",
+    risk="state_changing",
+)
+
+TOOL_RUN_RAFT_EXPLOIT = ToolDef(
+    name="run_raft_exploit",
+    description=(
+        "Exploit Vault Raft storage. In API mode (token provided), reads raft "
+        "cluster configuration, downloads snapshots containing ALL secrets, checks "
+        "autopilot. In filesystem mode (path provided), parses raft.db SQLite "
+        "database, extracts log entries, reads peers.json. USE THIS when you have "
+        "a high-privilege token or local filesystem access to Vault's data directory."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string", "Target Vault URL", required=True),
+        ToolParam("token", "string", "Vault token for API-based access"),
+        ToolParam("data_path", "string", "Local path to Vault data directory for filesystem mode"),
+        ToolParam("mode", "string", "'api' (default), 'filesystem', or 'both'"),
+        ToolParam("namespace", "string", "Vault namespace"),
+    ],
+    phase="active",
+    risk="destructive",
+)
+
+TOOL_RUN_JWT_OIDC_EXPLOIT = ToolDef(
+    name="run_jwt_oidc_exploit",
+    description=(
+        "Audit and exploit Vault JWT/OIDC auth methods. Reads auth config "
+        "(OIDC discovery URL, bound_issuer, JWKS), fetches OIDC discovery "
+        "documents and JWKS keys, audits role bound_claims for weaknesses, "
+        "detects algorithm confusion (alg:none, RS256→HS256), and tests login "
+        "bypasses. USE THIS when JWT/OIDC auth methods are enabled."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string", "Target Vault URL", required=True),
+        ToolParam("token", "string", "Vault token (optional for config reads)"),
+        ToolParam("test_login", "boolean", "Test login bypass techniques (default: false, STATE_CHANGING)"),
+        ToolParam("jwt", "string", "JWT to test for login (optional)"),
+        ToolParam("namespace", "string", "Vault namespace"),
+    ],
+    phase="active",
+    risk="state_changing",
+)
+
+TOOL_RUN_KUBERNETES_AUTH_EXPLOIT = ToolDef(
+    name="run_kubernetes_auth_exploit",
+    description=(
+        "Exploit Vault Kubernetes auth configurations. Decodes service account "
+        "JWTs, discovers auth mounts, extracts configs (issuer, disable flags), "
+        "analyzes role-to-SA bindings, and attempts login with discovered "
+        "credentials. Includes CVE-2023-46835 exploit. STATE-CHANGING: "
+        "creates real Vault tokens via K8s auth. USE THIS when you have access "
+        "to a Kubernetes pod or the K8s auth method is enabled."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string",
+                  "Target Vault URL", required=True),
+        ToolParam("token", "string",
+                  "Vault token (optional for config reads)"),
+        ToolParam("jwt", "string",
+                  "K8s service account JWT (auto-discovers if omitted)"),
+        ToolParam("namespace", "string",
+                  "Vault namespace"),
+        ToolParam("target_roles", "array",
+                  "Specific K8s auth roles to target"),
+        ToolParam("exploit_cve", "boolean",
+                  "Attempt CVE-2023-46835 exploit (default: true)"),
+    ],
+    phase="active",
+    risk="state_changing",
+)
+
+TOOL_RUN_PKI_EXPLOIT = ToolDef(
+    name="run_pki_exploit",
+    description=(
+        "Audit and exploit Vault PKI Secrets Engine. In 'audit' mode (default), "
+        "downloads and analyzes CA certificates, CRLs, performs deep role audits "
+        "flagging dangerous configurations (allow_any_name, wildcard certs, IP SANs, "
+        "enforce_hostnames=false, etc). In 'operate' mode, issues test certificates "
+        "(PoC). USE THIS when the token has pki/* capabilities."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string",
+                  "Target Vault URL", required=True),
+        ToolParam("token", "string",
+                  "Vault token", required=True),
+        ToolParam("mode", "string",
+                  "Operation mode: 'audit' (default) or 'operate'",
+                  enum=["audit", "operate"]),
+        ToolParam("mount_path", "string",
+                  "Specific PKI mount path (auto-discovers if omitted)"),
+        ToolParam("role_name", "string",
+                  "Specific PKI role name to target"),
+        ToolParam("common_name", "string",
+                  "Common name for cert issuance PoC (default: test.local)"),
+        ToolParam("issue_test_cert", "boolean",
+                  "Issue a test certificate (STATE_CHANGING, default: false)"),
+        ToolParam("namespace", "string", "Vault namespace"),
+    ],
+    phase="active",
+    risk="state_changing",
+)
+
+TOOL_RUN_TRANSIT_EXPLOIT = ToolDef(
+    name="run_transit_exploit",
+    description=(
+        "Audit and exploit Vault Transit Secrets Engine. In 'audit' mode (default), "
+        "extracts key metadata, finds exportable keys, and flags misconfigurations. "
+        "In 'operate' mode, performs encryption/decryption PoC, datakey generation, "
+        "HMAC/sign operations, and key rotation. USE THIS when the token has "
+        "transit/* capabilities."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string",
+                  "Target Vault URL", required=True),
+        ToolParam("token", "string",
+                  "Vault token", required=True),
+        ToolParam("mode", "string",
+                  "Operation mode: 'audit' (default) or 'operate'",
+                  enum=["audit", "operate"]),
+        ToolParam("mount_path", "string",
+                  "Specific transit mount path (auto-discovers if omitted)"),
+        ToolParam("key_name", "string",
+                  "Specific key name to target"),
+        ToolParam("operations", "array",
+                  "Specific operations: encrypt, decrypt, datakey, hmac, rotate"),
+        ToolParam("namespace", "string", "Vault namespace"),
+        ToolParam("exploit_cve", "boolean",
+                  "Test CVE-2022-41316 (default: true)"),
+    ],
+    phase="active",
+    risk="state_changing",
+)
+
+TOOL_DECODE_GENERATE_ROOT_OTP = ToolDef(
+    name="decode_generate_root_otp",
+    description=(
+        "Decode a Vault generate-root OTP + encoded_token into a ROOT TOKEN. "
+        "This is a CLIENT-SIDE operation — no Vault API call or token needed. "
+        "Use this AFTER calling sys/generate-root/attempt (gets OTP + nonce) "
+        "and sys/generate-root/update with unseal key (gets encoded_token). "
+        "The otp_length comes from the attempt response's 'otp_length' field. "
+        "For Vault >= 1.15 (otp_length > 0): OTP is used as raw bytes, "
+        "encoded_token is base64-decoded, then XORed to produce the root token. "
+        "IMPORTANT: After decoding, use the root token with run_capability_audit "
+        "to verify it has root policies."
+    ),
+    parameters=[
+        ToolParam(name="encoded_token", type="string",
+                  description="The encoded_token from sys/generate-root/update response", required=True),
+        ToolParam(name="otp", type="string",
+                  description="The OTP from sys/generate-root/attempt response", required=True),
+        ToolParam(name="otp_length", type="integer",
+                  description="The otp_length from sys/generate-root/attempt response (default 0 = legacy)", required=False),
+    ],
+    phase="active",
+    risk="state_changing",
+)
+
 # ── Domain-to-tool mapping for specialist agents ──────────────────────────
 # Maps every MCP tool name to the domain(s) it serves.  ``"*"`` means the
 # tool is universal — available to every specialist regardless of domain.
@@ -618,6 +854,7 @@ TOOL_DOMAIN_MAP: dict[str, set[str]] = {
     "run_unauthenticated_recon":     {"general"},
     "run_hijack_scan":               {"general"},
     "run_env_scan":                  {"general"},
+    "run_vault_agent_scan":          {"general"},
 
     # ── Audit — token domain ───────────────────────────────────────────
     "run_capability_audit":          {"token"},
@@ -632,9 +869,15 @@ TOOL_DOMAIN_MAP: dict[str, set[str]] = {
 
     # ── Active execution — domain-specific ─────────────────────────────
     "run_privilege_escalation":      {"token"},
+    "run_jwt_oidc_exploit":          {"token"},
+    "run_approle_exploit":           {"token"},
+    "run_kubernetes_auth_exploit":   {"token"},
     "run_secret_exfiltration":       {"secrets"},
     "run_database_credential_harvest":{"database"},
     "run_cloud_key_exfiltration":    {"cloud"},
+    "run_raft_exploit":              {"secrets"},
+    "run_pki_exploit":               {"secrets"},
+    "run_transit_exploit":           {"secrets"},
 
     # ── Raw API — broad access, available to most domains ─────────────
     "run_raw_vault_request":         {"token", "secrets", "database",
@@ -662,6 +905,9 @@ TOOL_DOMAIN_MAP: dict[str, set[str]] = {
     "export_full_report":            {"*"},
     "send_notification":             {"*"},
     "generate_diff_report":          {"*"},
+    "decode_generate_root_otp":      {"*"},
+    "run_database_pivot":            {"database"},
+    "run_reverse_shell":             {"payload"},
 }
 
 # Tools that are always available regardless of domain.
@@ -694,6 +940,16 @@ ALL_TOOLS: list[ToolDef] = [
     TOOL_GET_RISK_SCORE,
     TOOL_REFRESH_NVD_CACHE,
     TOOL_WEB_SEARCH,
+    TOOL_RUN_DATABASE_PIVOT,
+    TOOL_RUN_REVERSE_SHELL,
+    TOOL_RUN_VAULT_AGENT_SCAN,
+    TOOL_RUN_RAFT_EXPLOIT,
+    TOOL_RUN_APPROLE_EXPLOIT,
+    TOOL_RUN_JWT_OIDC_EXPLOIT,
+    TOOL_RUN_KUBERNETES_AUTH_EXPLOIT,
+    TOOL_RUN_PKI_EXPLOIT,
+    TOOL_RUN_TRANSIT_EXPLOIT,
+    TOOL_DECODE_GENERATE_ROOT_OTP,
     TOOL_RUN_COMPLIANCE_CHECK,
     TOOL_RUN_NETWORK_PROBE,
     TOOL_EXPORT_FULL_REPORT,

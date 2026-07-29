@@ -21,8 +21,10 @@ accidentally run destructive operations:
 - **Authenticated assessment** — token capability audit, policy analysis, TTL governance, KV enumeration (metadata-only), auth config audit, privilege escalation simulation (read-only `sys/capabilities-self`)
 - **Credential exposure assessment** — file/git scanning for tokens, AppRole pairs, DB credentials, cloud keys; cross-file correlation and chain detection
 - **Metadata-only validation** — opt-in `--validate-token`, `--validate-approle`, `--validate-db` flags that only check Vault metadata (never read secrets)
-- **Active execution (authorized labs only)** — controlled token creation, secret exfiltration, DB credential harvest, cloud key dump, persistence deployment, and pivot engine cross-service lateral movement; all gated by `--active-max-risk` + `--confirm-active`
-- **AI-powered autonomous pentesting** — LLM-driven agent with ReAct loop, attack tree walking, auto-pilot PoC execution; web search with 24h cache for CVE research
+- **Active execution (authorized labs only)** — controlled token creation, secret exfiltration, DB credential harvest, cloud key dump, Transit encrypt/decrypt PoC, PKI certificate issuance, K8s/JWT/OIDC auth exploitation, AppRole bypass, persistence deployment, and pivot engine cross-service lateral movement; all gated by `--active-max-risk` + `--confirm-active`
+- **Raft storage assessment** — snapshot download via API (contains all Vault state), raft.db SQLite parsing, WAL analysis, peers.json reading (requires filesystem access or high-privilege token)
+- **Vault Agent / Sidecar assessment** — local HCL config discovery, sink token extraction, AppRole credential file reading (requires filesystem access)
+- **AI-powered autonomous pentesting** — LLM-driven agent with ReAct loop, attack tree walking, parallel domain orchestrator, auto-pilot PoC execution; web search with 24h cache for CVE research; 43 MCP tools exposed via FastMCP server
 
 ## Out of Scope
 
@@ -46,32 +48,40 @@ The tool has multiple layers of protection against accidental misuse:
 
 ## Active Execution Modules
 
-All modules are in `active_execution/modules/`. Listed here with their exact `module_id` and declared risk level:
+All modules are in `active_execution/modules/`. Listed here with their exact `module_id` and declared risk level (29 total):
 
 | Module ID | Risk | Description |
 |---|---|---|
 | `privilege_escalation.token_abuse` | `state_changing` | Auto-detect wildcard sudo paths, create backdoor policies, generate root-equivalent tokens |
-| `secret_exfiltration.kv_dump` | `read_only` | Enumerate + dump all KV secrets, Transit keys, PKI certs |
+| `secret_exfiltration.kv_dump` | `read_only` | Enumerate + dump all KV secrets, Transit keys, PKI certs, SSH roles |
 | `database_credential_harvest.dynamic_creds` | `state_changing` | Generate dynamic DB users from all accessible roles |
 | `cloud_key_exfiltration.key_dump` | `state_changing` | Locate + exfiltrate cloud provider keys (AWS/Azure/GCP) |
 | `vault_seal.seal_status` | `read_only` | Check whether Vault is sealed |
 | `vault_seal.seal_vault` | `state_changing` | Seal Vault (DoS — all tokens invalid, all engines stop) |
 | `vault_seal.unseal_vault` | `state_changing` | Unseal Vault with Shamir key (recovery) |
-| `audit_backdoor.disable` | `destructive` | Disable all audit devices to hide activity |
+| `audit_backdoor.disable` | `destructive` | Disable audit devices + log injection + audit-hash HMAC test |
 | `token_exploit.creation` | `state_changing` | Create, renew, lookup, orphan tokens |
 | `policy_exploit.modification` | `state_changing` | List, read, clone, escalate policies |
-| `persistence.backdoor` | `destructive` | Deploy persistent auth backdoor (AppRole/userpass) |
-| `multi_persistence.backdoor` | `destructive` | Deploy multiple concurrent backdoors across auth methods |
-| `pivot_engine.cross_service` | `destructive` | Cross-service pivot: Vault→DB→OS shell (PostgreSQL `COPY FROM PROGRAM`) |
+| `persistence.backdoor` | `destructive` | Deploy persistent auth backdoor (AppRole) |
+| `multi_persistence.backdoor` | `destructive` | Deploy multiple concurrent backdoors (AppRole+K8s+LDAP) |
+| `pivot_engine.cross_service` | `destructive` | Cross-service pivot: Vault→DB→OS shell (PostgreSQL COPY FROM PROGRAM) |
 | `database_pivot.exploit` | `destructive` | Direct database exploitation via harvested credentials |
 | `database_exploit.exploit` | `destructive` | Database engine exploitation (privilege escalation within DB) |
 | `cloud_pivot.exploit` | `destructive` | Cloud infrastructure pivot via exfiltrated IAM keys |
 | `cloud_exploit.exploit` | `destructive` | Cloud provider exploitation (IAM privilege escalation) |
-| `raft_storage.exploit` | `destructive` | Raft storage manipulation (snapshot extraction, tampering) |
+| `raft_storage.exploit` | `destructive` | Raft: snapshot download (API) + raft.db SQLite parsing (filesystem) |
 | `unseal_key.exfiltration` | `destructive` | Exfiltrate Shamir unseal key material from Vault internals |
-| `payload_module.reverse_shell` | `destructive` | Deploy reverse shell payload via compromised Vault access |
-| `cve_scanner.scan` | `state_changing` | Active CVE exploitation attempts against known Vault CVEs |
+| `payload_module.reverse_shell` | `destructive` | Reverse shell ON target via PostgreSQL COPY FROM PROGRAM |
+| `cve_scanner.scan` | `state_changing` | Active CVE exploitation against 12 known Vault CVEs |
 | `unauthenticated.attack` | `read_only` | Unauthenticated attack surface scanning (no credentials needed) |
+| **Tier 1 (v1.1):** | | |
+| `transit_engine_exploit.operations` | `state_changing` | Transit: key metadata, exportable detection, encrypt/decrypt PoC, datakey, HMAC, rotate |
+| `agent_sidecar_attack.scan` | `read_only` | Agent: HCL discovery, sink token theft, AppRole file reading, env scan |
+| `pki_engine_exploit.operations` | `state_changing` | PKI: CA/CRL download, 9-flag role audit, cert issuance PoC |
+| `kubernetes_auth_exploit.login` | `state_changing` | K8s: JWT decode, auth config audit, SA token login, CVE-2023-46835 |
+| **Tier 2 (v1.2):** | | |
+| `jwt_oidc_exploit.audit` | `state_changing` | JWT/OIDC: discovery doc + JWKS fetch, algorithm confusion, bound_claims audit |
+| `approle_exploit.bypass` | `state_changing` | AppRole: config audit, bind_secret_id bypass, CIDR bypass (X-Forwarded-For) |
 
 ## Auto-Pilot Mode (`--auto-pilot`)
 
