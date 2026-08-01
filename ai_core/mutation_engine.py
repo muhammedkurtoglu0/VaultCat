@@ -9,6 +9,17 @@ When a tool fails or returns partial access, the engine asks the LLM:
 Each branch becomes a new node in the attack tree.  The tree grows
 dynamically as the pentest progresses, always adapting to new
 information (tokens found, policies discovered, privileges escalated).
+
+Enhancements over the original:
+- **Proactive path generation**: Uses the Vault Attack Technique KB
+  (``attack_techniques.py``) to suggest paths based on current state,
+  not just reacting to failures.
+- **Technique scoring**: Tracks success/failure per technique to rank
+  future suggestions by expected value.
+- **Multi-step chain building**: Follows technique followup_techniques
+  to build full attack chains autonomously.
+- **Dynamic state awareness**: Captures live pentest state (tokens,
+  credentials, findings, accessible paths) for informed mutations.
 """
 
 from __future__ import annotations
@@ -20,6 +31,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
+
+from ai_core.attack_techniques import (
+    AttackTechnique,
+    TechniqueDomain,
+    TechniquePhase,
+    TechniqueScorer,
+    TokenPower,
+    TECHNIQUE_REGISTRY,
+    TECHNIQUES_BY_DOMAIN,
+    TECHNIQUES_BY_PHASE,
+    suggest_techniques,
+    build_attack_chain,
+    capture_pentest_state,
+    _check_preconditions,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -76,10 +102,16 @@ class MutationResult:
 
 
 class MutationEngine:
-    """LLM-driven attack tree builder.
+    """LLM-driven attack tree builder with Vault-specific technique knowledge.
 
     Instead of a linear plan, this engine grows a branching tree where
     each failure spawns new alternative paths ranked by risk/reward.
+
+    New capabilities:
+    - Proactive path generation from technique KB (not just reactive)
+    - Technique scoring with success/failure tracking
+    - Multi-step attack chain building
+    - Dynamic state-aware mutations
     """
 
     def __init__(self, llm_client=None):
@@ -89,11 +121,15 @@ class MutationEngine:
         self._mutation_history: list[MutationResult] = []
         self._successful_paths: list[list[AttackTreeNode]] = []
         self._dead_ends: list[AttackTreeNode] = []
+        self._scorer = TechniqueScorer()  # track technique success/failure
+        self._tried_techniques: set[str] = set()  # prevent duplicate suggestions
+        self._vault_addr: str = ""
 
     # ── tree building ────────────────────────────────────────────────────
 
     def start_tree(self, vault_addr: str, initial_assets: dict[str, Any]) -> AttackTreeNode:
         """Create the root node of a new attack tree."""
+        self._vault_addr = vault_addr
         self._root = AttackTreeNode(
             tool="__root__",
             reason=f"Initial attack surface: {vault_addr}",
@@ -103,7 +139,200 @@ class MutationEngine:
             expected_outcome="Map the full attack surface and find first foothold",
         )
         self._current_node = self._root
+
+        # ── Proactively generate initial branches from technique KB ──────
+        proactive_count = self._seed_proactive_branches(self._root)
+        if proactive_count > 0:
+            import sys
+            print(f"  [*] Seeded {proactive_count} proactive branches from attack technique KB",
+                  file=sys.stderr)
+
         return self._root
+
+    # ── proactive path generation ──────────────────────────────────────────
+
+    def _seed_proactive_branches(self, parent: AttackTreeNode) -> int:
+        """Generate initial attack branches based on current state.
+
+        Uses the technique KB to suggest the best techniques for the
+        current token power level, available credentials, and findings.
+        Returns the number of branches added.
+        """
+        state = capture_pentest_state(self._vault_addr)
+
+        # Determine token power enum
+        token_power = TokenPower.NONE
+        power_str = state.get("token_power", "none")
+        try:
+            token_power = TokenPower(power_str)
+        except ValueError:
+            token_power = TokenPower.NONE
+
+        is_auth = state.get("is_authenticated", False)
+        available_creds = state.get("available_credentials", [])
+        findings = state.get("findings_summary", [])
+        accessible_paths = state.get("accessible_paths", [])
+
+        # Suggest techniques for the RECON phase first, then AUDIT
+        suggestions = suggest_techniques(
+            token_power=token_power,
+            is_authenticated=is_auth,
+            available_credentials=available_creds,
+            findings=findings,
+            accessible_paths=accessible_paths,
+            phase=None,  # all phases
+            scorer=self._scorer,
+            max_suggestions=8,
+        )
+
+        added = 0
+        for tech, score in suggestions:
+            if tech.technique_id in self._tried_techniques:
+                continue
+            self._tried_techniques.add(tech.technique_id)
+
+            risk_map = {1: BranchRisk.STEALTH, 2: BranchRisk.STEALTH,
+                        3: BranchRisk.BALANCED, 4: BranchRisk.AGGRESSIVE,
+                        5: BranchRisk.AGGRESSIVE}
+            risk = risk_map.get(tech.stealth_cost, BranchRisk.BALANCED)
+
+            self.add_branch(
+                parent=parent,
+                tool=tech.tool,
+                reason=f"[{tech.technique_id}] {tech.name}: {tech.description}",
+                params=dict(tech.params_template),
+                risk=risk,
+                phase=tech.phase.value,
+                expected_outcome=(
+                    f"Score {score:.1f} | "
+                    + (tech.success_indicators[0] if tech.success_indicators else "discover assets")
+                ),
+            )
+            added += 1
+
+        return added
+
+    def generate_proactive_branches(
+        self,
+        parent: AttackTreeNode | None = None,
+        vault_addr: str = "",
+        max_branches: int = 4,
+    ) -> list[AttackTreeNode]:
+        """Generate new attack branches proactively (not in response to failure).
+
+        This is called when the pentest discovers new assets (tokens,
+        credentials, paths) and should explore new attack avenues.
+
+        Returns the newly created branch nodes.
+        """
+        if parent is None:
+            parent = self._current_node or self._root
+        if parent is None:
+            return []
+
+        if vault_addr:
+            self._vault_addr = vault_addr
+
+        state = capture_pentest_state(self._vault_addr)
+
+        token_power = TokenPower.NONE
+        try:
+            token_power = TokenPower(state.get("token_power", "none"))
+        except ValueError:
+            pass
+
+        suggestions = suggest_techniques(
+            token_power=token_power,
+            is_authenticated=state.get("is_authenticated", False),
+            available_credentials=state.get("available_credentials", []),
+            findings=state.get("findings_summary", []),
+            accessible_paths=state.get("accessible_paths", []),
+            exclude_techniques=self._tried_techniques,
+            scorer=self._scorer,
+            max_suggestions=max_branches,
+        )
+
+        new_nodes: list[AttackTreeNode] = []
+        for tech, score in suggestions:
+            if tech.technique_id in self._tried_techniques:
+                continue
+            self._tried_techniques.add(tech.technique_id)
+
+            risk_map = {1: BranchRisk.STEALTH, 2: BranchRisk.STEALTH,
+                        3: BranchRisk.BALANCED, 4: BranchRisk.AGGRESSIVE,
+                        5: BranchRisk.AGGRESSIVE}
+            risk = risk_map.get(tech.stealth_cost, BranchRisk.BALANCED)
+
+            node = self.add_branch(
+                parent=parent,
+                tool=tech.tool,
+                reason=f"[{tech.technique_id}] {tech.name}: {tech.description}",
+                params=dict(tech.params_template),
+                risk=risk,
+                phase=tech.phase.value,
+                expected_outcome=f"Score {score:.1f}",
+            )
+            new_nodes.append(node)
+
+        return new_nodes
+
+    def build_technique_chain(
+        self,
+        entry_technique_id: str,
+        parent: AttackTreeNode | None = None,
+    ) -> list[AttackTreeNode]:
+        """Build a full multi-step attack chain from the technique KB.
+
+        Follows followup_techniques links to create a chain of nodes
+        that will be executed sequentially.  Returns all created nodes.
+        """
+        if parent is None:
+            parent = self._current_node or self._root
+        if parent is None:
+            return []
+
+        state = capture_pentest_state(self._vault_addr)
+
+        token_power = TokenPower.NONE
+        try:
+            token_power = TokenPower(state.get("token_power", "none"))
+        except ValueError:
+            pass
+
+        chain_techniques = build_attack_chain(
+            entry_technique_id=entry_technique_id,
+            token_power=token_power,
+            is_authenticated=state.get("is_authenticated", False),
+            available_credentials=state.get("available_credentials", []),
+            findings=state.get("findings_summary", []),
+            accessible_paths=state.get("accessible_paths", []),
+            max_depth=5,
+        )
+
+        nodes: list[AttackTreeNode] = []
+        current_parent = parent
+        for i, tech in enumerate(chain_techniques):
+            risk_map = {1: BranchRisk.STEALTH, 2: BranchRisk.STEALTH,
+                        3: BranchRisk.BALANCED, 4: BranchRisk.AGGRESSIVE,
+                        5: BranchRisk.AGGRESSIVE}
+            risk = risk_map.get(tech.stealth_cost, BranchRisk.BALANCED)
+
+            node = self.add_branch(
+                parent=current_parent,
+                tool=tech.tool,
+                reason=f"Chain[{i+1}/{len(chain_techniques)}] {tech.name}: {tech.description}",
+                params=dict(tech.params_template),
+                risk=risk,
+                phase=tech.phase.value,
+                expected_outcome=(
+                    tech.success_indicators[0] if tech.success_indicators else "advance chain"
+                ),
+            )
+            nodes.append(node)
+            self._tried_techniques.add(tech.technique_id)
+            current_parent = node  # nest next step under this one
+
+        return nodes
 
     def add_branch(
         self,
@@ -130,13 +359,37 @@ class MutationEngine:
         return node
 
     def record_result(self, node: AttackTreeNode, success: bool, summary: str):
-        """Update a node with its execution result."""
+        """Update a node with its execution result.
+
+        Also updates the technique scorer for learning-based ranking.
+        """
         node.status = NodeStatus.SUCCEEDED if success else NodeStatus.FAILED
         node.result_summary = summary
+
+        # ── Track technique success/failure for learning ─────────────────
+        tech_id = self._extract_technique_id(node.reason)
+        if tech_id and tech_id in TECHNIQUE_REGISTRY:
+            if success:
+                self._scorer.record_success(tech_id)
+            else:
+                self._scorer.record_failure(tech_id)
+
         if success:
             self._successful_paths.append(self._path_to(node))
         else:
             self._dead_ends.append(node)
+
+    @staticmethod
+    def _extract_technique_id(reason: str) -> str | None:
+        """Extract technique ID from a branch reason string.
+
+        Branch reasons may contain [technique.id] markers.
+        """
+        import re
+        match = re.search(r'\[([a-z_.]+\.[a-z_]+)\]', reason)
+        if match:
+            return match.group(1)
+        return None
 
     # ── LLM-driven mutation ──────────────────────────────────────────────
 
@@ -151,6 +404,7 @@ class MutationEngine:
         """Ask the LLM to generate dynamic alternative attack paths (2-6).
 
         The LLM decides how many paths make sense — no hardcoded limit.
+        Augmented with technique KB suggestions for hybrid intelligence.
 
         Parameters
         ----------
@@ -165,11 +419,39 @@ class MutationEngine:
         vault_addr:
             Target Vault URL for context.
         """
+        if vault_addr:
+            self._vault_addr = vault_addr
+
         state = self._build_state_summary(
             failed_node, available_tokens, available_credentials, findings, vault_addr
         )
 
-        prompt = self._build_mutation_prompt(state)
+        # ── Get KB suggestions first (fallback if LLM fails) ─────────────
+        token_power = TokenPower.NONE
+        best_token = (
+            available_tokens[0] if available_tokens else {}
+        )
+        try:
+            token_power = TokenPower(best_token.get("power_level", "none"))
+        except ValueError:
+            pass
+
+        is_auth = len(available_tokens) > 0
+        kb_suggestions = suggest_techniques(
+            token_power=token_power,
+            is_authenticated=is_auth,
+            available_credentials=[c.get("cred_type", "") for c in available_credentials],
+            findings=findings,
+            accessible_paths=state.get("accessible_paths_hint", []),
+            exclude_techniques=self._tried_techniques,
+            scorer=self._scorer,
+            max_suggestions=6,
+        )
+
+        # Build technique context for the LLM prompt
+        technique_context = self._build_technique_context(kb_suggestions, failed_node)
+
+        prompt = self._build_mutation_prompt(state, technique_context)
         response = await self._call_llm(prompt)
 
         mutation = MutationResult(
@@ -180,22 +462,43 @@ class MutationEngine:
         )
         self._mutation_history.append(mutation)
 
+        # ── Merge LLM branches + KB suggestions ──────────────────────────
+        all_branches = list(mutation.branches)  # LLM-generated
+
+        # Add KB suggestions that the LLM didn't already suggest
+        llm_tools = {b.get("tool", "") for b in mutation.branches}
+        for tech, score in kb_suggestions:
+            if tech.tool not in llm_tools and tech.technique_id not in self._tried_techniques:
+                all_branches.append({
+                    "tool": tech.tool,
+                    "reason": f"[{tech.technique_id}] {tech.name}: {tech.description}",
+                    "params": dict(tech.params_template),
+                    "risk": {1: "stealth", 2: "stealth", 3: "balanced",
+                             4: "aggressive", 5: "aggressive"}.get(tech.stealth_cost, "balanced"),
+                    "phase": tech.phase.value,
+                    "expected_outcome": f"KB score {score:.1f} | "
+                        + (tech.success_indicators[0] if tech.success_indicators else ""),
+                })
+
         # Add branches as children of the failed node.
-        # Risk level is read from the LLM response (or inferred from order).
-        for i, branch in enumerate(mutation.branches):
+        for i, branch in enumerate(all_branches):
             risk_str = branch.get("risk", "").lower()
             if risk_str in ("aggressive", "high"):
                 risk = BranchRisk.AGGRESSIVE
             elif risk_str in ("stealth", "low", "quiet"):
                 risk = BranchRisk.STEALTH
             else:
-                # Infer from position if LLM didn't specify
                 risk = BranchRisk.BALANCED
+
+            reason = branch.get("reason", "")
+            tech_id = self._extract_technique_id(reason)
+            if tech_id:
+                self._tried_techniques.add(tech_id)
 
             self.add_branch(
                 parent=failed_node,
                 tool=branch.get("tool", "run_raw_vault_request"),
-                reason=branch.get("reason", ""),
+                reason=reason,
                 params=branch.get("params", {}),
                 risk=risk,
                 phase=branch.get("phase", "exploit"),
@@ -204,6 +507,36 @@ class MutationEngine:
             )
 
         return mutation
+
+    def _build_technique_context(
+        self,
+        kb_suggestions: list[tuple[AttackTechnique, float]],
+        failed_node: AttackTreeNode,
+    ) -> str:
+        """Build technique KB context for the LLM mutation prompt."""
+        if not kb_suggestions:
+            return ""
+
+        lines = [
+            "\n=== TECHNIQUE KB SUGGESTIONS (Vault-specific attack patterns) ===",
+            "The following techniques match the current state. Consider them",
+            f"when generating alternative paths for the failed tool '{failed_node.tool}':\n",
+        ]
+
+        for tech, score in kb_suggestions[:6]:
+            lines.append(
+                f"  [{tech.technique_id}] {tech.name} (score: {score:.1f})\n"
+                f"    {tech.description}\n"
+                f"    Tool: {tech.tool} | Phase: {tech.phase.value} | "
+                f"Risk: {tech.risk_level}"
+            )
+            if tech.fallback_chain:
+                lines.append(f"    Fallback chain: {' → '.join(tech.fallback_chain[:3])}")
+            if tech.followup_techniques:
+                lines.append(f"    Follow-up: {' → '.join(tech.followup_techniques[:3])}")
+            lines.append("")
+
+        return "\n".join(lines)
 
     # ── tree navigation ──────────────────────────────────────────────────
 
@@ -242,6 +575,8 @@ class MutationEngine:
             "successful_paths": len(self._successful_paths),
             "dead_ends": len(self._dead_ends),
             "mutations": len(self._mutation_history),
+            "technique_stats": self._scorer.status_summary(),
+            "tried_techniques": len(self._tried_techniques),
             "tree": self._serialize_node(self._root) if self._root else None,
         }
 
@@ -256,6 +591,9 @@ class MutationEngine:
         vault_addr: str,
     ) -> dict[str, Any]:
         """Build a compact state snapshot for the LLM prompt."""
+        # ── Capture live pentest state for richer context ─────────────────
+        live_state = capture_pentest_state(vault_addr)
+
         return {
             "vault_addr": vault_addr,
             "failure": {
@@ -266,7 +604,7 @@ class MutationEngine:
             },
             "available_tokens": [
                 {
-                    "preview": t.get("token", "")[:16] + "...",
+                    "preview": t.get("token", ""),
                     "power": t.get("power_level", "unknown"),
                     "source": t.get("source", "unknown"),
                     "policies": t.get("policies", []),
@@ -290,6 +628,8 @@ class MutationEngine:
                 }
                 for f in findings[-20:]  # most recent 20
             ],
+            "high_value_targets": live_state.get("high_value_targets", []),
+            "accessible_paths_hint": live_state.get("accessible_paths", []),
             "previously_succeeded": [
                 {"tool": n.tool, "reason": n.reason, "result": n.result_summary[:100]}
                 for path in self._successful_paths
@@ -300,9 +640,12 @@ class MutationEngine:
                 {"tool": n.tool, "reason": n.reason, "result": n.result_summary[:100]}
                 for n in self._dead_ends[-5:]
             ],
+            "technique_stats": self._scorer.status_summary(),
         }
 
-    def _build_mutation_prompt(self, state: dict[str, Any]) -> str:
+    def _build_mutation_prompt(
+        self, state: dict[str, Any], technique_context: str = "",
+    ) -> str:
         """Build the LLM prompt that generates creative attack alternatives."""
         state_json = json.dumps(state, indent=2, ensure_ascii=False)
 
@@ -314,6 +657,7 @@ Analyse the state and generate the BEST possible alternative attack paths.
 
 === WEB INTEL (auto-searched for CVEs in findings) ===
 {json.dumps(state.get("web_intel", []), indent=2, ensure_ascii=False)}
+{technique_context}
 
 === YOUR TASK ===
 Generate 2-6 alternative attack paths based on the failure context and
@@ -324,7 +668,9 @@ CRITICAL RULES:
 1. Each path MUST use a REAL tool: run_unauthenticated_recon, run_capability_audit,
    run_priv_esc_scan, run_kv_enumeration, run_ttl_audit, run_auth_config_audit,
    read_single_policy, run_policy_auditor, run_raw_vault_request, run_env_scan,
-   run_hijack_scan, list_active_modules, run_active_module, get_findings, get_risk_score
+   run_hijack_scan, list_active_modules, run_active_module, get_findings, get_risk_score,
+   run_privilege_escalation, run_secret_exfiltration, run_database_credential_harvest,
+   run_cloud_key_exfiltration, run_database_pivot, run_reverse_shell
 
 2. Every path must be MEANINGFULLY DIFFERENT — no duplicates.
 3. Think LATERALLY. Examples:
@@ -338,6 +684,8 @@ CRITICAL RULES:
 4. For each path, explain WHY it could bypass the specific failure.
 5. Be SPECIFIC with params — real paths, real mount points, real policy names.
 6. Set "risk" to "aggressive", "balanced", or "stealth" for each branch.
+7. IF technique KB suggestions are provided, USE them as a starting point —
+   they are Vault-specific patterns known to work in similar situations.
 
 === RESPONSE FORMAT (JSON only, no markdown) ===
 {{
@@ -407,82 +755,54 @@ a GENUINE chance of succeeding — no filler.  Respond with ONLY valid JSON."""
         return self._fallback_branches()
 
     def _fallback_branches(self) -> dict[str, Any]:
-        """Generate sensible context-aware fallback branches when LLM is unavailable.
+        """Generate context-aware fallback branches using the technique KB.
 
-        The number of branches is dynamic — based on what assets exist.
-        No hardcoded limit.
+        When the LLM is unavailable, the technique KB provides Vault-specific
+        attack patterns ranked by expected value based on current state.
         """
-        branches: list[dict] = []
+        state = capture_pentest_state(self._vault_addr)
 
-        # Always useful: re-audit capabilities (might have changed)
-        branches.append({
-            "tool": "run_capability_audit",
-            "reason": "Re-audit token capabilities — context may have changed since last scan.",
-            "params": {},
-            "risk": "balanced",
-            "phase": "audit",
-            "expected_outcome": "Updated capability map for all available tokens.",
-        })
-
-        # If we have tokens, try KV enumeration
+        token_power = TokenPower.NONE
         try:
-            from ai_core.dynamic_session import global_store
-            if global_store.tokens:
-                branches.append({
-                    "tool": "run_kv_enumeration",
-                    "reason": "Enumerate KV paths with all available tokens — different tokens may see different paths.",
-                    "params": {"kv_path": "secret", "max_depth": 3},
-                    "risk": "balanced",
-                    "phase": "audit",
-                    "expected_outcome": "Find KV paths accessible to at least one token.",
-                })
-
-                # If we have DB credentials, suggest pivot
-                if global_store.credentials:
-                    branches.append({
-                        "tool": "run_raw_vault_request",
-                        "reason": "Read database engine configuration to extract connection strings for direct pivot.",
-                        "params": {"method": "GET", "path": "database/config"},
-                        "risk": "aggressive",
-                        "phase": "exploit",
-                        "expected_outcome": "PostgreSQL connection details for lateral movement.",
-                    })
-
-                # Multiple tokens → try privilege escalation
-                if len(global_store.tokens) >= 2:
-                    branches.append({
-                        "tool": "run_priv_esc_scan",
-                        "reason": "Multiple tokens available — try escalating the weakest one using the strongest one's capabilities.",
-                        "params": {},
-                        "risk": "aggressive",
-                        "phase": "exploit",
-                        "expected_outcome": "Escalate a low-priv token to higher privileges.",
-                    })
-        except ImportError:
+            token_power = TokenPower(state.get("token_power", "none"))
+        except ValueError:
             pass
 
-        # Always add: raw API exploration
-        branches.append({
-            "tool": "run_raw_vault_request",
-            "reason": "Try direct API calls to paths that scanners might have missed.",
-            "params": {"method": "GET", "path": "sys/mounts"},
-            "risk": "stealth",
-            "phase": "audit",
-            "expected_outcome": "Discover engines and paths not covered by standard scanners.",
-        })
+        suggestions = suggest_techniques(
+            token_power=token_power,
+            is_authenticated=state.get("is_authenticated", False),
+            available_credentials=state.get("available_credentials", []),
+            findings=state.get("findings_summary", []),
+            accessible_paths=state.get("accessible_paths", []),
+            exclude_techniques=self._tried_techniques,
+            scorer=self._scorer,
+            max_suggestions=6,
+        )
 
-        # Review findings for overlooked angles
-        branches.append({
-            "tool": "get_findings",
-            "reason": "Review all accumulated findings — there might be overlooked attack angles.",
-            "params": {},
-            "risk": "stealth",
-            "phase": "report",
-            "expected_outcome": "Identify missed opportunities or patterns in findings.",
-        })
+        branches: list[dict] = []
+        for tech, score in suggestions:
+            if tech.technique_id in self._tried_techniques:
+                continue
+            self._tried_techniques.add(tech.technique_id)
+
+            branches.append({
+                "tool": tech.tool,
+                "reason": f"[{tech.technique_id}] {tech.name}: {tech.description}",
+                "params": dict(tech.params_template),
+                "risk": {1: "stealth", 2: "stealth", 3: "balanced",
+                         4: "aggressive", 5: "aggressive"}.get(tech.stealth_cost, "balanced"),
+                "phase": tech.phase.value,
+                "expected_outcome": f"KB score {score:.1f} | "
+                    + (tech.success_indicators[0] if tech.success_indicators else "discover assets"),
+            })
 
         return {
-            "reasoning": f"LLM unavailable — generated {len(branches)} context-aware fallback paths based on available tokens and credentials.",
+            "reasoning": (
+                f"LLM unavailable — technique KB generated {len(branches)} "
+                f"context-aware fallback paths (token_power={token_power.value}, "
+                f"auth={state.get('is_authenticated')}, "
+                f"creds={len(state.get('available_credentials', []))})"
+            ),
             "branches": branches,
         }
 

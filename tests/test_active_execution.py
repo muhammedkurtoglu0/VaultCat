@@ -2,9 +2,9 @@ import pytest
 
 from active_execution.context import ExecutionContext
 from active_execution.engine import ActiveExecutionEngine
-from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
-from active_execution.modules.secret_exfiltration import SecretExfiltrationModule
-from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
+from active_execution.modules.token.privilege_escalation import PrivilegeEscalationModule
+from active_execution.modules.secrets.secret_exfiltration import SecretExfiltrationModule
+from active_execution.modules.database.database_credential_harvest import DatabaseCredentialHarvestModule
 from active_execution.registry import ActiveExecutionRegistry, RiskLevel, risk_level_allowed
 
 
@@ -470,14 +470,14 @@ EXPECTED_DOMAINS = {
 
 def _register_sample_modules(registry: ActiveExecutionRegistry):
     """Register one module per domain for testing."""
-    from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
-    from active_execution.modules.secret_exfiltration import SecretExfiltrationModule
-    from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
-    from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
-    from active_execution.modules.persistence import PersistenceModule
-    from active_execution.modules.vault_seal_manipulation import SealStatusModule
-    from active_execution.modules.pivot_engine import PivotEngineModule
-    from active_execution.modules.cve_scanner import CVEScannerModule
+    from active_execution.modules.token.privilege_escalation import PrivilegeEscalationModule
+    from active_execution.modules.secrets.secret_exfiltration import SecretExfiltrationModule
+    from active_execution.modules.database.database_credential_harvest import DatabaseCredentialHarvestModule
+    from active_execution.modules.cloud.cloud_key_exfiltration import CloudKeyExfiltrationModule
+    from active_execution.modules.persistence.persistence import PersistenceModule
+    from active_execution.modules.seal.vault_seal_manipulation import SealStatusModule
+    from active_execution.modules.pivot.pivot_engine import PivotEngineModule
+    from active_execution.modules.general.cve_scanner import CVEScannerModule
 
     registry.register(PrivilegeEscalationModule())
     registry.register(SecretExfiltrationModule())
@@ -508,7 +508,7 @@ class TestDomainField:
 
     def test_domain_is_accessible_as_attribute(self):
         """domain must be a plain str attribute on the module instance."""
-        from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+        from active_execution.modules.token.privilege_escalation import PrivilegeEscalationModule
         m = PrivilegeEscalationModule()
         assert isinstance(m.domain, str)
         assert m.domain == "token"
@@ -600,7 +600,7 @@ class TestDomainsSet:
 
     def test_single_module_domain(self):
         r = ActiveExecutionRegistry()
-        from active_execution.modules.persistence import PersistenceModule
+        from active_execution.modules.persistence.persistence import PersistenceModule
         r.register(PersistenceModule())
         assert r.domains() == {"persistence"}
 
@@ -609,22 +609,22 @@ class TestDomainBackwardCompat:
     """Verify domain addition does not break existing module attributes."""
 
     def test_module_id_unchanged(self):
-        from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+        from active_execution.modules.token.privilege_escalation import PrivilegeEscalationModule
         m = PrivilegeEscalationModule()
         assert m.module_id == "privilege_escalation.token_abuse"
 
     def test_risk_level_unchanged(self):
-        from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
+        from active_execution.modules.token.privilege_escalation import PrivilegeEscalationModule
         m = PrivilegeEscalationModule()
         assert m.risk_level == RiskLevel.STATE_CHANGING
 
     def test_title_unchanged(self):
-        from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
+        from active_execution.modules.database.database_credential_harvest import DatabaseCredentialHarvestModule
         m = DatabaseCredentialHarvestModule()
         assert "Database Credentials Harvest" in m.title
 
     def test_default_enabled_unchanged(self):
-        from active_execution.modules.vault_seal_manipulation import SealStatusModule
+        from active_execution.modules.seal.vault_seal_manipulation import SealStatusModule
         m = SealStatusModule()
         assert m.default_enabled is True
 
@@ -638,17 +638,17 @@ class TestTransitEngineExploit:
     """Tests for TransitEngineExploitModule."""
 
     def test_skips_without_token(self):
-        from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
+        from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
         context = ExecutionContext(vault_addr="https://vault.test/")
         assert not TransitEngineExploitModule().can_run(context)
 
     def test_skips_without_vault_addr(self):
-        from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
+        from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
         context = ExecutionContext(vault_addr="", token="hvs.test")
         assert not TransitEngineExploitModule().can_run(context)
 
     def test_audit_discovers_keys(self, monkeypatch):
-        from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
+        from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -677,7 +677,7 @@ class TestTransitEngineExploit:
                 })
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.transit_engine_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.transit_engine_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = TransitEngineExploitModule().execute(context, {"mode": "audit"})
@@ -687,7 +687,7 @@ class TestTransitEngineExploit:
         assert len(result.evidence["mounts_found"]) == 1
 
     def test_finds_exportable_keys(self, monkeypatch):
-        from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
+        from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -705,7 +705,7 @@ class TestTransitEngineExploit:
                 })
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.transit_engine_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.transit_engine_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = TransitEngineExploitModule().execute(context, {"mode": "audit"})
@@ -715,7 +715,7 @@ class TestTransitEngineExploit:
         assert any("CRITICAL" in str(f.get("severity")) for f in context.findings if "Exportable" in str(f.get("title")))
 
     def test_operate_encrypt_poc(self, monkeypatch):
-        from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
+        from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -734,7 +734,7 @@ class TestTransitEngineExploit:
                 })
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.transit_engine_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.transit_engine_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = TransitEngineExploitModule().execute(context, {"mode": "operate"})
@@ -745,7 +745,7 @@ class TestTransitEngineExploit:
         assert any(op["op"] == "decrypt" and op["status"] == "success" for op in ops)
 
     def test_detects_convergent_encryption(self, monkeypatch):
-        from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
+        from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -763,7 +763,7 @@ class TestTransitEngineExploit:
                 })
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.transit_engine_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.transit_engine_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = TransitEngineExploitModule().execute(context, {"mode": "audit"})
@@ -781,7 +781,7 @@ class TestAgentSidecarAttack:
     """Tests for AgentSidecarAttackModule."""
 
     def test_discovers_hcl_configs(self, monkeypatch, tmp_path):
-        from active_execution.modules.agent_sidecar_attack import AgentSidecarAttackModule
+        from active_execution.modules.general.agent_sidecar_attack import AgentSidecarAttackModule
 
         # Create a mock agent config file
         agent_dir = tmp_path / "vault-agent"
@@ -813,7 +813,7 @@ auto_auth {
         assert any("approle" in str(m).lower() for m in result.evidence.get("auto_auth_methods", []))
 
     def test_detects_exit_after_auth(self, tmp_path):
-        from active_execution.modules.agent_sidecar_attack import AgentSidecarAttackModule
+        from active_execution.modules.general.agent_sidecar_attack import AgentSidecarAttackModule
 
         agent_dir = tmp_path / "vault-agent2"
         agent_dir.mkdir()
@@ -841,7 +841,7 @@ auto_auth {
         )
 
     def test_detects_env_token(self, monkeypatch):
-        from active_execution.modules.agent_sidecar_attack import AgentSidecarAttackModule
+        from active_execution.modules.general.agent_sidecar_attack import AgentSidecarAttackModule
 
         monkeypatch.setenv("VAULT_TOKEN", "hvs.s3cr3tT0k3nFr0mEnv")
         monkeypatch.setenv("VAULT_ADDR", "https://vault.internal:8200")
@@ -854,7 +854,7 @@ auto_auth {
         assert any("HIGH" in str(f.get("severity")) for f in context.findings if "Environment" in str(f.get("title")))
 
     def test_reads_sink_token(self, tmp_path):
-        from active_execution.modules.agent_sidecar_attack import AgentSidecarAttackModule
+        from active_execution.modules.general.agent_sidecar_attack import AgentSidecarAttackModule
 
         agent_dir = tmp_path / "vault-agent3"
         agent_dir.mkdir()
@@ -894,12 +894,12 @@ class TestPKIEngineExploit:
     """Tests for PKIEngineExploitModule."""
 
     def test_skips_without_token(self):
-        from active_execution.modules.pki_engine_exploit import PKIEngineExploitModule
+        from active_execution.modules.secrets.pki_engine_exploit import PKIEngineExploitModule
         context = ExecutionContext(vault_addr="https://vault.test/")
         assert not PKIEngineExploitModule().can_run(context)
 
     def test_audit_downloads_ca(self, monkeypatch):
-        from active_execution.modules.pki_engine_exploit import PKIEngineExploitModule
+        from active_execution.modules.secrets.pki_engine_exploit import PKIEngineExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -914,7 +914,7 @@ class TestPKIEngineExploit:
                 return FakeResponse(payload={"data": {"issuing_certificates": "http://vault:8200/v1/pki/ca"}})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.pki_engine_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.pki_engine_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = PKIEngineExploitModule().execute(context, {"mode": "audit"})
@@ -923,7 +923,7 @@ class TestPKIEngineExploit:
         assert len(result.evidence.get("ca_certificates", [])) >= 1
 
     def test_deep_role_audit_allow_any_name(self, monkeypatch):
-        from active_execution.modules.pki_engine_exploit import PKIEngineExploitModule
+        from active_execution.modules.secrets.pki_engine_exploit import PKIEngineExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -949,7 +949,7 @@ class TestPKIEngineExploit:
                 return FakeResponse(payload={"data": {}})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.pki_engine_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.pki_engine_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = PKIEngineExploitModule().execute(context, {"mode": "audit"})
@@ -960,7 +960,7 @@ class TestPKIEngineExploit:
         assert any("allow_any_name" in str(f) for f in flags)
 
     def test_cert_issuance_poc(self, monkeypatch):
-        from active_execution.modules.pki_engine_exploit import PKIEngineExploitModule
+        from active_execution.modules.secrets.pki_engine_exploit import PKIEngineExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -985,7 +985,7 @@ class TestPKIEngineExploit:
                 return FakeResponse(payload={"data": {}})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.pki_engine_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.pki_engine_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = PKIEngineExploitModule().execute(
@@ -1005,7 +1005,7 @@ class TestKubernetesAuthExploit:
     """Tests for KubernetesAuthExploitModule."""
 
     def test_discovers_k8s_mounts(self, monkeypatch):
-        from active_execution.modules.kubernetes_auth_exploit import KubernetesAuthExploitModule
+        from active_execution.modules.token.kubernetes_auth_exploit import KubernetesAuthExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1027,7 +1027,7 @@ class TestKubernetesAuthExploit:
                 return FakeResponse(payload={"data": {"keys": []}})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.kubernetes_auth_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.kubernetes_auth_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = KubernetesAuthExploitModule().execute(context)
@@ -1036,7 +1036,7 @@ class TestKubernetesAuthExploit:
         assert len(result.evidence["mounts_found"]) == 2
 
     def test_decode_jwt(self, monkeypatch):
-        from active_execution.modules.kubernetes_auth_exploit import _decode_jwt_claims
+        from active_execution.modules.token.kubernetes_auth_exploit import _decode_jwt_claims
 
         # Construct a mock JWT: header.payload.signature
         import base64, json
@@ -1055,7 +1055,7 @@ class TestKubernetesAuthExploit:
         assert claims["kubernetes.io/serviceaccount/namespace"] == "default"
 
     def test_detects_issuer_validation_disabled(self, monkeypatch):
-        from active_execution.modules.kubernetes_auth_exploit import KubernetesAuthExploitModule
+        from active_execution.modules.token.kubernetes_auth_exploit import KubernetesAuthExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1072,7 +1072,7 @@ class TestKubernetesAuthExploit:
                 return FakeResponse(payload={"data": {"keys": []}})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.kubernetes_auth_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.kubernetes_auth_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = KubernetesAuthExploitModule().execute(context)
@@ -1085,7 +1085,7 @@ class TestKubernetesAuthExploit:
         assert "disable_local_ca_jwt" in flag_names
 
     def test_role_wildcard_detection(self, monkeypatch):
-        from active_execution.modules.kubernetes_auth_exploit import KubernetesAuthExploitModule
+        from active_execution.modules.token.kubernetes_auth_exploit import KubernetesAuthExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1104,7 +1104,7 @@ class TestKubernetesAuthExploit:
                 })
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.kubernetes_auth_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.kubernetes_auth_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = KubernetesAuthExploitModule().execute(context)
@@ -1195,7 +1195,7 @@ class TestJWTOIDCExploit:
     """Tests for JWTOIDCExploitModule."""
 
     def test_discovers_jwt_oidc_mounts(self, monkeypatch):
-        from active_execution.modules.jwt_oidc_exploit import JWTOIDCExploitModule
+        from active_execution.modules.token.jwt_oidc_exploit import JWTOIDCExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1209,7 +1209,7 @@ class TestJWTOIDCExploit:
                 return FakeResponse(payload={"data": {"keys": []}})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.jwt_oidc_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.jwt_oidc_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = JWTOIDCExploitModule().execute(context)
@@ -1218,7 +1218,7 @@ class TestJWTOIDCExploit:
         assert len(result.evidence["mounts_found"]) == 2
 
     def test_detects_wildcard_bound_issuer(self, monkeypatch):
-        from active_execution.modules.jwt_oidc_exploit import JWTOIDCExploitModule
+        from active_execution.modules.token.jwt_oidc_exploit import JWTOIDCExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1229,7 +1229,7 @@ class TestJWTOIDCExploit:
                 return FakeResponse(payload={"data": {"keys": []}})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.jwt_oidc_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.jwt_oidc_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = JWTOIDCExploitModule().execute(context)
@@ -1238,7 +1238,7 @@ class TestJWTOIDCExploit:
         assert any("Wildcard" in str(f.get("title")) for f in context.findings)
 
     def test_audit_role_no_bound_audiences(self, monkeypatch):
-        from active_execution.modules.jwt_oidc_exploit import JWTOIDCExploitModule
+        from active_execution.modules.token.jwt_oidc_exploit import JWTOIDCExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1255,7 +1255,7 @@ class TestJWTOIDCExploit:
                 }})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.jwt_oidc_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.jwt_oidc_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = JWTOIDCExploitModule().execute(context)
@@ -1273,7 +1273,7 @@ class TestRaftStorageExploit:
     """Tests for RaftStorageExploitModule."""
 
     def test_api_reads_raft_config(self, monkeypatch):
-        from active_execution.modules.raft_storage_exploit import RaftStorageExploitModule
+        from active_execution.modules.secrets.raft_storage_exploit import RaftStorageExploitModule
 
         def fake_request(method, url, headers=None, stream=None, timeout=None, verify=None, **kwargs):
             if "raft/configuration" in url:
@@ -1289,7 +1289,7 @@ class TestRaftStorageExploit:
                 return resp
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.raft_storage_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.secrets.raft_storage_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = RaftStorageExploitModule().execute(context, {"mode": "api"})
@@ -1298,7 +1298,7 @@ class TestRaftStorageExploit:
         assert result.evidence["api"]["cluster_nodes"] >= 1
 
     def test_filesystem_parses_raft_db(self, monkeypatch, tmp_path):
-        from active_execution.modules.raft_storage_exploit import RaftStorageExploitModule
+        from active_execution.modules.secrets.raft_storage_exploit import RaftStorageExploitModule
         import sqlite3
 
         # Create a mock raft.db
@@ -1334,7 +1334,7 @@ class TestAppRoleExploit:
     """Tests for AppRoleExploitModule."""
 
     def test_detects_bind_secret_id_disabled(self, monkeypatch):
-        from active_execution.modules.approle_exploit import AppRoleExploitModule
+        from active_execution.modules.token.approle_exploit import AppRoleExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1351,7 +1351,7 @@ class TestAppRoleExploit:
                 }})
             return FakeResponse(status_code=404)
 
-        monkeypatch.setattr("active_execution.modules.approle_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.approle_exploit.vault_request", fake_request)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = AppRoleExploitModule().execute(context, {"mode": "audit"})
@@ -1360,7 +1360,7 @@ class TestAppRoleExploit:
         assert any("bind_secret_id" in str(f.get("title")).lower() for f in context.findings)
 
     def test_cidr_bypass_attempt(self, monkeypatch):
-        from active_execution.modules.approle_exploit import AppRoleExploitModule
+        from active_execution.modules.token.approle_exploit import AppRoleExploitModule
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
             if "/v1/sys/mounts" in url:
@@ -1375,8 +1375,8 @@ class TestAppRoleExploit:
         def fake_post(url, json=None, headers=None, timeout=None, verify=None, **kwargs):
             return FakeResponse(status_code=401)
 
-        monkeypatch.setattr("active_execution.modules.approle_exploit.vault_request", fake_request)
-        monkeypatch.setattr("active_execution.modules.approle_exploit.requests.post", fake_post)
+        monkeypatch.setattr("active_execution.modules.token.approle_exploit.vault_request", fake_request)
+        monkeypatch.setattr("active_execution.modules.token.approle_exploit.requests.post", fake_post)
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = AppRoleExploitModule().execute(
@@ -1396,7 +1396,7 @@ class TestAuditBackdoorExtended:
     """Tests for extended audit backdoor capabilities."""
 
     def test_disables_audit_devices(self, monkeypatch):
-        from active_execution.modules.audit_backdoor import AuditBackdoorModule
+        from active_execution.modules.persistence.audit_backdoor import AuditBackdoorModule
         import core.tls_config
 
         def fake_request(method, url, headers=None, json=None, timeout=None, verify=None, **kwargs):
@@ -1419,6 +1419,6 @@ class TestAuditBackdoorExtended:
         assert "Audit Logs Disabled" in str(context.findings)
 
     def test_can_run_requires_token(self):
-        from active_execution.modules.audit_backdoor import AuditBackdoorModule
+        from active_execution.modules.persistence.audit_backdoor import AuditBackdoorModule
         context = ExecutionContext(vault_addr="https://vault.test/")
         assert not AuditBackdoorModule().can_run(context)

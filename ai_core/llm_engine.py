@@ -369,8 +369,25 @@ class LLMClient:
                 f"Provider '{self.provider}' returned {status_code}: {body[:300]}"
             )
         if status_code in (401, 402, 403):
+            env_hint = {
+                "anthropic": "ANTHROPIC_API_KEY",
+                "openai": "OPENAI_API_KEY",
+                "deepseek": "DEEPSEEK_API_KEY",
+                "kimi": "KIMI_API_KEY",
+                "cursor": "CURSOR_API_KEY",
+            }
+            env_var = env_hint.get(self.provider, "")
+            hint = ""
+            if env_var:
+                hint = (
+                    f" | Set {env_var} environment variable, "
+                    f"or in chat: 'set api-key sk-...'"
+                )
+            elif self.provider == "ollama":
+                hint = " | Is Ollama running? Try: ollama serve"
             raise FatalError(
-                f"Provider '{self.provider}' returned {status_code} (auth/payment): {body[:300]}"
+                f"Provider '{self.provider}' returned {status_code} (auth/payment): "
+                f"{body[:300]}{hint}"
             )
         raise FatalError(
             f"Provider '{self.provider}' returned {status_code}: {body[:300]}"

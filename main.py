@@ -8,6 +8,8 @@ Delegates to the Typer CLI in ``cli.py``.  Backward-compatible shim:
 from __future__ import annotations
 
 import sys
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ---------------------------------------------------------------------------
 # Backward-compatible shim: old-style default-command invocations

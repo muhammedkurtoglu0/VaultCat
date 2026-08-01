@@ -337,7 +337,7 @@ class AutoPentestRunner:
         # Add token-specific branches
         for t in state["tokens"]:
             engine.add_branch(root, "run_capability_audit",
-                f"Audit token: {t.get('power_level', 'unknown')} ({t.get('token', '')[:12]}...)",
+                f"Audit token: {t.get('power_level', 'unknown')} ({t.get('token', '')})",
                 risk=BranchRisk.AGGRESSIVE, phase="audit",
                 expected_outcome="Map token capabilities and find escalation paths")
 

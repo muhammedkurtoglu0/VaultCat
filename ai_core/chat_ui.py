@@ -72,6 +72,12 @@ class ChatUI:
             auto_pilot=self.auto_pilot,
         )
         self.agent.set_tool_executor(self._execute_tool)
+
+        # Shared tool executor (token injection, MCP routing, credential parse)
+        from ai_core.tool_executor import ToolExecutor
+        self.tool_executor = ToolExecutor(vault_addr, token, self.session, self.memory)
+        self.tool_executor.on_discovery = self._on_credential_discovery
+
         self.running = True
 
         # Auto mode config
@@ -99,14 +105,16 @@ class ChatUI:
         if not self._provider_explicit or not self._model_explicit:
             self._select_provider_and_model()
 
+        # ── Verify LLM is actually usable before entering chat loop ─────
+        self._verify_llm_ready()
+
         print("\n" + "=" * 60)
         print("  VAULT AI PENTEST AGENT")
         print("=" * 60)
         print(f"\n  Provider : {self.provider}")
         print(f"  Model    : {self.agent.llm.model}")
         print(f"  Target   : {self.vault_addr or 'set target <url>'}")
-        token_display = self.token[:12] + '...' if self.token and len(self.token) > 12 else self.token or 'none'
-        print(f"  Token    : {token_display}")
+        print(f"  Token    : {self.token or 'none'}")
         print(f"  Tools    : {len(ALL_TOOLS)} available")
         print("\n  The agent decides WHAT to do, WHEN, and WHY.")
         print("  Just tell it your objective — it handles everything.")
@@ -180,8 +188,9 @@ class ChatUI:
                     self._start_orchestrator(use_llm=True)
                     continue
 
-                if cmd in ("remediate", "fix", "çözüm", "cozum"):
-                    self._show_remediation(user_input[4:].strip())
+                if cmd in ("remediate", "fix", "çözüm", "cozum") or cmd.startswith(("fix ", "remediate ", "çözüm ", "cozum ")):
+                    parts = user_input.split(maxsplit=1)
+                    self._show_remediation(parts[1].strip() if len(parts) > 1 else "")
                     continue
 
                 if cmd.startswith("set "):
@@ -331,6 +340,141 @@ class ChatUI:
         self._model_explicit = True
         print(f"\n  ✅ {get_provider_name(self.provider)} / {self.model} seçildi.\n")
 
+    # ── LLM readiness check ───────────────────────────────────────────────
+
+    def _verify_llm_ready(self):
+        """Check that the selected LLM provider is actually usable.
+
+        If the provider needs an API key and none is set, prompt the user
+        to either enter one via ``set api-key`` or switch to another provider.
+        Loops until the LLM is ready or the user explicitly chooses to exit.
+        """
+        import os
+
+        while True:
+            health = self.agent.llm.health()
+
+            # ── OK: no issues ───────────────────────────────────────────
+            if health.get("reachable") and health.get("has_api_key"):
+                return  # all good, proceed silently
+
+            # ── Ollama: not running ──────────────────────────────────────
+            if self.provider == "ollama" and not health.get("reachable"):
+                print(f"\n{'─' * 54}")
+                print("  ⚠️  OLLAMA IS NOT RUNNING")
+                print(f"{'─' * 54}")
+                print(f"  Ollama is selected but not reachable at "
+                      f"{self.agent.llm.base_url}.")
+                print(f"  Start it with: ollama serve")
+                print(f"  Then pull a model: ollama pull llama3.2")
+                print()
+                print("  Options:")
+                print("    [Enter]  Retry connection")
+                print("    [number] Switch to a different provider:")
+                alt_providers = list_providers()
+                for i, p in enumerate(alt_providers, 1):
+                    if p["id"] == "ollama":
+                        continue
+                    pid = p["id"]
+                    alt_env = {
+                        "anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+                        "deepseek": "DEEPSEEK_API_KEY", "kimi": "KIMI_API_KEY",
+                        "cursor": "CURSOR_API_KEY",
+                    }.get(pid, "")
+                    alt_ready = bool(alt_env and os.environ.get(alt_env, "").strip())
+                    icon = " ✅" if alt_ready else ""
+                    print(f"      [{i}] {p['name']}{icon}")
+                print(f"    [q]      Quit")
+                choice = input("  Choice [Enter=retry]: ").strip().lower()
+                if choice == "q":
+                    print("  Exiting...")
+                    sys.exit(1)
+                if choice and choice.isdigit():
+                    self._switch_provider_by_number(int(choice))
+                continue
+
+            # ── Cloud provider: missing API key ──────────────────────────
+            env_map = {
+                "anthropic": "ANTHROPIC_API_KEY",
+                "openai": "OPENAI_API_KEY",
+                "deepseek": "DEEPSEEK_API_KEY",
+                "kimi": "KIMI_API_KEY",
+                "cursor": "CURSOR_API_KEY",
+            }
+            env_var = env_map.get(self.provider, "")
+            provider_name = get_provider_name(self.provider)
+
+            print(f"\n{'─' * 54}")
+            print(f"  🔑 API KEY REQUIRED — {provider_name}")
+            print(f"{'─' * 54}")
+            if env_var and not os.environ.get(env_var, "").strip():
+                print(f"  No API key found for {provider_name}.")
+                print(f"  Set the {env_var} environment variable, or")
+                print(f"  enter it below to use it this session.")
+                print()
+            print(f"  Get your key:")
+            if self.provider == "anthropic":
+                print(f"    https://console.anthropic.com/")
+            elif self.provider == "openai":
+                print(f"    https://platform.openai.com/api-keys")
+            elif self.provider == "deepseek":
+                print(f"    https://platform.deepseek.com/api_keys")
+            elif self.provider == "kimi":
+                print(f"    https://platform.moonshot.ai/")
+            print()
+            print(f"  Options:")
+            print(f"    [api-key]  Paste your {env_var} now")
+            print(f"    [number]   Switch to a different provider:")
+            # Show available alternatives (only those ready to use)
+            alt_providers = list_providers()
+            for i, p in enumerate(alt_providers, 1):
+                if p["id"] == self.provider:
+                    continue  # skip current
+                pid = p["id"]
+                alt_env = env_map.get(pid, "")
+                alt_ready = bool(alt_env and os.environ.get(alt_env, "").strip()) or pid == "ollama"
+                icon = " ✅" if alt_ready else ""
+                print(f"      [{i}] {p['name']}{icon}")
+            print(f"    [q]        Quit")
+            choice = input("  Choice: ").strip()
+
+            if choice.lower() == "q":
+                print("  Exiting...")
+                sys.exit(1)
+
+            if choice and choice.isdigit():
+                self._switch_provider_by_number(int(choice))
+                continue
+
+            if choice and len(choice) > 10:
+                # Treat as API key
+                os.environ[env_var] = choice
+                self.agent.llm = LLMClient(provider=self.provider, model=self.model)
+                print(f"  ✅ Key set: {choice}")
+                # Re-check — loop will verify on next iteration
+                continue
+
+            if not choice:
+                # Empty = maybe they set the env var externally
+                self.agent.llm = LLMClient(provider=self.provider, model=self.model)
+                continue
+
+            print(f"  ❓ Unknown option. Enter an API key, provider number, or 'q'.")
+
+    def _switch_provider_by_number(self, idx: int):
+        """Switch to a different provider by menu number. Prints available list."""
+        providers = list_providers()
+        if 1 <= idx <= len(providers):
+            self.provider = providers[idx - 1]["id"]
+            self.model = get_default_model(self.provider)
+            self.agent.llm = LLMClient(provider=self.provider, model=self.model)
+            print(f"  ✅ Switched to {get_provider_name(self.provider)} / {self.model}")
+        else:
+            print(f"  ❌ Invalid provider number: {idx}")
+            print(f"  Available providers:")
+            for i, p in enumerate(providers, 1):
+                print(f"    [{i}] {p['name']}")
+
     # ── auto mode ─────────────────────────────────────────────────────────
 
     def _start_auto(self):
@@ -392,8 +536,7 @@ class ChatUI:
         print(f"\n  Provider : {self.provider}")
         print(f"  Model    : {self.model}")
         print(f"  Target   : {self.vault_addr}")
-        token_display = self.token[:12] + '...' if self.token and len(self.token) > 12 else self.token or 'none'
-        print(f"  Token    : {token_display}")
+        print(f"  Token    : {self.token or 'none'}")
         print(f"  Max Risk : {self.auto_max_risk}")
         print(f"  Max Turns: {self.auto_max_turns}")
         print(f"  PDF      : {self.pdf_report or 'auto-generated (per-iteration timestamped)'}")
@@ -576,123 +719,18 @@ class ChatUI:
     # ── tool executor ───────────────────────────────────────────────────
 
     async def _execute_tool(self, tool_name: str, params: dict) -> str:
-        """Execute a tool by calling the corresponding MCP function or module.
-
-        This is the bridge between the agent's decisions and real code execution.
-        Before executing, the best available token is injected. After executing,
-        results are scanned for newly discovered credentials.
-        """
-        # ── Inject vault_addr ──────────────────────────────────────────
-        if "vault_addr" not in params and self.vault_addr:
-            params["vault_addr"] = self.vault_addr
-
-        # ── Dynamic token injection ─────────────────────────────────────
-        # Always prefer the best available token from the session.
-        best_token = self.session.get_best_token_value()
-        if best_token:
-            if "token" not in params or not params["token"]:
-                params["token"] = best_token
-                # If we auto-escalated, notify on first use of a new token
-                current = self.token
-                if current and best_token != current:
-                    pass  # will be visible in the tool call output
-            self.token = best_token  # sync agent's view
-        elif "token" not in params and self.token:
-            params["token"] = self.token
-
-        try:
-            result = await self._call_mcp_tool(tool_name, params)
-
-            # ── Parse result for new credentials ───────────────────────
-            discoveries = self.session.parse_tool_result(tool_name, result)
-            if discoveries:
-                for msg in discoveries:
-                    if "*** ESCALATED ***" in msg or "ESCALATED" in msg:
-                        print(f"\n  *** PRIVILEGE ESCALATION: new token discovered! ***")
-
-            # Record execution
-            self.memory.add_execution(tool_name, "success", {"params": params})
-            return result
-        except Exception as e:
-            self.memory.add_execution(tool_name, "error", {"error": str(e)})
-            return json.dumps({"status": "error", "message": str(e)},
-                              ensure_ascii=False)
+        """Delegate to the shared ToolExecutor."""
+        return await self.tool_executor.execute_tool(tool_name, params)
 
     async def _call_mcp_tool(self, tool_name: str, params: dict) -> str:
-        """Route a tool call to the actual MCP tool implementation."""
-        from ai_core.mcp_server import (
-            get_findings,
-            get_risk_score,
-            list_active_modules,
-            refresh_nvd_cache,
-            web_search,
-            run_active_module,
-            run_auth_config_audit,
-            run_capability_audit,
-            run_cloud_key_exfiltration,
-            run_database_credential_harvest,
-            run_env_scan,
-            run_hijack_scan,
-            run_kv_enumeration,
-            read_single_policy,
-            run_raw_vault_request,
-            run_policy_auditor,
-            run_priv_esc_scan,
-            run_privilege_escalation,
-            run_secret_exfiltration,
-            run_ttl_audit,
-            run_unauthenticated_recon,
-            run_compliance_check,
-            run_network_probe,
-            export_full_report,
-            send_notification,
-            run_audit_log_scan,
-            run_container_scan,
-            get_threat_intel,
-            generate_diff_report,
-        )
+        """Delegate to the shared ToolExecutor."""
+        return await self.tool_executor.call_mcp_tool(tool_name, params)
 
-        tool_map = {
-            "run_unauthenticated_recon": run_unauthenticated_recon,
-            "run_hijack_scan": run_hijack_scan,
-            "run_env_scan": run_env_scan,
-            "run_capability_audit": run_capability_audit,
-            "run_priv_esc_scan": run_priv_esc_scan,
-            "run_kv_enumeration": run_kv_enumeration,
-            "run_ttl_audit": run_ttl_audit,
-            "run_auth_config_audit": run_auth_config_audit,
-            "read_single_policy": read_single_policy,
-            "run_raw_vault_request": run_raw_vault_request,
-            "run_policy_auditor": run_policy_auditor,
-            "run_privilege_escalation": run_privilege_escalation,
-            "run_secret_exfiltration": run_secret_exfiltration,
-            "run_database_credential_harvest": run_database_credential_harvest,
-            "run_cloud_key_exfiltration": run_cloud_key_exfiltration,
-            "list_active_modules": list_active_modules,
-            "run_active_module": run_active_module,
-            "get_findings": get_findings,
-            "get_risk_score": get_risk_score,
-            "refresh_nvd_cache": refresh_nvd_cache,
-            "web_search": web_search,
-            # Security MCP tools
-            "run_compliance_check": run_compliance_check,
-            "run_network_probe": run_network_probe,
-            "export_full_report": export_full_report,
-            "send_notification": send_notification,
-            "run_audit_log_scan": run_audit_log_scan,
-            "run_container_scan": run_container_scan,
-            "get_threat_intel": get_threat_intel,
-            "generate_diff_report": generate_diff_report,
-        }
-
-        handler = tool_map.get(tool_name)
-        if not handler:
-            return json.dumps({"status": "error",
-                               "message": f"Unknown tool: {tool_name}"},
-                              ensure_ascii=False)
-
-        # Call with appropriate kwargs
-        return await _invoke_mcp_handler(handler, params)
+    def _on_credential_discovery(self, discoveries: list[str]) -> None:
+        """Callback from ToolExecutor — print credential alerts to terminal."""
+        for msg in discoveries:
+            if "*** ESCALATED ***" in msg or "ESCALATED" in msg:
+                print(f"\n  *** PRIVILEGE ESCALATION: new token discovered! ***")
 
     # ── UI helpers ──────────────────────────────────────────────────────
 
@@ -713,6 +751,8 @@ class ChatUI:
     fix         -> Get remediation advice for all findings
     set target  -> Set the Vault target URL
     set token   -> Set a Vault token
+    set api-key -> Set the API key for the current provider
+    set model   -> Change model (interactive pick if no value)
     exit        -> Quit
 
   EXAMPLES:
@@ -764,12 +804,19 @@ class ChatUI:
                 print(f"     {desc[:120]}")
 
     def _show_remediation(self, filter_text: str = ""):
-        """Feed current findings to the agent and ask for remediation advice.
+        """Hybrid remediation: deterministic rule engine first, LLM for the rest.
 
-        The agent responds with specific, actionable fix steps for each
-        finding.  If *filter_text* is provided (e.g. a finding number or
-        keyword), the agent focuses on only those findings.
+        1. ``core.remediation_engine`` matches findings against ~60 built-in
+           rules (root cause + exact Vault CLI commands) — instant, no tokens.
+        2. Findings that only hit the generic catch-all rule are sent to the
+           LLM for deeper analysis.  If every finding matched a specific rule,
+           the LLM call is skipped entirely.
         """
+        from core.remediation_engine import (
+            generate_priority_action_plan,
+            get_remediation,
+            group_by_category,
+        )
         from core.report import findings as global_findings
 
         findings = self.memory.findings or global_findings
@@ -778,9 +825,64 @@ class ChatUI:
             print("  Run some scans first (or try 'auto' for a full assessment).")
             return
 
-        # Build a compact findings summary for the agent
+        # Apply optional user filter (finding number or keyword)
+        if filter_text:
+            if filter_text.isdigit():
+                idx = int(filter_text) - 1
+                findings = [findings[idx]] if 0 <= idx < len(findings) else []
+            else:
+                kw = filter_text.lower()
+                findings = [
+                    f for f in findings
+                    if kw in f.get("title", "").lower()
+                    or kw in f.get("description", "").lower()
+                ]
+            if not findings:
+                print(f"\n  No findings match '{filter_text}'.")
+                return
+
+        # ── 1. Deterministic rule-based advice ───────────────────────────
+        advice_list = get_remediation(findings)
+        grouped = group_by_category(advice_list)
+
+        print("\n" + "=" * 60)
+        print("  REMEDIATION — RULE-BASED ANALYSIS")
+        print("=" * 60)
+        for cat in sorted(grouped):
+            print(f"\n  ▶ {cat}")
+            for a in grouped[cat]:
+                print(f"\n  [P{a.priority}] {a.title}")
+                print(f"    Root cause: {a.root_cause[:200]}")
+                print("    Fix:")
+                for step in a.fix_steps[:8]:
+                    print(f"      {step}")
+                if a.references:
+                    print(f"    Ref: {a.references[0]}")
+
+        print("\n  ── PRIORITY ACTION PLAN ──")
+        for line in generate_priority_action_plan(advice_list):
+            print(f"  {line}")
+        print("=" * 60)
+
+        # ── 2. LLM only for findings that hit the generic catch-all ──────
+        # The catch-all rule always starts with this fixed first fix-step.
+        generic_titles = {
+            a.title for a in advice_list
+            if a.fix_steps
+            and a.fix_steps[0].startswith("# Review this finding in the context")
+        }
+        unmatched = [f for f in findings if f.get("title", "") in generic_titles]
+
+        if not unmatched:
+            print(f"\n  ✅ All {len(findings)} findings matched specific remediation rules.")
+            print("  No LLM analysis needed — fixes above are exact and actionable.")
+            return
+
+        print(f"\n  {len(unmatched)}/{len(findings)} findings have no specific rule —")
+        print("  asking the agent for deeper analysis of those...\n")
+
         lines = []
-        for i, f in enumerate(findings, 1):
+        for i, f in enumerate(unmatched, 1):
             sev = f.get("severity", "INFO")
             title = f.get("title", "")
             desc = f.get("description", "")[:200]
@@ -793,34 +895,24 @@ class ChatUI:
 
         findings_text = "\n".join(lines)
 
-        focus = ""
-        if filter_text:
-            focus = (
-                f"\nCRITICAL: The user specifically asked about: '{filter_text}'. "
-                f"Focus your analysis on findings matching this. "
-                f"Still mention other CRITICAL/HIGH findings briefly if they are related."
-            )
-
         prompt = (
-            f"I need REMEDIATION ADVICE for the following Vault pentest findings. "
+            f"I need REMEDIATION ADVICE for the following Vault pentest findings "
+            f"(the rule engine had no specific fix for these). "
             f"Target: {self.vault_addr or 'unknown'}. "
             f"Token level: {'root' if self.token else 'none'}. "
             f"\n\n"
-            f"=== FINDINGS ({len(findings)} total) ===\n{findings_text}\n=== END ===\n"
-            f"{focus}\n"
+            f"=== UNMATCHED FINDINGS ({len(unmatched)} total) ===\n{findings_text}\n=== END ===\n"
             f"IMPORTANT — your task:\n"
             f"1. Analyze the findings and identify the ROOT CAUSE patterns (not one-by-one, but grouped by type).\n"
             f"2. For each root cause, give a CONCRETE fix with exact Vault CLI commands or API calls.\n"
             f"3. Prioritize: CRITICAL/HIGH first, then MEDIUM, then LOW.\n"
             f"4. Use TABLES to present fixes clearly. Format:\n"
             f"   | # | Finding | Severity | Root Cause | Fix (CLI command) |\n"
-            f"5. After the table, give a PRIORITY ACTION PLAN (step 1, step 2, step 3 — what to do first).\n"
-            f"6. Be specific — no vague advice like 'review policies'. Give exact commands.\n"
-            f"7. If findings show leaked credentials, explain HOW to rotate them.\n"
+            f"5. Be specific — no vague advice like 'review policies'. Give exact commands.\n"
+            f"6. If findings show leaked credentials, explain HOW to rotate them.\n"
             f"Respond in the user's language (Turkish if they speak Turkish)."
         )
 
-        print(f"\n  Analyzing {len(findings)} findings for remediation...\n")
         asyncio.run(self._run_agent(prompt))
 
     def _show_mutation(self):
@@ -1171,6 +1263,7 @@ class ChatUI:
             print("❌ Usage: set <param> <value>")
             print("   set target http://vault:8200")
             print("   set token hvs.abc123...")
+            print("   set api-key sk-ant-...  (API key for current provider)")
             print("   set model <name>     (no value = interactive pick)")
             print("   set provider <name>  (shows model list after)")
             print("   set tls-verify off")
@@ -1179,7 +1272,28 @@ class ChatUI:
         key = parts[0].strip()
         value = parts[1].strip() if len(parts) > 1 else ""
 
-        if key == "target":
+        if key in ("api-key", "apikey", "api_key"):
+            # Allow user to set API key interactively for current provider
+            provider_env = {
+                "anthropic": "ANTHROPIC_API_KEY",
+                "openai": "OPENAI_API_KEY",
+                "deepseek": "DEEPSEEK_API_KEY",
+                "kimi": "KIMI_API_KEY",
+                "cursor": "CURSOR_API_KEY",
+            }
+            env_var = provider_env.get(self.provider, "")
+            if env_var:
+                import os
+                os.environ[env_var] = value
+                # Reinitialize LLM client with new key
+                self.agent.llm = LLMClient(provider=self.provider, model=self.model)
+                print(f"✅ {env_var} set: {value}")
+                if not self.agent.llm.api_key:
+                    print(f"⚠️  Key was set but LLM client could not read it back.")
+            else:
+                print(f"ℹ️  Provider '{self.provider}' does not need an API key "
+                      f"(or it's managed differently).")
+        elif key == "target":
             self.vault_addr = value
             self.agent.vault_addr = value
             self.memory.set_context("vault_addr", value)
@@ -1193,7 +1307,7 @@ class ChatUI:
             self.agent.token = value
             self.memory.set_context("token", value)
             self.session.add_user_token(value)
-            print(f"[+] Token registered in session: {value[:12] if len(value) > 12 else value}...")
+            print(f"[+] Token registered in session: {value}")
         elif key == "model":
             if not value:
                 # Interactive model selection for current provider
@@ -1224,7 +1338,7 @@ class ChatUI:
                 print(f"Unknown tls-verify value: {value}. Use 'on' or 'off'.")
         else:
             print(f"❌ Unknown parameter: {key}")
-            print("   Valid: target, token, model, provider")
+            print("   Valid: target, token, api-key, model, provider, tls-verify")
 
     def _pick_model_for_provider(self, provider: str):
         """Show model selection menu for a specific provider."""
@@ -1272,17 +1386,9 @@ class ChatUI:
 
 
 async def _invoke_mcp_handler(handler, params: dict) -> str:
-    """Invoke an MCP handler with the given params, filtering to valid kwargs."""
-    import inspect
-
-    sig = inspect.signature(handler)
-    valid_keys = set(sig.parameters.keys())
-    filtered = {k: v for k, v in params.items() if k in valid_keys}
-
-    result = handler(**filtered)
-    if inspect.isawaitable(result):
-        result = await result
-    return result if isinstance(result, str) else str(result)
+    """Backward-compat shim — delegates to tool_executor."""
+    from ai_core.tool_executor import invoke_mcp_handler
+    return await invoke_mcp_handler(handler, params)
 
 
 # ── entry point (module-level) ──────────────────────────────────────────────

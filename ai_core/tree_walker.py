@@ -1,4 +1,4 @@
-"""Attack-tree walker — autonomous branch execution with recursive escalation.
+"""Attack-tree walker — autonomous branch execution with dynamic graph updates.
 
 Walks an :class:`AttackTreeNode` tree in risk-priority order, executes
 each branch's tool, and dynamically reacts:
@@ -8,6 +8,8 @@ each branch's tool, and dynamically reacts:
     * **Failure** → track in ``failed_attempts`` (max 2 per branch),
       skip to the next sibling, or ask the mutation engine for new branches.
     * **Dead-end** → backtrack to the nearest unexplored sibling.
+    * **Discovery** → when new tokens/creds/paths are found, dynamically
+      inject new proactive branches into the tree (no re-walk needed).
 
 Supports risk profiles: ``aggressive`` (try aggressive first),
 ``balanced`` (try balanced first), ``stealth`` (stealth only, skip aggressive).
@@ -22,6 +24,27 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable
+
+
+# ---------------------------------------------------------------------------
+# Discovery event — for dynamic graph updates
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DiscoveryEvent:
+    """Records when the walker discovers new assets that should trigger re-planning."""
+
+    event_type: str  # "new_token", "new_credential", "new_path", "escalation", "db_connection"
+    detail: str
+    source_tool: str
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    triggered_replan: bool = False
+
+    @property
+    def is_significant(self) -> bool:
+        """Significant discoveries should trigger dynamic branch injection."""
+        return self.event_type in ("new_token", "escalation", "db_connection")
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +105,8 @@ class WalkResult:
     dead_ends: int
     final_token_power: str
     steps: list[WalkStep] = field(default_factory=list)
+    discoveries: list[DiscoveryEvent] = field(default_factory=list)
+    dynamic_updates: int = 0          # how many times the graph was extended
     started_at: str = ""
     finished_at: str = ""
 
@@ -144,6 +169,10 @@ class FailedAttempts:
 class TreeWalker:
     """Autonomously walks an attack tree, executing branches and reacting.
 
+    Now with dynamic graph updates: when new tokens, credentials, or paths
+    are discovered mid-walk, the tree is dynamically extended with new
+    proactive branches — no need to abort and restart.
+
     Parameters
     ----------
     tool_executor:
@@ -154,6 +183,8 @@ class TreeWalker:
         How many recursive escalation levels to allow (default 5).
     max_total_steps:
         Hard cap on total tool executions across all recursion levels.
+    enable_dynamic_updates:
+        Whether to inject new branches when discoveries are made (default True).
     """
 
     def __init__(
@@ -162,11 +193,13 @@ class TreeWalker:
         risk_profile: RiskProfile = RiskProfile.AGGRESSIVE,
         max_depth: int = 5,
         max_total_steps: int = 50,
+        enable_dynamic_updates: bool = True,
     ):
         self._executor = tool_executor
         self._profile = risk_profile
         self._max_depth = max_depth
         self._max_total_steps = max_total_steps
+        self._enable_dynamic_updates = enable_dynamic_updates
 
         # Runtime state
         self._failed: FailedAttempts = FailedAttempts(max_fails=2)
@@ -175,6 +208,11 @@ class TreeWalker:
         self._escalation_count = 0
         self._current_depth = 0
         self._aborted = False
+        self._discoveries: list[DiscoveryEvent] = []
+        self._known_token_count: int = 0
+        self._known_credential_count: int = 0
+        self._known_paths: set[str] = set()
+        self._mutation_engine_ref: Any = None  # set during walk()
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -186,6 +224,9 @@ class TreeWalker:
     ) -> WalkResult:
         """Walk the entire attack tree starting from *root*.
 
+        Now with dynamic graph updates: discovers new assets mid-walk and
+        injects proactive branches without restarting.
+
         Returns a :class:`WalkResult` summarising the whole traversal.
         """
         self._steps.clear()
@@ -193,6 +234,11 @@ class TreeWalker:
         self._escalation_count = 0
         self._current_depth = 0
         self._aborted = False
+        self._discoveries.clear()
+        self._mutation_engine_ref = mutation_engine
+
+        # Snapshot initial state for change detection
+        self._snapshot_known_state()
 
         started = datetime.now().isoformat()
 
@@ -218,6 +264,8 @@ class TreeWalker:
             dead_ends=sum(1 for s in self._steps if s.status == WalkStatus.DEAD_END),
             final_token_power=final_power,
             steps=list(self._steps),
+            discoveries=list(self._discoveries),
+            dynamic_updates=sum(1 for d in self._discoveries if d.triggered_replan),
             started_at=started,
             finished_at=datetime.now().isoformat(),
         )
@@ -225,6 +273,126 @@ class TreeWalker:
     def abort(self):
         """Stop the walk at the next safe point."""
         self._aborted = True
+
+    @property
+    def discoveries(self) -> list[DiscoveryEvent]:
+        """Return all discovery events from this walk."""
+        return list(self._discoveries)
+
+    # ── dynamic graph updates ──────────────────────────────────────────────
+
+    def _snapshot_known_state(self):
+        """Snapshot current token/credential/path counts for change detection."""
+        try:
+            from ai_core.dynamic_session import global_store
+            self._known_token_count = len(global_store.tokens)
+            self._known_credential_count = len(global_store.credentials)
+        except ImportError:
+            self._known_token_count = 0
+            self._known_credential_count = 0
+
+    def _detect_discoveries(self, tool: str) -> list[DiscoveryEvent]:
+        """Check if new assets were discovered since the last snapshot.
+
+        Returns a list of DiscoveryEvent for significant new finds.
+        """
+        events: list[DiscoveryEvent] = []
+        try:
+            from ai_core.dynamic_session import global_store, POWER_RANK
+
+            # Check for new tokens
+            current_tokens = len(global_store.tokens)
+            if current_tokens > self._known_token_count:
+                new_count = current_tokens - self._known_token_count
+                # Find the newest token(s)
+                newest = sorted(
+                    global_store.tokens.values(),
+                    key=lambda t: t.discovered_at,
+                    reverse=True,
+                )
+                for t in newest[:new_count]:
+                    events.append(DiscoveryEvent(
+                        event_type="new_token",
+                        detail=f"Discovered {t.power_level} token from {t.source}",
+                        source_tool=tool,
+                    ))
+                self._known_token_count = current_tokens
+
+            # Check for new credentials
+            current_creds = len(global_store.credentials)
+            if current_creds > self._known_credential_count:
+                new_count = current_creds - self._known_credential_count
+                newest = sorted(
+                    global_store.credentials.values(),
+                    key=lambda c: c.discovered_at,
+                    reverse=True,
+                )
+                for c in newest[:new_count]:
+                    event_type = "new_credential"
+                    if c.cred_type in ("db_conn", "password"):
+                        event_type = "db_connection"
+                    events.append(DiscoveryEvent(
+                        event_type=event_type,
+                        detail=f"Discovered {c.cred_type} credential from {c.source}",
+                        source_tool=tool,
+                    ))
+                self._known_credential_count = current_creds
+
+            # Check for power escalation
+            current_best = global_store.get_best_token()
+            prev_best_power = getattr(self, '_prev_best_power', 0)
+            if current_best:
+                current_power = POWER_RANK.get(current_best.power_level, 0)
+                if current_power > prev_best_power:
+                    events.append(DiscoveryEvent(
+                        event_type="escalation",
+                        detail=f"Token power escalated: {current_best.power_level}",
+                        source_tool=tool,
+                    ))
+                    self._prev_best_power = current_power
+
+        except ImportError:
+            pass
+
+        return events
+
+    async def _inject_discovery_branches(
+        self,
+        current_node: Any,
+        discoveries: list[DiscoveryEvent],
+        vault_addr: str,
+    ):
+        """When significant discoveries are made, inject new proactive branches.
+
+        This keeps the attack tree growing dynamically as we learn more
+        about the target — no need to abort and restart the walk.
+        """
+        if not self._enable_dynamic_updates:
+            return
+
+        if not self._mutation_engine_ref:
+            return
+
+        significant = [d for d in discoveries if d.is_significant]
+        if not significant:
+            return
+
+        for disc in significant:
+            disc.triggered_replan = True
+
+        # Generate proactive branches based on new state
+        try:
+            engine = self._mutation_engine_ref
+            new_branches = engine.generate_proactive_branches(
+                parent=current_node,
+                vault_addr=vault_addr,
+                max_branches=4,
+            )
+            if new_branches:
+                print(f"       [>>] Dynamic update: {len(new_branches)} new branches injected "
+                      f"({len(significant)} discoveries)", flush=True)
+        except Exception as exc:
+            print(f"       [!] Dynamic branch injection failed: {exc}", flush=True)
 
     # ── internal walk logic ─────────────────────────────────────────────────
 
@@ -375,6 +543,15 @@ class TreeWalker:
                 self._steps.append(step)
                 self._total_steps += 1
 
+                # ── DYNAMIC GRAPH UPDATE: detect new discoveries ──────
+                discoveries = self._detect_discoveries(node.tool)
+                if discoveries:
+                    self._discoveries.extend(discoveries)
+                    # Inject new proactive branches based on discoveries
+                    await self._inject_discovery_branches(
+                        node, discoveries, vault_addr,
+                    )
+
                 # ── Pivot integration: DB creds found → auto-pivot ──
                 await self._try_pivot_on_credentials(node, vault_addr)
 
@@ -454,7 +631,7 @@ class TreeWalker:
 
         # Execute pivot engine directly
         try:
-            from active_execution.modules.pivot_engine import PivotEngineModule
+            from active_execution.modules.pivot.pivot_engine import PivotEngineModule
             from active_execution.context import ExecutionContext
 
             ctx = ExecutionContext(
@@ -637,7 +814,7 @@ class TreeWalker:
 
                     rec = global_store.add_token(token, source=f"tree_walk:{tool}", power_level=power)
                     if rec:
-                        print(f"       [+] New token: {power} ({token[:16]}...)")
+                        print(f"       [+] New token: {power} ({token})")
 
                 # Check if we escalated
                 new_best = global_store.get_best_token_value()

@@ -149,7 +149,7 @@ def test_mcp_privilege_escalation_uses_arguments_and_stores_captured_token(monke
         )
 
     monkeypatch.setattr(
-        "active_execution.modules.privilege_escalation.PrivilegeEscalationModule.execute",
+        "active_execution.modules.token.privilege_escalation.PrivilegeEscalationModule.execute",
         fake_execute,
     )
 
@@ -179,7 +179,7 @@ def test_mcp_secret_exfiltration_uses_captured_token_when_token_argument_missing
         )
 
     monkeypatch.setattr(
-        "active_execution.modules.secret_exfiltration.SecretExfiltrationModule.execute",
+        "active_execution.modules.secrets.secret_exfiltration.SecretExfiltrationModule.execute",
         fake_execute,
     )
 
@@ -201,7 +201,7 @@ def test_mcp_secret_exfiltration_can_use_explicit_token(monkeypatch):
         return FakeModuleResult("failed", "no secrets", {"total_leaked_secrets": 0})
 
     monkeypatch.setattr(
-        "active_execution.modules.secret_exfiltration.SecretExfiltrationModule.execute",
+        "active_execution.modules.secrets.secret_exfiltration.SecretExfiltrationModule.execute",
         fake_execute,
     )
 
@@ -278,7 +278,7 @@ def test_mcp_database_credential_harvest_invokes_module_and_returns_credentials(
         )
 
     monkeypatch.setattr(
-        "active_execution.modules.database_credential_harvest.DatabaseCredentialHarvestModule.execute",
+        "active_execution.modules.database.database_credential_harvest.DatabaseCredentialHarvestModule.execute",
         fake_execute,
     )
 
@@ -321,7 +321,7 @@ def test_mcp_run_active_module_executes_registered_module_and_stores_token(monke
         )
 
     monkeypatch.setattr(
-        "active_execution.modules.privilege_escalation.PrivilegeEscalationModule.execute",
+        "active_execution.modules.token.privilege_escalation.PrivilegeEscalationModule.execute",
         fake_execute,
     )
 
@@ -345,7 +345,7 @@ def test_mcp_run_active_module_uses_captured_token_when_token_missing(monkeypatc
         return FakeModuleResult("failed", "no secrets", {"total_leaked_secrets": 0})
 
     monkeypatch.setattr(
-        "active_execution.modules.secret_exfiltration.SecretExfiltrationModule.execute",
+        "active_execution.modules.secrets.secret_exfiltration.SecretExfiltrationModule.execute",
         fake_execute,
     )
 

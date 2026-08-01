@@ -18,6 +18,11 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
+# Suppress urllib3 InsecureRequestWarning spam — this is a pentest tool,
+# self-signed certs are the norm, not the exception.
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 import typer
 
 from active_execution.context import ExecutionContext
@@ -762,6 +767,11 @@ def chat(
         None, "--interval",
         help="Run auto mode repeatedly every N seconds (cron-like continuous mode). Requires --auto.",
     ),
+    # ── UI mode ──
+    ui: str = typer.Option(
+        "terminal", "--ui",
+        help="UI mode: 'terminal' (TUI) or 'desktop' (CustomTkinter app)",
+    ),
 ) -> None:
     """Start AI-powered pentest chat agent."""
     resolved_target = target or addr
@@ -793,20 +803,32 @@ def chat(
         from core.tls_config import set_insecure_mode
         set_insecure_mode()
 
-    start_chat_session(
-        vault_addr=resolved_target,
-        token=token,
-        provider=provider,
-        model=model,
-        auto=auto,
-        pdf_report=pdf_report,
-        hijack_path=hijack_path,
-        auto_max_risk=auto_max_risk,
-        auto_max_turns=auto_max_turns,
-        disable_web=disable_web,
-        auto_pilot=auto_pilot,
-        interval=interval,
-    )
+    if ui == "desktop":
+        from ai_core.gui_app import start_gui
+        start_gui(
+            vault_addr=resolved_target,
+            token=token,
+            provider=provider,
+            model=model,
+            disable_web=disable_web,
+            auto_pilot=auto_pilot,
+            skip_tls_verify=skip_tls_verify,
+        )
+    else:
+        start_chat_session(
+            vault_addr=resolved_target,
+            token=token,
+            provider=provider,
+            model=model,
+            auto=auto,
+            pdf_report=pdf_report,
+            hijack_path=hijack_path,
+            auto_max_risk=auto_max_risk,
+            auto_max_turns=auto_max_turns,
+            disable_web=disable_web,
+            auto_pilot=auto_pilot,
+            interval=interval,
+        )
 
 
 @app.command()

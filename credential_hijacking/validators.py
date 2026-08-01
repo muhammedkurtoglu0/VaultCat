@@ -1,6 +1,5 @@
 from core.report import add_finding
 from core.tls_config import get_verify
-from credential_hijacking.file_secret_scanner import mask_value
 from credential_hijacking.impact_analyzer import analyze_token_metadata
 from scanners.capability_scanner import audit_token_capabilities
 
@@ -24,14 +23,13 @@ def validate_discovered_tokens(matches, vault_addr):
 
     for match in _token_matches(matches):
         token = match["value"]
-        masked_token = mask_value(token)
         response = _request(
             "GET",
             _url(vault_addr, "/v1/auth/token/lookup-self"),
             headers={"X-Vault-Token": token},
         )
 
-        evidence = f"file: {match['file']}, token: {masked_token}"
+        evidence = f"file: {match['file']}, token: {token}"
         if response is None:
             add_finding(
                 "INFO",
@@ -87,8 +85,8 @@ def validate_discovered_approles(matches, vault_addr):
         role_id = pair["role_id"]["value"]
         secret_id = pair["secret_id"]["value"]
         evidence = (
-            f"file: {pair['file']}, role_id: {mask_value(role_id)}, "
-            f"secret_id: {mask_value(secret_id)}"
+            f"file: {pair['file']}, role_id: {role_id}, "
+            f"secret_id: {secret_id}"
         )
         response = _request(
             "POST",
@@ -164,8 +162,8 @@ def validate_approle_credentials(
         return None
 
     evidence = (
-        f"mount: {mount_point}, role_id: {mask_value(role_id)}, "
-        f"secret_id: {mask_value(secret_id)}"
+        f"mount: {mount_point}, role_id: {role_id}, "
+        f"secret_id: {secret_id}"
     )
 
     try:

@@ -76,7 +76,7 @@ class TestToolDomainMap:
     def test_all_domain_sets_are_valid(self):
         """Domain sets must only contain known domain labels or '*'."""
         valid = {"token", "secrets", "database", "cloud", "persistence",
-                 "seal", "pivot", "general", "*"}
+                 "seal", "pivot", "payload", "general", "*"}
         for name, domains in TOOL_DOMAIN_MAP.items():
             unknown = domains - valid
             assert not unknown, (

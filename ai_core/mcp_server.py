@@ -5,17 +5,17 @@ from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 from active_execution.context import ExecutionContext
-from active_execution.modules.agent_sidecar_attack import AgentSidecarAttackModule
-from active_execution.modules.privilege_escalation import PrivilegeEscalationModule
-from active_execution.modules.secret_exfiltration import SecretExfiltrationModule
-from active_execution.modules.approle_exploit import AppRoleExploitModule
-from active_execution.modules.jwt_oidc_exploit import JWTOIDCExploitModule
-from active_execution.modules.raft_storage_exploit import RaftStorageExploitModule
-from active_execution.modules.kubernetes_auth_exploit import KubernetesAuthExploitModule
-from active_execution.modules.pki_engine_exploit import PKIEngineExploitModule
-from active_execution.modules.transit_engine_exploit import TransitEngineExploitModule
-from active_execution.modules.database_credential_harvest import DatabaseCredentialHarvestModule
-from active_execution.modules.cloud_key_exfiltration import CloudKeyExfiltrationModule
+from active_execution.modules.general.agent_sidecar_attack import AgentSidecarAttackModule
+from active_execution.modules.token.privilege_escalation import PrivilegeEscalationModule
+from active_execution.modules.secrets.secret_exfiltration import SecretExfiltrationModule
+from active_execution.modules.token.approle_exploit import AppRoleExploitModule
+from active_execution.modules.token.jwt_oidc_exploit import JWTOIDCExploitModule
+from active_execution.modules.secrets.raft_storage_exploit import RaftStorageExploitModule
+from active_execution.modules.token.kubernetes_auth_exploit import KubernetesAuthExploitModule
+from active_execution.modules.secrets.pki_engine_exploit import PKIEngineExploitModule
+from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
+from active_execution.modules.database.database_credential_harvest import DatabaseCredentialHarvestModule
+from active_execution.modules.cloud.cloud_key_exfiltration import CloudKeyExfiltrationModule
 from active_execution.registry import ActiveExecutionRegistry, RiskLevel, risk_level_allowed
 from ai_core.llm_engine import LLMClient, detect_provider
 from ai_core.session import session_manager
@@ -1685,7 +1685,7 @@ async def run_database_pivot(
         captured_token=pentest_context.get("captured_token"),
     )
 
-    from active_execution.modules.database_pivot import DatabasePivotModule
+    from active_execution.modules.database.database_pivot import DatabasePivotModule
     module = DatabasePivotModule()
     # Map agent-friendly param names to module-expected names
     _mapped = dict(params or {})
@@ -1741,7 +1741,7 @@ async def run_reverse_shell(
         captured_token=pentest_context.get("captured_token"),
     )
 
-    from active_execution.modules.payload_module import PayloadModule
+    from active_execution.modules.pivot.payload_module import PayloadModule
     module = PayloadModule()
     # Map agent-friendly param names to module-expected names
     _mapped = dict(params or {})
@@ -1803,7 +1803,7 @@ async def run_active_module(
     max_risk: str = "state_changing",
     namespace: Optional[str] = None,
 ) -> str:
-    clear_findings()
+    # Only clear this specific module's findings, not all findings
     registry = build_active_registry()
     module = registry.get(module_id)
     if not module:
@@ -2544,33 +2544,14 @@ async def get_threat_intel(
     """Fetch latest threat intelligence for HashiCorp Vault."""
     threats: list[dict] = []
 
-    # ── Check NVD cache ───────────────────────────────────────────────
-    try:
-        from reconnaissance.nvd_client import _load_cache
-        cache = _load_cache()
-        cves = cache.get("cves", [])
-        if cves:
-            # Filter critical/high CVEs
-            for cve in cves:
-                if cve.get("severity") in ("CRITICAL", "HIGH"):
-                    threats.append({
-                        "source": "NVD",
-                        "cve_id": cve.get("cve_id"),
-                        "severity": cve.get("severity"),
-                        "summary": cve.get("summary", "")[:200],
-                        "published": cve.get("published", ""),
-                    })
-    except Exception:
-        pass
-
-    # ── Version-specific check ────────────────────────────────────────
+    # ── Version-specific match (from NVD cache + static fallback) ─────
     if vault_version:
         try:
-            from reconnaissance.version_cve_matcher import match_version
-            matches = match_version(vault_version)
+            from reconnaissance.version_cve_matcher import match_vault_version_cves
+            matches = match_vault_version_cves(vault_version, add_findings=False)
             for m in matches:
                 threats.append({
-                    "source": "CVE Matcher",
+                    "source": "NVD",
                     "cve_id": m.get("cve_id"),
                     "severity": m.get("severity", "MEDIUM"),
                     "summary": m.get("summary", f"CVE matches version {vault_version}")[:200],

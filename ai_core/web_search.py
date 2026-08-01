@@ -291,16 +291,23 @@ def _cache_set(query: str, max_results: int, results: list[dict], prefer_domains
 
 
 def _search_ddg_sync(query: str, max_results: int = 5) -> list[dict]:
-    """Synchronous DuckDuckGo text search."""
+    """Synchronous DuckDuckGo text search. Uses ddgs (new) or duckduckgo_search (legacy)."""
+    DDGS = None
     try:
-        from duckduckgo_search import DDGS
+        import warnings as _w
+        from ddgs import DDGS  # new package name
     except ImportError:
-        print("[web_search] duckduckgo-search not installed. Run: pip install duckduckgo-search")
-        return []
+        try:
+            from duckduckgo_search import DDGS  # legacy package
+        except ImportError:
+            print("[web_search] ddgs not installed. Run: pip install ddgs")
+            return []
 
     try:
-        with DDGS() as ddgs:
-            raw = list(ddgs.text(query, max_results=max_results))
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
+            with DDGS() as ddgs:
+                raw = list(ddgs.text(query, max_results=max_results))
     except Exception as exc:
         print(f"[web_search] DuckDuckGo error: {exc}")
         return []

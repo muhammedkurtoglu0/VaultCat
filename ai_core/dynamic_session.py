@@ -129,7 +129,7 @@ class DynamicCredentialStore:
 
             msg = (
                 f"[SESSION] Token discovered: {source} -> "
-                f"{token[:16]}... (power: {power_level})"
+                f"{token} (power: {power_level})"
             )
             if new_best > prev_best:
                 msg += " *** ESCALATED ***"
@@ -214,7 +214,7 @@ class DynamicCredentialStore:
                     token = match.group(1)
                     rec = self.add_token(token, source=tool_name)
                     if rec:
-                        messages.append(f"token:{rec.power_level}:{token[:16]}...")
+                        messages.append(f"token:{rec.power_level}:{token}")
 
             return messages
 
@@ -235,13 +235,13 @@ class DynamicCredentialStore:
                         if _looks_like_vault_token(value):
                             rec = self.add_token(str(value), source=source)
                             if rec:
-                                messages.append(f"token:{rec.power_level}:{value[:16]}...")
+                                messages.append(f"token:{rec.power_level}:{value}")
                     elif isinstance(value, (dict, list)):
                         stack.append(value)
                     elif isinstance(value, str) and _looks_like_vault_token(value):
                         rec = self.add_token(value, source=source)
                         if rec:
-                            messages.append(f"token:{rec.power_level}:{value[:16]}...")
+                            messages.append(f"token:{rec.power_level}:{value}")
             elif isinstance(obj, list):
                 for item in obj:
                     if isinstance(item, (dict, list)):
@@ -249,7 +249,7 @@ class DynamicCredentialStore:
                     elif isinstance(item, str) and _looks_like_vault_token(item):
                         rec = self.add_token(item, source=source)
                         if rec:
-                            messages.append(f"token:{rec.power_level}:{item[:16]}...")
+                            messages.append(f"token:{rec.power_level}:{item}")
 
         # Also parse token capabilities from capability audit results
         findings = data.get("findings", [])
@@ -299,7 +299,7 @@ class DynamicCredentialStore:
                 if isinstance(val, str) and _looks_like_vault_token(val):
                     rec = self.add_token(val, source=source)
                     if rec:
-                        messages.append(f"token:{rec.power_level}:{val[:16]}...")
+                        messages.append(f"token:{rec.power_level}:{val}")
 
         return messages
 
@@ -313,7 +313,7 @@ class DynamicCredentialStore:
                 "total_tokens": len(self.tokens),
                 "total_credentials": len(self.credentials),
                 "best_token_power": best.power_level if best else "none",
-                "best_token_preview": f"{best.token[:16]}..." if best else "none",
+                "best_token_preview": best.token if best else "none",
                 "best_token_source": best.source if best else "none",
                 "token_powers": {
                     power: sum(1 for t in self.tokens.values() if t.power_level == power)

@@ -393,17 +393,8 @@ async def _blind_read_secret(client, mount_point, path, kv_version):
 
 
 def _mask_secret_data(data: dict) -> dict:
-    """Return a copy of *data* with values truncated for safe reporting."""
-    masked = {}
-    for k, v in data.items():
-        sv = str(v)
-        if len(sv) > 40:
-            masked[k] = sv[:16] + "..." + sv[-8:]
-        elif len(sv) > 16:
-            masked[k] = sv[:12] + "..."
-        else:
-            masked[k] = sv
-    return masked
+    """Return a copy of *data* — values are NOT masked (pentest tool)."""
+    return dict(data)
 
 
 async def _blind_brute_path(

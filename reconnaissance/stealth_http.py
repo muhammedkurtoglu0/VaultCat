@@ -6,6 +6,10 @@ Implements:
     - Latency-adaptive polling intervals
     - Dynamic concurrency limiting when rate-limited
     - Request fingerprinting avoidance (no parallel bursts)
+    - User-Agent rotation (20+ realistic UAs)
+    - Response header analysis (X-RateLimit-*, Retry-After, Vault-specific)
+    - Evasion profiles (paranoid / stealth / balanced / aggressive)
+    - Request header randomization (Accept, Accept-Language, etc.)
 """
 
 from __future__ import annotations
@@ -13,10 +17,283 @@ from __future__ import annotations
 import random
 import threading
 import time
+from dataclasses import dataclass
+from enum import Enum
 from urllib.parse import urljoin
 
 import requests
 from core.tls_config import get_verify, set_insecure_mode
+
+
+# ---------------------------------------------------------------------------
+# Evasion profiles
+# ---------------------------------------------------------------------------
+
+
+class EvasionProfile(str, Enum):
+    PARANOID = "paranoid"    # Max stealth: 5-15s jitter, 1 concurrency, heavy UA rotation
+    STEALTH = "stealth"      # High stealth: 2-8s jitter, 2 concurrency
+    BALANCED = "balanced"    # Moderate: 1-3s jitter, 3 concurrency
+    AGGRESSIVE = "aggressive"  # Fast: 0-1s jitter, 5 concurrency (lab/dev)
+
+
+# Profile settings
+_PROFILE_CONFIG: dict[EvasionProfile, dict] = {
+    EvasionProfile.PARANOID: {
+        "jitter_min": 5.0, "jitter_max": 15.0,
+        "max_concurrency": 1, "min_concurrency": 1,
+        "ua_rotate_every": 1,  # rotate UA every request
+        "header_randomize": True,
+    },
+    EvasionProfile.STEALTH: {
+        "jitter_min": 2.0, "jitter_max": 8.0,
+        "max_concurrency": 2, "min_concurrency": 1,
+        "ua_rotate_every": 3,
+        "header_randomize": True,
+    },
+    EvasionProfile.BALANCED: {
+        "jitter_min": 1.0, "jitter_max": 3.0,
+        "max_concurrency": 3, "min_concurrency": 1,
+        "ua_rotate_every": 10,
+        "header_randomize": False,
+    },
+    EvasionProfile.AGGRESSIVE: {
+        "jitter_min": 0.0, "jitter_max": 1.0,
+        "max_concurrency": 5, "min_concurrency": 2,
+        "ua_rotate_every": 50,
+        "header_randomize": False,
+    },
+}
+
+_current_profile: EvasionProfile = EvasionProfile.BALANCED
+
+
+def set_evasion_profile(profile: EvasionProfile):
+    """Switch evasion profile globally."""
+    global _current_profile
+    _current_profile = profile
+    # Update limiter concurrency
+    cfg = _PROFILE_CONFIG[profile]
+    limiter = get_global_limiter()
+    with limiter._lock:
+        limiter._max_concurrency = cfg["max_concurrency"]
+        limiter._min_concurrency = cfg["min_concurrency"]
+        limiter._rebuild_semaphore()
+
+
+def get_evasion_profile() -> EvasionProfile:
+    return _current_profile
+
+
+# ---------------------------------------------------------------------------
+# User-Agent rotation
+# ---------------------------------------------------------------------------
+
+
+# Realistic, modern User-Agent strings rotated to avoid fingerprinting
+_USER_AGENTS: list[str] = [
+    # Chrome on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    # Chrome on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    # Firefox on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+    # Firefox on Linux
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    # Safari on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    # Edge on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+    # Chrome on Linux
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    # Mobile UAs (for diversity)
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+    # curl / programmatic (for when we want to blend as automation)
+    "curl/8.11.0",
+    "Vault-CLI/1.18.0",
+    "python-requests/2.32.0",
+    # More diversity
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
+    # Nomad / Consul agents (sibling HashiCorp tools — blend in)
+    "Nomad-Agent/1.9.0",
+    "Consul-Agent/1.20.0",
+]
+
+
+class UserAgentRotator:
+    """Rotates User-Agent strings to avoid fingerprinting."""
+
+    def __init__(self):
+        self._agents = list(_USER_AGENTS)
+        self._index = 0
+        self._request_count = 0
+        self._lock = threading.Lock()
+
+    def get(self) -> str:
+        """Get the next User-Agent string."""
+        with self._lock:
+            self._request_count += 1
+            cfg = _PROFILE_CONFIG.get(_current_profile, _PROFILE_CONFIG[EvasionProfile.BALANCED])
+            rotate_every = cfg.get("ua_rotate_every", 10)
+
+            if self._request_count % rotate_every == 0:
+                # Rotate to next or random depending on profile
+                if _current_profile == EvasionProfile.PARANOID:
+                    return random.choice(self._agents)
+                else:
+                    self._index = (self._index + 1) % len(self._agents)
+
+            return self._agents[self._index % len(self._agents)]
+
+    def random(self) -> str:
+        """Get a completely random User-Agent (for paranoid mode)."""
+        return random.choice(self._agents)
+
+    def get_hashicorp_style(self) -> str:
+        """Get a HashiCorp-ecosystem UA (Vault-CLI, Nomad, Consul)."""
+        hc_uas = [ua for ua in self._agents
+                   if any(tool in ua for tool in ("Vault-CLI", "Nomad-Agent", "Consul-Agent"))]
+        return random.choice(hc_uas) if hc_uas else self._agents[13]
+
+
+# Global rotator
+_ua_rotator = UserAgentRotator()
+
+
+def get_user_agent() -> str:
+    return _ua_rotator.get()
+
+
+# ---------------------------------------------------------------------------
+# Request header randomization
+# ---------------------------------------------------------------------------
+
+
+# Accept-Language values for diversity
+_ACCEPT_LANGUAGES = [
+    "en-US,en;q=0.9",
+    "en-GB,en;q=0.9,fr;q=0.8",
+    "en-US,en;q=0.9,de;q=0.8,fr;q=0.7",
+    "en-US,en;q=0.9,es;q=0.8",
+    "tr-TR,tr;q=0.9,en;q=0.8",
+    "en-US,en;q=0.5",
+]
+
+_ACCEPT_ENCODING = [
+    "gzip, deflate, br",
+    "gzip, deflate",
+    "gzip, deflate, br, zstd",
+]
+
+
+def build_stealth_headers(token: str | None = None) -> dict[str, str]:
+    """Build HTTP headers with randomized fingerprint for evasion.
+
+    In paranoid/stealth profiles, headers are randomized per request
+    to avoid creating a consistent fingerprint.
+    """
+    headers: dict[str, str] = {}
+
+    cfg = _PROFILE_CONFIG.get(_current_profile, _PROFILE_CONFIG[EvasionProfile.BALANCED])
+
+    # User-Agent
+    headers["User-Agent"] = get_user_agent()
+
+    if cfg.get("header_randomize", False):
+        # Randomize Accept-Language
+        headers["Accept-Language"] = random.choice(_ACCEPT_LANGUAGES)
+        # Randomize Accept-Encoding
+        headers["Accept-Encoding"] = random.choice(_ACCEPT_ENCODING)
+        # Vary Accept header
+        headers["Accept"] = random.choice([
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "application/json,text/html,*/*;q=0.8",
+            "text/html,application/json,application/xml;q=0.9,*/*;q=0.8",
+        ])
+    else:
+        headers["Accept"] = "application/json"
+        headers["Accept-Encoding"] = "gzip, deflate"
+
+    # Vault token
+    if token:
+        headers["X-Vault-Token"] = token
+
+    # Don't set X-Vault-Namespace unless needed — it's a fingerprint
+    return headers
+
+
+# ---------------------------------------------------------------------------
+# Response header analysis for rate limit detection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RateLimitInfo:
+    """Parsed rate-limit signals from Vault response headers."""
+
+    is_rate_limited: bool = False
+    retry_after: float = 0.0          # seconds (from Retry-After header)
+    limit_remaining: int | None = None  # X-RateLimit-Remaining
+    limit_reset: float | None = None   # X-RateLimit-Reset epoch
+    vault_specific: bool = False       # Vault-specific rate limit header seen
+
+
+def analyse_rate_headers(response) -> RateLimitInfo:
+    """Parse response headers for rate-limit signals.
+
+    Vault uses standard HTTP rate-limit headers when rate limiting is enabled.
+    Enterprise Vault may also set custom headers.
+    """
+    info = RateLimitInfo()
+
+    if not hasattr(response, 'headers'):
+        return info
+
+    headers = response.headers
+
+    # Standard rate-limit headers
+    remaining = headers.get("X-RateLimit-Remaining")
+    if remaining is not None:
+        try:
+            info.limit_remaining = int(remaining)
+            if info.limit_remaining < 5:
+                info.is_rate_limited = True
+        except (ValueError, TypeError):
+            pass
+
+    reset = headers.get("X-RateLimit-Reset")
+    if reset is not None:
+        try:
+            info.limit_reset = float(reset)
+        except (ValueError, TypeError):
+            pass
+
+    # Retry-After (RFC 7231)
+    retry = headers.get("Retry-After")
+    if retry is not None:
+        try:
+            info.retry_after = float(retry)
+            info.is_rate_limited = True
+        except (ValueError, TypeError):
+            pass
+
+    # Vault may return X-Vault-RateLimit headers (Enterprise)
+    if headers.get("X-Vault-RateLimit-Limit"):
+        info.vault_specific = True
+        info.is_rate_limited = True
+
+    # HTTP 429 itself
+    if response.status_code == 429:
+        info.is_rate_limited = True
+
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -246,13 +523,17 @@ def stealth_request(
     token: str | None = None,
     limiter: AdaptiveRateLimiter | None = None,
     apply_jitter: bool = True,
+    json_body: dict | None = None,
 ) -> requests.Response | requests.RequestException:
-    """Stealth-aware HTTP request with adaptive rate limiting.
+    """Stealth-aware HTTP request with adaptive rate limiting + evasion.
 
     Drop-in replacement for :func:`safe_request` that automatically:
     - Waits through any active backoff period
-    - Adds random jitter between requests (1-5 s) to mimic human cadence
+    - Adds random jitter between requests to mimic human cadence
     - Acquires a concurrency slot (prevents parallel burst detection)
+    - Rotates User-Agent per the active evasion profile
+    - Randomizes HTTP headers (Accept, Accept-Language, etc.)
+    - Analyses response headers for rate-limit signals
     - Reports response to the rate limiter for self-tuning
 
     Parameters
@@ -265,6 +546,7 @@ def stealth_request(
     token: Optional Vault token for authenticated requests
     limiter: Rate limiter instance (uses global singleton if None)
     apply_jitter: Whether to add random delay before request
+    json_body: Optional JSON body for POST/PUT requests
     """
     if limiter is None:
         limiter = _global_limiter
@@ -272,12 +554,16 @@ def stealth_request(
     # ── Fast path: stealth disabled → direct request, zero overhead ──
     if not _STEALTH_ENABLED:
         url = build_url(target, path)
-        headers = {"X-Vault-Token": token} if token else None
+        headers = build_stealth_headers(token)  # still use proper headers
         try:
-            return requests.request(
-                method, url, timeout=timeout, allow_redirects=allow_redirects,
-                verify=get_verify(), headers=headers,
+            kwargs = dict(
+                method=method, url=url, timeout=timeout,
+                allow_redirects=allow_redirects, verify=get_verify(),
+                headers=headers,
             )
+            if json_body is not None:
+                kwargs["json"] = json_body
+            return requests.request(**kwargs)
         except requests.exceptions.RequestException as exc:
             return exc
 
@@ -287,33 +573,49 @@ def stealth_request(
     # ── 2. Acquire concurrency slot ─────────────────────────────────
     acquired = limiter.acquire(timeout=30.0)
     if not acquired:
-        # Too many requests queued — fail gracefully
         return requests.exceptions.ConnectionError(
             "Stealth limiter: concurrency slot not available"
         )
 
     try:
-        # ── 3. Random jitter — mimic human cadence ──────────────────
+        # ── 3. Profile-aware jitter ─────────────────────────────────
         if apply_jitter:
-            human_jitter(1.0, 5.0)
+            cfg = _PROFILE_CONFIG.get(_current_profile, _PROFILE_CONFIG[EvasionProfile.BALANCED])
+            jitter_min = cfg.get("jitter_min", 1.0)
+            jitter_max = cfg.get("jitter_max", 5.0)
+            human_jitter(jitter_min, jitter_max)
 
-        # ── 4. Make the request ─────────────────────────────────────
+        # ── 4. Make the request with stealth headers ────────────────
         url = build_url(target, path)
-        headers = {}
-        if token:
-            headers["X-Vault-Token"] = token
+        headers = build_stealth_headers(token)
 
         t0 = time.monotonic()
         try:
-            response = requests.request(
-                method,
-                url,
-                timeout=timeout,
-                allow_redirects=allow_redirects,
-                verify=get_verify(),
-                headers=headers if headers else None,
+            kwargs = dict(
+                method=method, url=url, timeout=timeout,
+                allow_redirects=allow_redirects, verify=get_verify(),
+                headers=headers,
             )
+            if json_body is not None:
+                kwargs["json"] = json_body
+            response = requests.request(**kwargs)
             latency = time.monotonic() - t0
+
+            # ── Analyse rate-limit headers ──────────────────────────
+            rate_info = analyse_rate_headers(response)
+            if rate_info.is_rate_limited:
+                # Use Retry-After if provided, otherwise use limiter's backoff
+                if rate_info.retry_after > 0:
+                    with limiter._lock:
+                        limiter._current_backoff = max(
+                            limiter._current_backoff, rate_info.retry_after,
+                        )
+                if rate_info.limit_remaining is not None and rate_info.limit_remaining < 5:
+                    # Pre-emptively slow down before hitting the limit
+                    with limiter._lock:
+                        limiter._current_backoff = max(
+                            limiter._current_backoff, 5.0,
+                        )
 
             # Feed response to rate limiter for self-tuning
             limiter.report_response(response.status_code, latency)
@@ -321,7 +623,6 @@ def stealth_request(
 
         except requests.exceptions.RequestException as exc:
             latency = time.monotonic() - t0
-            # Treat connectivity errors as potential rate-limit triggers
             limiter.report_response(503, latency)
             return exc
 

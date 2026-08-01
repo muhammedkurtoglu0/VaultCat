@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, AsyncIterator, Optional
@@ -85,26 +86,15 @@ SYSTEM_PROMPT = """You are an expert Vault penetration testing agent — a senio
 
 ## YOUR PERSONALITY
 - Talk like a senior pentester chatting with a colleague. Use the user's language (Turkish for Turkish users, English otherwise).
+- Be conversational. If the user greets you or chats casually, just reply — don't jump into scanning.
 - Be direct, practical, and confident. No fluff, no disclaimers, no "I apologize".
 - When you discover findings, present them as TABLES (markdown).
-- After each action, suggest ONE concrete next step based on what you just learned.
-- If something fails, explain WHY in one sentence and immediately suggest an alternative.
-- Celebrate wins briefly, then move to the next objective.
+- If something fails, explain why and suggest an alternative.
+- When you have findings, present them clearly. When you're done, say so.
 
 ## UNDERSTANDING USER INTENT
-The user speaks naturally — they are NOT typing commands. Understand their INTENT:
-
-| User says something like... | You understand they want... |
-|---|---|
-| "tam tarama yap", "her şeyi tara", "full audit" | Autonomous assessment (run recon → audit → report) |
-| "çözüm öner", "nasıl kapatırım", "fix this" | Remediation advice for findings |
-| "başka ne deneyebilirim", "alternatif yol", "ne yapabilirim" | Attack path mutation (generate alternative branches) |
-| "şu CVE için exploit var mı", "araştır", "google'da bak" | Web search for CVEs, exploits, error messages |
-| "otomatik devam et", "düşünmeden yap", "auto pilot" | Auto-pilot mode (execute PoC chains without asking) |
-| "özet çıkar", "rapor hazırla", "PDF" | Generate PDF report |
-| "durum nedir", "neler var elimizde" | Status overview (tokens, findings, session) |
-| "bu token ile neler yapabilirim" | Capability audit + privilege escalation assessment |
-| "veritabanına sız", "DB'ye bağlan", "pivot" | Database pivot / lateral movement |
+The user speaks naturally — understand what they want, not what keywords they used.
+They might ask for a scan, a fix, an explanation, or just chat. Figure it out from context.
 
 ## YOUR TOOLKIT
 You have 20+ pentest tools covering:
@@ -113,28 +103,106 @@ You have 20+ pentest tools covering:
 - **active**: run_raw_vault_request, run_privilege_escalation, run_secret_exfiltration, run_database_credential_harvest, run_cloud_key_exfiltration
 - **meta**: web_search, get_findings, get_risk_score, list_active_modules, run_active_module
 
-## SMART CAPABILITIES (use proactively!)
-1. **Web Search**: When you see a CVE, 403/500 error, or unknown version — AUTOMATICALLY use web_search. Results may contain PoC code (curl, requests) that you can execute.
-2. **PoC-to-Action**: When web results contain curl commands or API calls — EXTRACT and suggest executing them. Say "Web'de şu PoC'u buldum, çalıştırmamı ister misin?"
-3. **Attack Chains**: When multiple PoCs depend on each other (e.g. create_token → read_secret), SEQUENCE them and explain the flow.
-4. **Auto-Pilot**: When the user wants hands-off execution, tell them "Auto-pilot moda geçireyim mi? Bulduğum her PoC zincirini otomatik çalıştırırım."
-5. **Attack Tree Walking**: When you have multiple tokens and credentials, suggest "Elimizde 3 token var, agresiften stealth'e sıralı saldırı ağacı oluşturayım mı?"
+## SMART CAPABILITIES
+- **Web Search**: Auto-trigger on CVEs, errors, unknown versions, or unrecognized credentials.
+- **PoC Execution**: When web results contain curl/API calls, extract and offer to execute them.
+- **Attack Chains**: When PoCs depend on each other, sequence them automatically.
+
+## ATTACK CHAINS (execute automatically — don't just suggest!)
+When you discover credentials, DON'T stop at listing them. Follow the chain:
+
+**KV secret → DB credentials → Database Pivot → Reverse Shell:**
+1. Find DB credentials (KV, env scan, database_credential_harvest)
+2. IMMEDIATELY call `run_database_pivot` with {host, port, user, password, db_name}
+3. If connected + SUPERUSER → IMMEDIATELY call `run_reverse_shell` with same params
+4. Start with recon commands: whoami, id, uname -a, ls /, env
+5. Then escalate: read /etc/shadow, find SSH keys, check cloud metadata
+
+**Token → Privilege Escalation → Root → Full Dump:**
+1. Audit token capabilities
+2. If sudo on sys/policies/acl/* → run_privilege_escalation (autonomous takeover)
+3. With root token → run_secret_exfiltration, run_database_credential_harvest
+
+**AppRole → Token → Audit:**
+1. role_id + secret_id → POST auth/approle/login → get token
+2. Then capability audit + KV enumeration
 
 ## METHODOLOGY
 1. RECON first — always start with unauthenticated recon
 2. If token available → audit capabilities, enumerate KV, check TTLs, analyze policies
-3. If multiple tokens → compare privileges, try escalation paths
-4. If blocked → web search for alternatives, mutate attack paths
-5. If credentials found (DB, cloud) → suggest lateral movement
-6. When done or user asks → generate report, provide remediation advice
+3. If DB credentials found → **IMMEDIATELY chain: run_database_pivot → run_reverse_shell**
+4. If multiple tokens → compare privileges, try escalation paths
+5. If blocked → web search for alternatives, mutate attack paths
+6. **WHEN UNKNOWN DATA FOUND → WEB SEARCH**: If you see a token/key/secret you don't recognize, call `web_search` to identify it. Example queries:
+   - "sk_live_ token prefix what platform how to exploit pentest"
+   - "ghp_ token what is it GitHub API exploit"
+   - "eyJ JWT token exploitation pentest"
+   This is how the pentest escapes Vault and pivots to GitHub, AWS, Stripe, databases, etc.
+7. When done or user asks → generate report, provide remediation advice
+
+## CREDENTIAL TYPE RECOGNITION
+When a user gives you a string, FIRST identify its type by FORMAT before trying to use it:
+
+### Vault-native formats
+| Format | Type | What to do |
+|---|---|---|
+| `hvs.xxx...` (starts with hvs.) | Vault token | Use as token for API calls; try lookup-self first |
+| `s.xxx...` (starts with s.) | Legacy Vault token | Same as hvs. token |
+| 64 hex chars `[0-9a-f]{64}` | **Unseal key / Shamir share** | Check seal status; use with unseal or generate-root |
+| UUID `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` | AppRole role_id | Pair with secret_id for approle login |
+| Long base64 string (no hvs. prefix) | AppRole secret_id | Pair with role_id for approle login |
+
+### External platform credentials (pivot opportunities!)
+When you discover a credential that does NOT match Vault formats, it may unlock other platforms:
+
+| Format | Likely Platform | How to verify & exploit |
+|---|---|---|
+| `ghp_xxx...` (36+ chars) | **GitHub personal access token** | `curl -H "Authorization: token <token>" https://api.github.com/user` |
+| `github_pat_xxx...` | **GitHub fine-grained token** | Same as above; check `X-OAuth-Scopes` header |
+| `gho_xxx...` | **GitHub OAuth token** | Used by GitHub Apps/OAuth — check user + repos |
+| `ghs_xxx...` | **GitHub installation token** | Temp token from GitHub App — check org access |
+| `sk_live_xxx...` / `sk_test_xxx...` | **Stripe secret key** | `curl https://api.stripe.com/v1/charges -u <key>:` |
+| `eyJ...` (3-part base64url) | **JWT / JWS token** | Decode at jwt.io; check `alg`, `sub`, `exp`, `scope` |
+| `AIza...` (39 chars) | **Google API key** | Check which APIs are enabled: `curl "https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=<key>"` |
+| `AKIA...` (20 chars) | **AWS Access Key ID** | Pair with Secret Access Key; `aws sts get-caller-identity` |
+| `-----BEGIN ... PRIVATE KEY-----` | **SSH/TLS private key** | Check if it matches known hosts; try `ssh -i <key>` |
+| `postgresql://user:pass@host/db` | **DB connection string** | Direct database access — use `run_database_pivot` |
+
+### UNKNOWN credential → WEB SEARCH!
+If you see a credential format you don't recognize:
+1. **IMMEDIATELY call `web_search`** with a query like: "<prefix> token format what is it how to exploit"
+2. Example: you find `sk-ant-api03-xxx...` → search "sk-ant-api03 token format what is it" → discover it's Anthropic API key
+3. **NEVER just say "bilinmeyen bir token buldum"** — research it first, then tell the user what it is AND how to exploit it
+4. This is how we escape Vault and pivot to other platforms
+
+**UNSEAL KEY (64 hex chars = Shamir secret share):**
+- These are NOT tokens — they CANNOT be used for API authentication
+- First: check `sys/seal-status` (unauthenticated). If sealed → unseal with `sys/unseal` (use run_active_module: vault_seal.unseal_vault)
+- If already unsealed: use `sys/generate-root/attempt` + `sys/generate-root/update` + `decode_generate_root_otp` to derive a ROOT TOKEN
+- The unseal key proves physical access/insider knowledge — it's a CRITICAL finding
+- NEVER try to use a hex string (64 chars) as a Vault token, username, or password — it won't work
 
 ## CRITICAL RULES
-- NO target → ask user to set one: "Hedef Vault adresini ver, başlayayım."
-- NO token → start with unauthenticated recon, suggest finding one
-- NEVER list multiple numbered options — give ONE concrete next step
-- NEVER output Chinese/Korean/Japanese
-- NEVER guess IPs or tokens — use only what's provided or discovered
-- After a tool result: analyze (1 sentence) + suggest next move (1 sentence) = DONE
+- NO target → ask user to set one.
+- NO token → start with unauthenticated recon, suggest finding one.
+- User gives you a string → identify its format first, then act (see credential tables above).
+- **UNKNOWN CREDENTIAL → WEB SEARCH**: If you find a credential format you don't recognize, research it via `web_search` — don't just say "bilinmeyen token". Pivot to other platforms (GitHub, AWS, Stripe, etc.).
+- System auto-injects the best available token. Only pass token explicitly when you need a SPECIFIC one.
+- **Hijack scan requires user approval**: NEVER run `run_hijack_scan` without asking FIRST. Never scan system-wide paths like `/`, `C:/`, `C:/Users`.
+- NEVER guess IPs or tokens — use only what's provided or discovered.
+## HANDLING RESTRICTED TOKENS (everything returns 403)
+**CRITICAL: This section ONLY applies when you HAVE a token.**
+If you have NO token, skip this entire section — you are doing unauthenticated recon.
+DO NOT brute-force paths without a token — every request will 403 and it's a waste.
+
+If capability audit fails (permission denied) AND lookup-self returns 403
+AND you actually have a token:
+1. This is a RESTRICTED token — it has VERY specific, narrow permissions
+2. **Step 1: Try `run_kv_enumeration` with kv_path="secret/"** — many restricted tokens are KV-only readers
+3. **Step 2: Try `run_raw_vault_request(POST, auth/token/create)`** — some tokens are "token factory" tokens that can only create child tokens. Body: `{"policies": ["default"], "ttl": "1h", "display_name": "escalated"}`
+4. **Step 3: Try `run_raw_vault_request(GET, database/creds/app-admin)`** — some tokens are DB credential readers
+5. If all three fail → report: "This token is highly restricted. No accessible paths found."
+   DO NOT brute-force more paths — 3 is enough. Move on.
 
 ## RESPONSE FORMAT
 Keep it tight. After tool results:
@@ -154,8 +222,9 @@ class PentestAgent:
 
     MAX_TURNS = 50  # safety limit per conversational session
     MAX_PLAN_TOOL_CALLS = 15  # max tool calls per plan execution
-    MAX_CONTEXT_MESSAGES = 24  # prune when message count exceeds this
-    PRUNE_KEEP_RECENT = 8     # keep the most recent N messages during pruning
+    MAX_CONTEXT_MESSAGES = 150  # prune when message count exceeds this (~75K tokens safe for 128K ctx)
+    PRUNE_KEEP_RECENT = 32     # keep the most recent N messages during pruning
+    MIN_TURNS_TO_KEEP = 3      # never prune the last N complete turns
 
     def __init__(
         self,
@@ -216,6 +285,21 @@ class PentestAgent:
         self._last_target = self.vault_addr
         self._last_token = self.token
 
+        if context_changed:
+            # Reset per-target guards so the new target gets a clean slate.
+            # Without this, _recon_done=True from a previous target would block
+            # recon on the new target, and stale _call_tracker entries would
+            # prematurely trigger CALL LIMIT errors.
+            self._recon_done = False
+            self._call_tracker = {}
+            self._ua_probe_count = 0  # reset unauthenticated probe counter
+            self._searched_web.clear()
+            self._searched_cves.clear()
+            self._session_queries.clear()
+            self._get_findings_count = 0
+            self._plan_tool_call_count = 0
+            self._phase_tracker = PhaseTracker()
+
         if not self._messages or context_changed:
             # Fresh start or context changed — rebuild full context
             context_msg = self._build_context_message(objective)
@@ -264,6 +348,12 @@ class PentestAgent:
 
             # If the LLM wants to call tools
             if response.get("tool_calls"):
+                # ── Collect all tool results first, then append ONE assistant
+                #     message with ALL tool_calls + ALL tool results together.
+                #     This keeps the message list compliant with
+                #     OpenAI/DeepSeek API format even after context pruning.
+                import uuid
+                _collected: list[dict] = []  # {name, arguments, result, enrichment_notes, call_id}
                 for tool_call in response["tool_calls"]:
                     name = tool_call["name"]
                     arguments = tool_call.get("arguments", {})
@@ -362,15 +452,14 @@ class PentestAgent:
                                                     yield {"type": "warning", "message": f"Chain step failed: {poc_exc}"}
                                                     break  # stop chain on failure
 
-                                            # Feed chain results back to agent
+                                            # Feed chain results back to agent as user context
                                             if chain_results:
                                                 messages.append({
-                                                    "role": "tool",
+                                                    "role": "user",
                                                     "content": json.dumps({
                                                         "chain_executed": chain.description,
                                                         "steps": chain_results,
                                                     }, ensure_ascii=False)[:2000],
-                                                    "tool_call_id": f"call_chain_{hash(chain.chain_id) & 0x7FFFFFFF:08x}",
                                                 })
 
                                 # Build web+POC+chains content for the agent
@@ -389,9 +478,8 @@ class PentestAgent:
                                 }, ensure_ascii=False)[:2000]
 
                                 messages.append({
-                                    "role": "tool",
-                                    "content": web_content,
-                                    "tool_call_id": f"call_web_{hash(search_query) & 0x7FFFFFFF:08x}",
+                                    "role": "user",
+                                    "content": f"[Web search: {search_query}] {web_content[:1500]}",
                                 })
 
                                 # Add sequenced chain prompt for the agent
@@ -436,43 +524,70 @@ class PentestAgent:
                     # Parse result for a quick summary
                     result_summary = self._summarize_result(tool_result)
 
-                    # Generate a unique tool call ID for API compliance
-                    import uuid
                     call_id = f"call_{uuid.uuid4().hex[:12]}"
-
-                    # Add to conversation — OpenAI/DeepSeek API format
-                    messages.append({
-                        "role": "assistant",
-                        "content": response.get("content") or "",
-                        "tool_calls": [{
-                            "id": call_id,
-                            "type": "function",
-                            "function": {"name": name, "arguments": json.dumps(arguments)},
-                        }],
-                    })
-                    messages.append({
-                        "role": "tool",
-                        "content": tool_result[:2000],
-                        "tool_call_id": call_id,
+                    _collected.append({
+                        "name": name,
+                        "arguments": arguments,
+                        "result": tool_result,
+                        "result_summary": result_summary,
+                        "enrichment_notes": enrichment_notes,
+                        "call_id": call_id,
                     })
 
-                    # ── Append web_search enrichment notes (if any) ──
-                    for note in enrichment_notes:
-                        messages.append({
-                            "role": "user",
-                            "content": note,
-                        })
-
-                    # Prompt LLM to analyze — BRIEFLY, no option lists
+                # ── If all tool calls were blocked, prompt and continue ──
+                if not _collected:
                     messages.append({
                         "role": "user",
                         "content": (
-                            f"Tool '{name}' returned: {result_summary}\n\n"
-                            "Report what you found in 2-3 sentences max. "
-                            "Do NOT list options or suggestions — the user decides next steps. "
-                            "If you need another tool immediately, call it. Otherwise just report and stop."
+                            "SYSTEM: All requested tools were blocked. "
+                            "Tell the user what's needed in natural language."
                         ),
                     })
+                    continue
+
+                # ── Append ONE assistant message with ALL tool_calls ──
+                messages.append({
+                    "role": "assistant",
+                    "content": response.get("content") or "",
+                    "tool_calls": [
+                        {
+                            "id": rec["call_id"],
+                            "type": "function",
+                            "function": {
+                                "name": rec["name"],
+                                "arguments": json.dumps(rec["arguments"]),
+                            },
+                        }
+                        for rec in _collected
+                    ],
+                })
+
+                # ── Append ALL tool results ────────────────────────────
+                for rec in _collected:
+                    messages.append({
+                        "role": "tool",
+                        "content": rec["result"][:2000],
+                        "tool_call_id": rec["call_id"],
+                    })
+
+                # ── Append enrichment notes ────────────────────────────
+                for rec in _collected:
+                    for note in rec["enrichment_notes"]:
+                        messages.append({"role": "user", "content": note})
+
+                # ── Single analysis prompt ─────────────────────────────
+                summaries = "; ".join(
+                    f"{r['name']}: {r['result_summary']}" for r in _collected
+                )
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Tools returned: {summaries}\n\n"
+                        "Report what you found in 2-3 sentences max. "
+                        "Do NOT list options or suggestions — the user decides next steps. "
+                        "If you need another tool immediately, call it. Otherwise just report and stop."
+                    ),
+                })
 
                 # Continue the loop — LLM sees tool results + analysis prompt
                 continue
@@ -552,23 +667,42 @@ class PentestAgent:
 
         # ---- inject real target (override any hallucinated one) ----
         if self.vault_addr and name in vault_tools:
-            arguments["vault_addr"] = self.vault_addr
+            # Normalize: strip path/query from vault_addr (user may paste UI URLs)
+            addr = self.vault_addr
+            if "://" in addr:
+                from urllib.parse import urlparse, urlunparse
+                p = urlparse(addr)
+                addr = urlunparse((p.scheme, p.netloc, "", "", "", ""))
+            arguments["vault_addr"] = addr
 
-        # ---- inject best available token (global store > explicit) ----
+        # ---- inject best available token (global store > agent default) ----
+        # CRITICAL: respect the LLM's explicit token choice.
+        # If the LLM passed a real-looking token (hvs./s. prefix, not truncated),
+        # it was explicitly chosen by the user or the agent — use it as-is.
+        # Only inject the global-store best token when the LLM didn't specify one
+        # or used a placeholder.
+        llm_token = arguments.get("token", "")
+        llm_has_real_token = (
+            isinstance(llm_token, str)
+            and len(llm_token) >= 24
+            and (llm_token.startswith("hvs.") or llm_token.startswith("hvb.") or llm_token.startswith("s."))
+        )
+
         best_token = None
-        try:
-            from ai_core.dynamic_session import global_store
-            best_token = global_store.get_best_token_value()
-        except ImportError:
-            pass
-        if not best_token:
-            best_token = self.token
+        if not llm_has_real_token:
+            try:
+                from ai_core.dynamic_session import global_store
+                best_token = global_store.get_best_token_value()
+            except ImportError:
+                pass
+            if not best_token:
+                best_token = self.token
 
-        if best_token and name in token_tools:
-            arguments["token"] = best_token
-            # Update agent's own token view if escalated
-            if best_token != self.token:
-                self.token = best_token
+            if best_token and name in token_tools:
+                arguments["token"] = best_token
+                # Update agent's own token view if escalated
+                if best_token != self.token:
+                    self.token = best_token
 
         # ---- prevent duplicate recon ----
         if name == "run_unauthenticated_recon":
@@ -606,6 +740,36 @@ class PentestAgent:
                 f"{call_count} times. STOP looping. Analyze previous results "
                 f"and either escalate differently or report findings to user."
             )
+
+        # ---- prevent unauthenticated brute-force: max 8 raw requests without auth ----
+        if name == "run_raw_vault_request":
+            # Check if ANY token is available: via set-token, chat-provided, or global store
+            has_any_token = bool(
+                self.token
+                or (isinstance(arguments.get("token"), str)
+                    and len(str(arguments.get("token"))) >= 24
+                    and (str(arguments.get("token")).startswith("hvs.")
+                         or str(arguments.get("token")).startswith("s.")))
+            )
+            if not has_any_token:
+                try:
+                    from ai_core.dynamic_session import global_store
+                    if global_store.get_best_token_value():
+                        has_any_token = True
+                except ImportError:
+                    pass
+
+            if not has_any_token:
+                ua_probe_count = getattr(self, '_ua_probe_count', 0)
+                ua_probe_count += 1
+                self._ua_probe_count = ua_probe_count
+                if ua_probe_count > 8:
+                    return (
+                        f"UNATHENTICATED PROBE LIMIT: {ua_probe_count} raw requests without "
+                        f"a token. Most Vault endpoints return 403 without auth. "
+                        f"STOP probing. Report findings from recon scanners only "
+                        f"and suggest the user provide a token."
+                    )
 
         return None
 
@@ -661,8 +825,7 @@ class PentestAgent:
         if self.vault_addr:
             parts.append(f"Target Vault: {self.vault_addr}")
         if self.token:
-            t = self.token[:12] + "..." if len(self.token) > 12 else self.token
-            parts.append(f"Available token: {t}")
+            parts.append(f"Available token: {self.token}")
         elif not objective:
             parts.append("No token — use unauthenticated recon only.")
 
@@ -702,6 +865,9 @@ class PentestAgent:
         - CVE IDs (e.g. CVE-2024-2048) not yet searched
         - HTTP 5xx server errors not yet searched
         - Vault version strings without existing exploit info
+        - External platform credentials/keys not matching Vault formats
+          (GitHub tokens, Stripe keys, JWTs, generic API keys, etc.)
+          → enables pivoting from Vault to other platforms
 
         Deliberately does NOT trigger on 403 / permission denied: during
         unauthenticated testing a 403 is Vault's *expected* answer, and
@@ -738,11 +904,122 @@ class PentestAgent:
             if ver_key not in self._searched_web:
                 return True
 
+        # ── External platform credential detection ──────────────────────
+        # When the tool discovers a secret/token/key that doesn't match
+        # Vault-native formats (hvs., s., UUID, 64-char hex), it's likely
+        # a credential for an external platform.  Auto-search so the agent
+        # can tell the user what it is and how to pivot.
+        cred_type = self._detect_external_credential(observation)
+        if cred_type:
+            cred_key = self._search_cache_key("credential", cred_type + observation[:200])
+            if cred_key not in self._searched_web:
+                return True
+
         return False
+
+    # ── external credential detection ────────────────────────────────────
+
+    # Patterns for platform-specific credentials that, when discovered inside
+    # Vault, indicate a pivot opportunity.  Grouped by platform so the search
+    # query can be targeted.
+    _EXTERNAL_CREDENTIAL_PATTERNS: list[tuple[str, str, re.Pattern]] = [
+        # GitHub  (https://docs.github.com/en/authentication)
+        # Real tokens are 36+ chars body, but we accept 8+ to catch
+        # truncated samples / placeholders in tool output.
+        ("GitHub", "personal access token", re.compile(r'\bghp_[A-Za-z0-9]{8,}\b')),
+        ("GitHub", "fine-grained token", re.compile(r'\bgithub_pat_[A-Za-z0-9_]{8,}\b')),
+        ("GitHub", "OAuth / app token", re.compile(r'\bgho_[A-Za-z0-9]{8,}\b')),
+        ("GitHub", "installation token", re.compile(r'\bghs_[A-Za-z0-9]{8,}\b')),
+        ("GitHub", "refresh token", re.compile(r'\bghr_[A-Za-z0-9]{8,}\b')),
+
+        # Stripe
+        ("Stripe", "secret key", re.compile(r'\b(?:sk_live|sk_test)_[A-Za-z0-9]{8,}\b')),
+        ("Stripe", "publishable key", re.compile(r'\bpk_(?:live|test)_[A-Za-z0-9]{8,}\b')),
+
+        # AI/LLM API keys (commonly stored in Vault alongside app secrets)
+        ("Anthropic", "API key", re.compile(r'\bsk-ant-(?:api|admin|user)[0-9]{2,3}-[A-Za-z0-9_-]{20,}\b')),
+        ("OpenAI", "API key", re.compile(r'\bsk-(?:proj-)?[A-Za-z0-9]{20,}\b')),
+        ("HuggingFace", "API key", re.compile(r'\bhf_[A-Za-z0-9]{20,}\b')),
+
+        # JWT / JWS (eyJ... base64url header.payload.signature)
+        ("JWT", "JSON Web Token", re.compile(r'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b')),
+
+        # AWS (access key IDs — 20-char uppercase alphanumeric starting with AKIA/ASIA)
+        ("AWS", "access key ID", re.compile(r'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b')),
+        ("AWS", "secret access key", re.compile(r'\baws_(?:secret_access_key|secret_key)\s*[:=]\s*["\']?([A-Za-z0-9/+=]{20,})["\']?', re.IGNORECASE)),
+
+        # Google
+        ("Google", "API key", re.compile(r'\bAIza[0-9A-Za-z_-]{20,}\b')),
+
+        # Slack
+        ("Slack", "webhook URL", re.compile(
+            r'https://hooks\.slack\.com/services/[A-Z0-9]+/[A-Z0-9]+/[A-Za-z0-9]+',
+            re.IGNORECASE)),
+
+        # Generic API key / token assignments
+        ("API key", "generic key assignment", re.compile(
+            r'\b(?:api_key|apikey|api_token|auth_token|access_token|secret_key)\s*[:=]\s*["\']?([A-Za-z0-9+/=_-]{8,})["\']?',
+            re.IGNORECASE)),
+
+        # SSH private keys
+        ("SSH", "private key", re.compile(
+            r'-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----',
+            re.IGNORECASE)),
+
+        # Database connection strings
+        ("Database", "connection string", re.compile(
+            r'(?:postgres(?:ql)?|mysql|mssql|oracle|mongodb)://[A-Za-z0-9._-]+:[^\s@]+@[^\s/]+',
+            re.IGNORECASE)),
+        ("Database", "JDBC URL", re.compile(r'jdbc:(?:postgresql|mysql|sqlserver|oracle)://[^\s]+', re.IGNORECASE)),
+    ]
+
+    @classmethod
+    def _detect_external_credential(cls, observation: str) -> str | None:
+        """Return the platform name if *observation* contains an
+        external-platform credential that the agent should research.
+
+        Vault-native formats (hvs., s., UUID, 64-char hex, approle paths)
+        are deliberately excluded — those are already handled by the
+        agent's credential recognition table.
+        """
+        # Skip if the observation is dominated by Vault-native tokens
+        # (avoid false positives when the tool returns a Vault response
+        #  that happens to contain a base64 blob).
+        vault_native_markers = ['"auth"', '"client_token"', '"policies"',
+                                 '"lease_duration"', 'approle/login']
+        native_score = sum(1 for m in vault_native_markers if m in observation)
+        if native_score >= 3:
+            return None
+
+        for platform, kind, pattern in cls._EXTERNAL_CREDENTIAL_PATTERNS:
+            if pattern.search(observation):
+                return platform
+
+        return None
+
+    # ── search query builder ────────────────────────────────────────────
 
     def _build_web_search_query(self, tool_name: str, result: str) -> str:
         """Build a targeted web search query from the observation context."""
         import re
+
+        # ── Credential identification (new — pivot to other platforms) ──
+        cred_type = self._detect_external_credential(result)
+        if cred_type:
+            # Extract a sample of the matched text for context
+            sample = ""
+            for platform, kind, pattern in self._EXTERNAL_CREDENTIAL_PATTERNS:
+                m = pattern.search(result)
+                if m and platform == cred_type:
+                    sample = m.group(0)
+                    break
+            # Build a targeted query: what is this, how to exploit it
+            if sample:
+                # Use a short prefix so we don't leak the full secret to
+                # the search engine, but keep enough to identify the type.
+                prefix = sample[:12] if len(sample) > 12 else sample[:6]
+                return f"{cred_type} token starting with {prefix} what is it how to exploit pentest"
+            return f"{cred_type} credential found in Vault how to exploit pentest pivot"
 
         # Extract CVE ID
         cve_match = re.search(r'CVE-\d{4}-\d{4,}', result, re.IGNORECASE)
@@ -855,71 +1132,92 @@ class PentestAgent:
     # ── context pruning ──────────────────────────────────────────────────
 
     def _prune_context(self, messages: list[dict]) -> list[dict]:
-        """Trim old tool results when the message list grows too large.
+        """Trim old completed turns when the message list grows too large.
 
-        Strategy: when the message count exceeds ``MAX_CONTEXT_MESSAGES``,
-        locate the oldest *tool-call block* (assistant + tool + user follow-up),
-        replace it with a short summary injected into the preceding user
-        message, and remove the block.  The ``PRUNE_KEEP_RECENT`` most recent
-        messages are always left untouched.
+        A "turn" is: user_msg → assistant(with tool_calls) → tool×(N) → user(follow-up)
+
+        Only COMPLETE turns are pruned — never the current in-progress turn.
+        The ``MIN_TURNS_TO_KEEP`` most recent turns are always preserved.
+        After pruning, the message list is validated: if any tool message is
+        orphaned (no preceding assistant with matching tool_calls), the prune
+        is rolled back to avoid 400 API errors.
         """
         if len(messages) <= self.MAX_CONTEXT_MESSAGES:
             return messages
 
-        # Find the boundary: everything before this index is eligible for pruning
-        prune_boundary = max(0, len(messages) - self.PRUNE_KEEP_RECENT)
-
-        # Locate the oldest tool-call block within the prune-eligible range.
-        # A block is: assistant(with tool_calls) → tool → user(follow-up)
-        block_start: int | None = None
-        for i in range(prune_boundary - 2):
+        # ── 1. Identify complete turns ──────────────────────────────────
+        # A turn starts at a user message that precedes an assistant with
+        # tool_calls, and ends after all tool results + the next user msg.
+        turns: list[tuple[int, int]] = []  # (start_idx, end_idx_exclusive)
+        i = 0
+        while i < len(messages):
+            # Look for: user → assistant(with tool_calls)
             if (
-                messages[i].get("role") == "assistant"
-                and messages[i].get("tool_calls")
+                messages[i].get("role") == "user"
                 and i + 1 < len(messages)
-                and messages[i + 1].get("role") == "tool"
+                and messages[i + 1].get("role") == "assistant"
+                and messages[i + 1].get("tool_calls")
             ):
-                block_start = i
-                break
+                turn_start = i
+                i += 1  # skip user, now at assistant
+                # Skip all tool results
+                i += 1  # skip assistant
+                while i < len(messages) and messages[i].get("role") == "tool":
+                    i += 1
+                # Optionally skip one user follow-up
+                if i < len(messages) and messages[i].get("role") == "user":
+                    i += 1
+                turns.append((turn_start, i))
+            else:
+                i += 1
 
-        if block_start is None:
-            return messages  # nothing to prune safely
+        if len(turns) <= self.MIN_TURNS_TO_KEEP:
+            return messages  # not enough turns to safely prune
 
-        # Determine block end: after the tool result, there is often a user
-        # follow-up message; include it if present.
-        block_end = block_start + 2  # assistant + tool
-        if block_end < len(messages) and messages[block_end].get("role") == "user":
-            block_end += 1
+        # ── 2. Remove oldest turn (but never the most recent N) ─────────
+        prune_turn = turns[0]  # oldest
+        protected_start = turns[-self.MIN_TURNS_TO_KEEP][0]
+        if prune_turn[0] >= protected_start:
+            return messages  # oldest turn is within protected range
 
-        # Build a one-line summary from the tool call block
-        tool_name = "unknown"
-        for tc in messages[block_start].get("tool_calls", []):
+        turn_start, turn_end = prune_turn
+
+        # Build summary
+        tc_names = []
+        for tc in messages[turn_start + 1].get("tool_calls", []):
             fn = tc.get("function", {}) if "function" in tc else tc
-            tool_name = fn.get("name", tool_name)
-        tool_content = messages[block_start + 1].get("content", "")[:150]
-        summary = (
-            f"[CONTEXT PRUNE] Earlier tool '{tool_name}' result summarized: "
-            f"{tool_content[:120]}..."
-        )
+            tc_names.append(fn.get("name", "?"))
+        summary = f"[PRUNED] Earlier tools: {', '.join(tc_names[:4])}"
 
-        # Inject summary into the message just before the block
-        prev_msg = messages[block_start - 1] if block_start > 0 else None
-        if prev_msg and prev_msg.get("role") == "user":
-            prev_msg["content"] = (
-                prev_msg.get("content", "")[:500] + "\n\n" + summary
-            )
-        else:
-            # No good anchor — just insert a system note
-            messages.insert(block_start, {
-                "role": "user",
-                "content": f"SYSTEM NOTE: {summary}",
-            })
-            block_end += 1  # shift because we inserted
+        # Inject summary into the user message at turn_start
+        msg = messages[turn_start]
+        msg["content"] = summary + " | " + msg.get("content", "")[:300]
 
-        # Remove the pruned block
-        del messages[block_start : block_end]
+        # Remove the assistant + tool results + follow-up (keep the user msg)
+        del messages[turn_start + 1 : turn_end]
 
-        # Recurse if still over limit (shouldn't normally happen)
+        # ── 3. Safety check: no orphaned tool messages ──────────────────
+        for _j, _m in enumerate(messages):
+            if _m.get("role") != "tool":
+                continue
+            # Scan backwards for a matching assistant
+            _found = False
+            for _k in range(_j - 1, -1, -1):
+                _prev = messages[_k]
+                if _prev.get("role") == "assistant" and _prev.get("tool_calls"):
+                    for _tc in _prev["tool_calls"]:
+                        if _tc.get("id") == _m.get("tool_call_id"):
+                            _found = True
+                            break
+                    break
+                elif _prev.get("role") == "assistant":
+                    break  # assistant without tool_calls — stop looking
+            if not _found:
+                # Safety net failed — this shouldn't happen with turn-based
+                # pruning, but if it does, don't prune this session.
+                return messages  # bail out, keep original list
+
+        # ── 4. Recurse if still over limit ──────────────────────────────
         if len(messages) > self.MAX_CONTEXT_MESSAGES:
             return self._prune_context(messages)
 

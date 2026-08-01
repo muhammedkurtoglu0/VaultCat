@@ -424,12 +424,6 @@ def _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, verify):
             keys_found = list(secret_data.keys())
             print(f"[+] SECRET FOUND: {secret_path} -> {keys_found}")
 
-            # Mask long values in evidence
-            masked = {}
-            for k, v in secret_data.items():
-                sv = str(v)
-                masked[k] = sv[:8] + "..." if len(sv) > 12 else sv
-
             add_finding(
                 severity="CRITICAL",
                 title=f"Secret exfiltrated from privileged path: {secret_path}",
@@ -437,15 +431,11 @@ def _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, verify):
                     f"Token with sudo+read on '{wildcard_path}' was used to "
                     f"read secret at '{secret_path}'. Keys found: {keys_found}"
                 ),
-                recommendation=(
-                    "Remove unnecessary sudo capability from this token. "
-                    "Restrict read access to the minimum required paths."
-                ),
                 evidence={
                     "wildcard_path": wildcard_path,
                     "secret_path": secret_path,
                     "keys": keys_found,
-                    "preview": masked,
+                    "data": dict(secret_data),
                 },
                 module=MODULE,
                 target=vault_addr,

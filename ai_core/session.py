@@ -91,7 +91,7 @@ class PentestSession:
             "targets": self.targets,
             "active_target": self.active_target,
             "token_history": [
-                {"token": t.token[:16] + "..." if len(t.token) > 16 else t.token,
+                {"token": t.token,
                  "source": t.source, "power_level": t.power_level,
                  "obtained_at": t.obtained_at}
                 for t in self.token_history
@@ -108,9 +108,8 @@ class PentestSession:
 
 
 def _redact(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return value[:12] + "..." if len(value) > 12 else value
+    """Return value as-is — no masking in pentest tool."""
+    return value
 
 
 # ---------------------------------------------------------------------------
