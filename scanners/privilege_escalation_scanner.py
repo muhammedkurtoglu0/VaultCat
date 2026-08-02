@@ -3,6 +3,7 @@ import concurrent.futures
 
 from core.report import add_finding
 from core.tls_config import get_verify
+from core.logger import logger
 
 
 MODULE = "privilege_escalation_scanner"
@@ -87,7 +88,7 @@ def scan_privilege_escalation(
     namespace=None,
     timeout=TIMEOUT,
 ):
-    print("\n[+] Simulating Vault token privilege escalation risk...")
+    logger.info("\n[+] Simulating Vault token privilege escalation risk...")
 
     if not vault_addr or not token:
         add_finding(
@@ -236,9 +237,9 @@ def _report_privilege_escalation_findings(results, vault_addr, policy_names):
 
 
 def _print_privilege_escalation_summary(result):
-    print(f"Policies checked : {', '.join(result['policies']) or '<not-resolved>'}")
+    logger.info(f"Policies checked : {', '.join(result['policies']) or '<not-resolved>'}")
     for item in result["results"]:
-        print(f"{item['path']} -> {', '.join(item['capabilities']) or '<none>'}")
+        logger.info(f"{item['path']} -> {', '.join(item['capabilities']) or '<none>'}")
 
 
 def _dedupe(items):

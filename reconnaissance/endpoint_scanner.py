@@ -2,6 +2,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "endpoint_scanner"
@@ -17,7 +18,7 @@ ENDPOINTS = (
 def scan_endpoints(target, context=None):
     findings = []
 
-    print("\n[+] Probing curated unauthenticated Vault endpoints...")
+    logger.info("\n[+] Probing curated unauthenticated Vault endpoints...")
 
     for path, label in ENDPOINTS:
         if context and path == "/v1/sys/health":
@@ -44,7 +45,7 @@ def scan_endpoints(target, context=None):
         if location:
             evidence_parts.append(f"location: {location}")
 
-        print(f"{path} -> HTTP {response.status_code}")
+        logger.info(f"{path} -> HTTP {response.status_code}")
 
         severity = "INFO"
         title = f"Endpoint status: {path}"

@@ -2,6 +2,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "ui_scanner"
@@ -11,7 +12,7 @@ def scan_ui(target, context=None):
     findings = []
     ui_reachable = False
 
-    print("\n[+] Checking Vault UI exposure...")
+    logger.info("\n[+] Checking Vault UI exposure...")
 
     for path in ("/ui/", "/ui"):
         response = (
@@ -20,7 +21,7 @@ def scan_ui(target, context=None):
         )
 
         if not isinstance(response, Response):
-            print(f"[-] {path} request failed: {response}")
+            logger.warning(f"[-] {path} request failed: {response}")
             continue
 
         location = response.headers.get("Location")
@@ -28,7 +29,7 @@ def scan_ui(target, context=None):
         if location:
             evidence += f", location: {location}"
 
-        print(f"{path} -> HTTP {response.status_code}")
+        logger.info(f"{path} -> HTTP {response.status_code}")
 
         if response.status_code == 200:
             ui_reachable = True
@@ -61,7 +62,7 @@ def scan_ui(target, context=None):
         if context else safe_request("GET", target, "/ui/vault/auth", allow_redirects=False)
     )
     if isinstance(login_response, Response):
-        print(f"/ui/vault/auth -> HTTP {login_response.status_code}")
+        logger.info(f"/ui/vault/auth -> HTTP {login_response.status_code}")
         if login_response.status_code == 200:
             findings.append(add_finding(
                 "INFO",

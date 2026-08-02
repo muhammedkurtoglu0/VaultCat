@@ -2,6 +2,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "header_scanner"
@@ -10,7 +11,7 @@ MODULE_NAME = "header_scanner"
 def scan_headers(target, context=None):
     findings = []
 
-    print("\n[+] Analyzing HTTP response headers...")
+    logger.info("\n[+] Analyzing HTTP response headers...")
 
     response = context.fetch_health_once() if context else safe_request("GET", target, "/v1/sys/health")
     if not isinstance(response, Response):

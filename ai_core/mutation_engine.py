@@ -33,6 +33,7 @@ from enum import Enum
 from typing import Any
 
 from ai_core.attack_techniques import (
+from core.logger import logger
     AttackTechnique,
     TechniqueDomain,
     TechniquePhase,
@@ -144,7 +145,7 @@ class MutationEngine:
         proactive_count = self._seed_proactive_branches(self._root)
         if proactive_count > 0:
             import sys
-            print(f"  [*] Seeded {proactive_count} proactive branches from attack technique KB",
+            logger.info(f"  [*] Seeded {proactive_count} proactive branches from attack technique KB",
                   file=sys.stderr)
 
         return self._root
@@ -724,7 +725,7 @@ a GENUINE chance of succeeding — no filler.  Respond with ONLY valid JSON."""
             return self._parse_mutation_response(content)
 
         except Exception as exc:
-            print(f"[!] Mutation LLM call failed: {exc}")
+            logger.warning(f"[!] Mutation LLM call failed: {exc}")
             return self._fallback_branches()
 
     def _parse_mutation_response(self, content: str) -> dict[str, Any]:

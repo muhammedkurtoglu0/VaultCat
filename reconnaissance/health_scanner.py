@@ -2,6 +2,7 @@ from requests import Response
 from core.report import add_finding
 from core.tls_config import get_verify
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "health_scanner"
@@ -9,7 +10,7 @@ MODULE_NAME = "health_scanner"
 
 def scan_health(target, context=None):
     findings = []
-    print("\n[+] Scanning Vault health endpoint...")
+    logger.info("\n[+] Scanning Vault health endpoint...")
 
     if context:
         response = context.fetch_health_once()
@@ -17,7 +18,7 @@ def scan_health(target, context=None):
         response = safe_request("GET", target, "/v1/sys/health")
 
     if not isinstance(response, Response):
-        print(f"[-] Could not connect to health endpoint: {response}")
+        logger.warning(f"[-] Could not connect to health endpoint: {response}")
         findings.append(add_finding(
             "HIGH",
             "Vault health endpoint unreachable",
@@ -29,13 +30,13 @@ def scan_health(target, context=None):
         ))
         return findings
 
-    print(f"Status Code : {response.status_code}")
+    logger.info(f"Status Code : {response.status_code}")
 
     try:
         data = response.json()
-        print(f"Response    : {data}")
+        logger.info(f"Response    : {data}")
     except ValueError:
-        print("[-] Response is not JSON.")
+        logger.warning("[-] Response is not JSON.")
         findings.append(add_finding(
             "LOW",
             "Unexpected health response",
@@ -57,16 +58,16 @@ def scan_health(target, context=None):
     cluster_name = data.get("cluster_name")
     cluster_id = data.get("cluster_id")
 
-    print("\n[+] Vault Health")
-    print(f"Initialized  : {initialized}")
-    print(f"Sealed       : {sealed}")
-    print(f"Standby      : {standby}")
-    print(f"Perf Standby : {performance_standby}")
-    print(f"Perf Repl    : {replication_performance_mode}")
-    print(f"DR Repl      : {replication_dr_mode}")
-    print(f"Version      : {version}")
-    print(f"Cluster Name : {cluster_name}")
-    print(f"Cluster ID   : {cluster_id}")
+    logger.info("\n[+] Vault Health")
+    logger.info(f"Initialized  : {initialized}")
+    logger.info(f"Sealed       : {sealed}")
+    logger.info(f"Standby      : {standby}")
+    logger.info(f"Perf Standby : {performance_standby}")
+    logger.info(f"Perf Repl    : {replication_performance_mode}")
+    logger.info(f"DR Repl      : {replication_dr_mode}")
+    logger.info(f"Version      : {version}")
+    logger.info(f"Cluster Name : {cluster_name}")
+    logger.info(f"Cluster ID   : {cluster_id}")
 
     findings.append(add_finding(
         "INFO",

@@ -14,8 +14,8 @@ Usage::
                                tool_executor=my_executor)
     plan = PentestPlan(...)  # from planner or mutation engine
     result = await orch.execute_plan(plan)
-    print(f"{result.successes}/{result.total_steps} steps succeeded")
-    print(f"Domains involved: {result.domains_involved}")
+    logger.info(f"{result.successes}/{result.total_steps} steps succeeded")
+    logger.info(f"Domains involved: {result.domains_involved}")
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from ai_core.tools import TOOL_DOMAIN_MAP, UNIVERSAL_TOOL_NAMES
 from ai_core.specialist_agent import SpecialistAgent, SpecialistResult
+from core.logger import logger
 
 
 # ---------------------------------------------------------------------------

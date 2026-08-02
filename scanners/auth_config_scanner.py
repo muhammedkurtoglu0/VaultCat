@@ -2,6 +2,7 @@ import requests
 
 from core.report import add_finding
 from core.tls_config import get_verify
+from core.logger import logger
 
 
 MODULE = "auth_config_scanner"
@@ -10,7 +11,7 @@ SUPPORTED_AUTH_TYPES = {"kubernetes", "aws", "ldap", "jwt", "oidc"}
 
 
 def scan_auth_config_security(vault_addr, token, namespace=None):
-    print("\n[+] Auditing external auth method configuration...")
+    logger.info("\n[+] Auditing external auth method configuration...")
 
     if not vault_addr or not token:
         add_finding(
@@ -61,7 +62,7 @@ def scan_auth_config_security(vault_addr, token, namespace=None):
         )
 
     risk_score = min(sum(check["risk_score"] for check in checks), 100)
-    print(f"Auth Config Risk Score: {risk_score} / 100")
+    logger.info(f"Auth Config Risk Score: {risk_score} / 100")
     return {"risk_score": risk_score, "checks": checks}
 
 

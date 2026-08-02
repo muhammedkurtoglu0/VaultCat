@@ -4,6 +4,7 @@ import requests
 
 from core.report import add_finding
 from core.tls_config import get_verify
+from core.logger import logger
 
 
 MODULE = "ttl_scanner"
@@ -20,7 +21,7 @@ def scan_ttl_governance(
     max_mount_ttl_seconds=DEFAULT_MAX_MOUNT_TTL_SECONDS,
     max_pki_cert_ttl_seconds=DEFAULT_MAX_PKI_CERT_TTL_SECONDS,
 ):
-    print("\n[+] Auditing Vault mount and PKI TTL governance...")
+    logger.info("\n[+] Auditing Vault mount and PKI TTL governance...")
 
     if not vault_addr or not token:
         add_finding(
@@ -77,7 +78,7 @@ def scan_ttl_governance(
         )
 
     risk_score = min(sum(check["risk_score"] for check in checks), 100)
-    print(f"TTL Governance Risk Score: {risk_score} / 100")
+    logger.info(f"TTL Governance Risk Score: {risk_score} / 100")
     return {"risk_score": risk_score, "checks": checks}
 
 

@@ -2,6 +2,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "fingerprint_scanner"
@@ -11,7 +12,7 @@ def scan_fingerprint(target, context=None):
     findings = []
     signals = []
 
-    print("\n[+] Fingerprinting target...")
+    logger.info("\n[+] Fingerprinting target...")
 
     health_response = context.fetch_health_once() if context else safe_request("GET", target, "/v1/sys/health")
     if isinstance(health_response, Response):
@@ -67,9 +68,9 @@ def scan_fingerprint(target, context=None):
             signals.append("Vault UI content marker observed")
 
     if signals:
-        print("[+] Vault fingerprint signals found.")
+        logger.info("[+] Vault fingerprint signals found.")
         for signal in signals:
-            print(f"    - {signal}")
+            logger.info(f"    - {signal}")
 
         findings.append(add_finding(
             "INFO",
@@ -81,7 +82,7 @@ def scan_fingerprint(target, context=None):
             target=target
         ))
     else:
-        print("[-] No strong Vault fingerprint signals found.")
+        logger.warning("[-] No strong Vault fingerprint signals found.")
         findings.append(add_finding(
             "INFO",
             "Vault fingerprint not confirmed",

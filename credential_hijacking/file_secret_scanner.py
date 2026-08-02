@@ -7,6 +7,7 @@ from pathlib import Path
 
 from core.report import add_finding
 from credential_hijacking.patterns import FINDING_METADATA, PATTERNS
+from core.logger import logger
 
 
 MODULE_NAME = "file_secret_scanner"
@@ -111,9 +112,9 @@ def scan_files(
     root = Path(root_path)
     excluded_dirs = DEFAULT_EXCLUDED_DIRS | set(excluded_dirs or [])
 
-    print("\n======================================")
-    print("Vault Credential Hijacking Scan")
-    print("======================================")
+    logger.info("\n======================================")
+    logger.info("Vault Credential Hijacking Scan")
+    logger.info("======================================")
 
     if not root.exists():
         add_finding(
@@ -140,7 +141,7 @@ def scan_files(
 
     if max_workers is None or max_workers == 0:
         max_workers = DEFAULT_WORKERS
-    print(f"[*] Found {len(candidates)} files — scanning with {max_workers} workers...")
+    logger.info(f"[*] Found {len(candidates)} files — scanning with {max_workers} workers...")
 
     # Parallel scan: each worker handles one file (or chunked file)
     _completed = 0
@@ -152,7 +153,7 @@ def scan_files(
         # Print progress every 500 files or 5%
         if _completed - _last_report >= 500 or (_completed > 0 and _completed % max(1, len(futures) // 20) == 0):
             _pct = _completed * 100 // len(futures)
-            print(f"\r[*] Progress: {_completed}/{len(futures)} ({_pct}%)", end="", flush=True)
+            logger.info(f"\r[*] Progress: {_completed}/{len(futures)} ({_pct}%)", end="", flush=True)
             _last_report = _completed
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -175,9 +176,9 @@ def scan_files(
                     matches.extend(file_matches)
             except Exception as exc:
                 file_path = futures[future]
-                print(f"[-] Error scanning {file_path}: {exc}")
+                logger.warning(f"[-] Error scanning {file_path}: {exc}")
 
-        print(f"\r[*] Scan complete: {len(matches)} findings from {_completed} files.          ")
+        logger.info(f"\r[*] Scan complete: {len(matches)} findings from {_completed} files.          ")
 
     # Git history scan remains sync (already subprocess-based)
     if root.is_dir() and include_git_history:

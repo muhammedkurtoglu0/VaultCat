@@ -2,6 +2,7 @@ import asyncio
 
 from core.report import add_finding
 from reconnaissance.version_cve_matcher import match_vault_version_cves
+from core.logger import logger
 
 
 MODULE_NAME = "vault_recon"
@@ -74,7 +75,7 @@ async def vault_recon(vault_addr, timeout=DEFAULT_TIMEOUT):
 
 
 def scan_vault_recon(target, timeout=DEFAULT_TIMEOUT):
-    print("\n[+] Running async Vault recon collector...")
+    logger.info("\n[+] Running async Vault recon collector...")
 
     try:
         result = asyncio.run(vault_recon(target, timeout=timeout))
@@ -143,13 +144,13 @@ async def _fetch_json(session, url, aiohttp):
 
 
 def _print_recon_result(result):
-    print(f"Target       : {result['target']}")
-    print(f"Initialized  : {result['initialized']}")
-    print(f"Sealed       : {result['sealed']}")
-    print(f"Cluster Name : {result['cluster_name']}")
-    print(f"Cluster ID   : {result['cluster_id']}")
-    print(f"Version      : {result['version']}")
-    print(f"Leader       : {result['leader']}")
+    logger.info(f"Target       : {result['target']}")
+    logger.info(f"Initialized  : {result['initialized']}")
+    logger.info(f"Sealed       : {result['sealed']}")
+    logger.info(f"Cluster Name : {result['cluster_name']}")
+    logger.info(f"Cluster ID   : {result['cluster_id']}")
+    logger.info(f"Version      : {result['version']}")
+    logger.info(f"Leader       : {result['leader']}")
 
 
 def _add_recon_findings(result):

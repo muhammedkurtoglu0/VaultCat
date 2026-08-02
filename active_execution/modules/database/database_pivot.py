@@ -4,6 +4,7 @@ import json
 
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
+from core.logger import logger
 
 
 TIMEOUT = 10
@@ -101,7 +102,7 @@ class DatabasePivotModule(BaseExecutionModule):
                 evidence={"error": "Missing dependency: pyodbc"},
             )
 
-        print(f"[*] [ACTIVE] Connecting to {db_type} database at {db_host}:{db_port}")
+        logger.info(f"[*] [ACTIVE] Connecting to {db_type} database at {db_host}:{db_port}")
 
         connection = None
         try:
@@ -222,7 +223,7 @@ def _connect_database(db_type, host, port, database, username, password, timeout
             return conn
         return None
     except Exception as e:
-        print(f"[!] Connection failed: {e}")
+        logger.warning(f"[!] Connection failed: {e}")
         return None
 
 
@@ -241,7 +242,7 @@ def _list_databases(db_type, connection):
             return [row[0] for row in cursor.fetchall()]
         return []
     except Exception as e:
-        print(f"[!] Failed to list databases: {e}")
+        logger.warning(f"[!] Failed to list databases: {e}")
         return []
     finally:
         if cursor:
@@ -266,7 +267,7 @@ def _list_tables(db_type, connection, database):
             return [row[0] for row in cursor.fetchall()]
         return []
     except Exception as e:
-        print(f"[!] Failed to list tables: {e}")
+        logger.warning(f"[!] Failed to list tables: {e}")
         return []
     finally:
         if cursor:
@@ -291,7 +292,7 @@ def _read_table_data(db_type, connection, database, table, max_rows=3):
         rows = cursor.fetchall()
         return [dict(zip(columns, row)) for row in rows]
     except Exception as e:
-        print(f"[!] Failed to read table {table}: {e}")
+        logger.warning(f"[!] Failed to read table {table}: {e}")
         return []
     finally:
         if cursor:

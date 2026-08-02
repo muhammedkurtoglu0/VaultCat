@@ -38,14 +38,14 @@ class UnauthenticatedAttackModule(BaseExecutionModule):
         findings = []
 
         # 1. Unauthenticated Recon
-        print("[*] [Tokensiz] Unauthenticated Recon başlatılıyor...")
+        logger.info("[*] [Tokensiz] Unauthenticated Recon başlatılıyor...")
         recon_results = self._run_recon(target)
         results["recon"] = recon_results
         if recon_results.get("version"):
             findings.append(f"Vault sürümü: {recon_results['version']}")
 
         # 2. Environment taraması
-        print("[*] [Tokensiz] Environment taranıyor...")
+        logger.info("[*] [Tokensiz] Environment taranıyor...")
         env_tokens = self._scan_environment()
         results["env_tokens"] = env_tokens
         if env_tokens:
@@ -53,7 +53,7 @@ class UnauthenticatedAttackModule(BaseExecutionModule):
 
         # 3. Dosya sistemi taraması (hijack-path)
         search_path = params.get("search_path", ".")
-        print(f"[*] [Tokensiz] Dosya sistemi taranıyor: {search_path}")
+        logger.info(f"[*] [Tokensiz] Dosya sistemi taranıyor: {search_path}")
         file_results = self._scan_files(search_path)
         results["file_tokens"] = file_results
         if file_results.get("tokens"):

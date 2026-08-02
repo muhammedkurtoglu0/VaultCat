@@ -9,6 +9,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "tls_scanner"
@@ -19,7 +20,7 @@ EXPIRY_WARNING_DAYS = 30
 def scan_tls(target):
     findings = []
 
-    print("\n[+] Assessing TLS/HTTPS configuration...")
+    logger.info("\n[+] Assessing TLS/HTTPS configuration...")
 
     parsed_target = urlparse(target)
     scheme = parsed_target.scheme.lower()

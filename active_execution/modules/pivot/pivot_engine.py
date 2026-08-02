@@ -91,7 +91,7 @@ class PivotEngineModule(BaseExecutionModule):
                 evidence={"error": "No DB credentials in global store or context"},
             )
 
-        print(f"\n[*] [PIVOT] Found {len(all_creds)} database credential(s) to try.")
+        logger.info(f"\n[*] [PIVOT] Found {len(all_creds)} database credential(s) to try.")
         results: dict[str, Any] = {
             "attempted_connections": 0,
             "successful_connections": [],
@@ -113,13 +113,13 @@ class PivotEngineModule(BaseExecutionModule):
                 continue
 
             results["attempted_connections"] += 1
-            print(f"    Trying {username}@{host}:{port}/{database} ...")
+            logger.info(f"    Trying {username}@{host}:{port}/{database} ...")
 
             conn = _pg_connect(host, port, database, username, password, connect_timeout)
             if not conn:
                 continue
 
-            print(f"    [+] Connected as {username}!")
+            logger.info(f"    [+] Connected as {username}!")
             conn_info = {
                 "host": host, "port": port, "database": database,
                 "username": username, "source": cred.get("source", "unknown"),
@@ -129,7 +129,7 @@ class PivotEngineModule(BaseExecutionModule):
             try:
                 # ── 3. Enumerate privileges ─────────────────────────
                 privs = _pg_check_privileges(conn, username)
-                print(f"    [+] Privileges: SUPERUSER={privs['is_superuser']}, "
+                logger.info(f"    [+] Privileges: SUPERUSER={privs['is_superuser']}, "
                       f"CREATEROLE={privs['is_createrole']}, "
                       f"CREATEDB={privs['is_createdb']}, "
                       f"REPLICATION={privs['is_replication']}")
@@ -155,7 +155,7 @@ class PivotEngineModule(BaseExecutionModule):
                     # ── 4. OS Shell via COPY PROGRAM ────────────────
                     shell_result = _pg_os_shell(conn, username, os_commands, timeout)
                     if shell_result["success"]:
-                        print(f"    [!] OS SHELL OBTAINED on {host}!")
+                        logger.info(f"    [!] OS SHELL OBTAINED on {host}!")
                         results["os_shells"].append({
                             **conn_info,
                             "method": "COPY FROM PROGRAM",
@@ -199,7 +199,7 @@ class PivotEngineModule(BaseExecutionModule):
                                 evidence=fs_data.get("summary", {}),
                             )
                     else:
-                        print(f"    [-] OS shell failed: {shell_result.get('error')}")
+                        logger.info(f"    [-] OS shell failed: {shell_result.get('error')}")
 
                 # ── 6. Read sensitive DB tables ────────────────────
                 sensitive = _pg_read_sensitive_tables(conn)
@@ -504,7 +504,7 @@ def _pg_check_privileges(conn, username: str) -> dict:
 
         cur.close()
     except Exception as exc:
-        print(f"    [!] Privilege check error: {exc}")
+        logger.info(f"    [!] Privilege check error: {exc}")
         # Fallback: try executing a harmless function to probe
         try:
             cur2 = conn.cursor()
@@ -551,12 +551,12 @@ def _pg_os_shell(
             result["outputs"][cmd] = output
             result["commands"].append(cmd)
             result["success"] = True
-            print(f"    [+] Executed: {cmd[:60]}...")
+            logger.info(f"    [+] Executed: {cmd[:60]}...")
             preview = output[:120].replace('\n', ' | ')
-            print(f"        {preview}")
+            logger.info(f"        {preview}")
         else:
             error_msg = output or "unknown error"
-            print(f"    [-] CMD failed for '{cmd[:50]}...': {error_msg[:100]}")
+            logger.info(f"    [-] CMD failed for '{cmd[:50]}...': {error_msg[:100]}")
             result["outputs"][cmd] = error_msg
 
     return result
@@ -690,7 +690,7 @@ def _pg_read_sensitive_tables(conn) -> list[dict]:
                     "sample": sample,
                 })
         except Exception as exc:
-            print(f"    [!] Could not read {table_name}: {exc}")
+            logger.info(f"    [!] Could not read {table_name}: {exc}")
 
     return results
 

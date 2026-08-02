@@ -99,7 +99,6 @@ markers = [
   "mock_validity: tests that validate mock responses against real Vault API behavior",
   "slow: tests that take > 5 seconds",
 ]
-]
 
 [tool.coverage.run]
 source = ["."]

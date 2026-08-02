@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 
 from core.risk_score import calculate_risk
+from core.logger import logger
 
 
 SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "PASS")
@@ -40,7 +41,7 @@ class Report:
 
         normalized = severity.upper()
         if normalized not in SEVERITY_RANK:
-            print(f"[!] Unknown severity filter ignored: {severity}")
+            logger.warning(f"[!] Unknown severity filter ignored: {severity}")
             self._min_severity = None
             return
 
@@ -121,26 +122,26 @@ class Report:
     # ── reporting ──────────────────────────────────────────────────────
 
     def print_report(self):
-        print("\n===============================")
-        print("Vault Pentest Findings Report")
-        print("===============================")
+        logger.info("\n===============================")
+        logger.info("Vault Pentest Findings Report")
+        logger.info("===============================")
 
         visible = self._visible_findings()
 
         if not visible:
-            print("[PASS] No major findings detected.")
+            logger.info("[PASS] No major findings detected.")
             self.print_risk_summary()
             return
 
         for finding in visible:
-            print(f"\n[{finding['severity']}] {finding['title']}")
-            print(f"Description: {finding['description']}")
+            logger.info(f"\n[{finding['severity']}] {finding['title']}")
+            logger.info(f"Description: {finding['description']}")
             if finding.get("evidence"):
-                print(f"Evidence: {finding['evidence']}")
+                logger.info(f"Evidence: {finding['evidence']}")
             if finding.get("module"):
-                print(f"Module: {finding['module']}")
+                logger.info(f"Module: {finding['module']}")
             if finding.get("target"):
-                print(f"Target: {finding['target']}")
+                logger.info(f"Target: {finding['target']}")
 
         self.print_risk_summary()
         self.print_overall_risk()
@@ -157,24 +158,24 @@ class Report:
 
     def print_risk_summary(self):
         summary = self.get_risk_summary()
-        print("\nRisk Summary")
-        print("------------")
+        logger.info("\nRisk Summary")
+        logger.info("------------")
         for severity in SEVERITY_ORDER:
-            print(f"{severity:<8} : {summary.get(severity, 0)}")
-        print(f"\nTotal Findings: {summary['total']}")
+            logger.info(f"{severity:<8} : {summary.get(severity, 0)}")
+        logger.info(f"\nTotal Findings: {summary['total']}")
 
     def print_overall_risk(self):
         risk = calculate_risk(self._visible_findings())
-        print("\nOverall Risk")
-        print("------------")
-        print(f"Risk Score : {risk['score']} / 100")
-        print(f"Grade      : {risk['grade']}")
-        print(f"Deduplicated groups: {risk.get('effective_groups', '?')}")
+        logger.info("\nOverall Risk")
+        logger.info("------------")
+        logger.info(f"Risk Score : {risk['score']} / 100")
+        logger.info(f"Grade      : {risk['grade']}")
+        logger.info(f"Deduplicated groups: {risk.get('effective_groups', '?')}")
         if risk.get("damping_applied"):
-            print("(sqrt-damping applied — duplicate findings deduplicated)")
+            logger.info("(sqrt-damping applied — duplicate findings deduplicated)")
         paradox = risk.get("token_paradox")
         if paradox and paradox.get("paradox"):
-            print(f"\n⚠️  TOKEN PARADOX: {paradox['note'][:300]}")
+            logger.info(f"\n⚠️  TOKEN PARADOX: {paradox['note'][:300]}")
 
     def export_json_report(self, output_path: str, target=None):
         report_path = _resolve_report_path(output_path)
@@ -189,10 +190,10 @@ class Report:
             report_path.parent.mkdir(parents=True, exist_ok=True)
             with report_path.open("w", encoding="utf-8") as report_file:
                 json.dump(report_data, report_file, indent=2, ensure_ascii=False)
-            print(f"\n[+] JSON report written: {report_path}")
+            logger.info(f"\n[+] JSON report written: {report_path}")
             return report_path
         except OSError as error:
-            print(f"\n[!] Could not write JSON report: {error}")
+            logger.info(f"\n[!] Could not write JSON report: {error}")
             return None
 
     def export_markdown_report(self, output_path: str, target=None):
@@ -244,10 +245,10 @@ class Report:
         try:
             report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text("\n".join(lines), encoding="utf-8")
-            print(f"\n[+] Markdown report written: {report_path}")
+            logger.info(f"\n[+] Markdown report written: {report_path}")
             return report_path
         except OSError as error:
-            print(f"\n[!] Could not write Markdown report: {error}")
+            logger.info(f"\n[!] Could not write Markdown report: {error}")
             return None
 
     def export_pdf_report(self, output_path: str, target=None):
@@ -572,10 +573,10 @@ class Report:
         try:
             report_path.parent.mkdir(parents=True, exist_ok=True)
             pdf.output(str(report_path))
-            print(f"\n[+] PDF report written: {report_path}")
+            logger.info(f"\n[+] PDF report written: {report_path}")
             return report_path
         except OSError as error:
-            print(f"\n[!] Could not write PDF report: {error}")
+            logger.info(f"\n[!] Could not write PDF report: {error}")
             return None
 
 

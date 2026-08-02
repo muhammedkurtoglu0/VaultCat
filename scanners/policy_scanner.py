@@ -1,6 +1,7 @@
 import io
 
 from core.report import add_finding
+from core.logger import logger
 
 
 MODULE_NAME = "policy_scanner"
@@ -9,7 +10,7 @@ HIGH_RISK_CAPABILITIES = {"write", "delete", "sudo"}
 
 
 def read_policy(client, policy_name):
-    print(f"\n[+] Reading policy: {policy_name}")
+    logger.info(f"\n[+] Reading policy: {policy_name}")
 
     response = client.request("GET", f"sys/policies/acl/{policy_name}")
 
@@ -17,19 +18,19 @@ def read_policy(client, policy_name):
         return None
 
     if response.status_code == 200:
-        print("[+] Policy read successful.")
+        logger.info("[+] Policy read successful.")
 
         policy_data = response.json()
         policy_text = policy_data.get("data", {}).get("policy", "")
 
-        print("\n--- Policy Content ---")
-        print(policy_text)
-        print("----------------------")
+        logger.info("\n--- Policy Content ---")
+        logger.info(policy_text)
+        logger.info("----------------------")
 
         return policy_text
 
     elif response.status_code == 403:
-        print("[-] Permission denied. Token cannot read policy.")
+        logger.warning("[-] Permission denied. Token cannot read policy.")
 
         add_finding(
             "INFO",
@@ -40,7 +41,7 @@ def read_policy(client, policy_name):
         return None
 
     elif response.status_code == 404:
-        print("[-] Policy not found.")
+        logger.warning("[-] Policy not found.")
 
         add_finding(
             "LOW",
@@ -51,21 +52,21 @@ def read_policy(client, policy_name):
         return None
 
     else:
-        print(f"[-] Status code: {response.status_code}")
-        print(response.text)
+        logger.warning(f"[-] Status code: {response.status_code}")
+        logger.info(response.text)
         return None
 
 
 def analyze_policy(policy_name, policy_text):
-    print(f"\n[+] Analyzing policy: {policy_name}")
+    logger.info(f"\n[+] Analyzing policy: {policy_name}")
 
     if not policy_text:
-        print("[-] Empty policy text.")
+        logger.warning("[-] Empty policy text.")
         return
 
     hcl_analysis = analyze_hcl_policy(policy_text, policy_name=policy_name)
     if hcl_analysis.get("parsed"):
-        print("[+] HCL policy analysis completed.")
+        logger.info("[+] HCL policy analysis completed.")
         return
 
     risky_keywords = {
@@ -104,7 +105,7 @@ def analyze_policy(policy_name, policy_text):
     for keyword, finding in risky_keywords.items():
         if keyword in policy_text:
             severity, title, description = finding
-            print(f"[{severity}] {title}")
+            logger.info(f"[{severity}] {title}")
 
             add_finding(
                 severity,
@@ -113,7 +114,7 @@ def analyze_policy(policy_name, policy_text):
             )
 
     if 'capabilities = ["read"]' in policy_text:
-        print("[PASS] Read-only policy detected.")
+        logger.info("[PASS] Read-only policy detected.")
 
         add_finding(
             "PASS",
@@ -121,7 +122,7 @@ def analyze_policy(policy_name, policy_text):
             f"Policy appears to be read-only: {policy_name}"
         )
 
-    print("[+] Policy analysis completed.")
+    logger.info("[+] Policy analysis completed.")
 
 
 def parse_hcl_policy(policy_text):

@@ -9,12 +9,13 @@ Usage::
     from core.fix_commands import get_fix_commands
     cmds = get_fix_commands(finding)
     for cmd in cmds:
-        print(f"  vault {cmd}")
+        logger.info(f"  vault {cmd}")
 """
 
 from __future__ import annotations
 
 from typing import Optional
+from core.logger import logger
 
 
 def get_fix_commands(finding: dict) -> list[str]:

@@ -2,6 +2,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "cors_scanner"
@@ -11,7 +12,7 @@ ENDPOINT = "/v1/sys/health"
 def scan_cors(target, context=None):
     findings = []
 
-    print("\n[+] Analyzing CORS behavior...")
+    logger.info("\n[+] Analyzing CORS behavior...")
 
     response = context.fetch_health_once() if context else safe_request("GET", target, ENDPOINT)
     if not isinstance(response, Response):
@@ -24,7 +25,7 @@ def scan_cors(target, context=None):
         if context else safe_request("OPTIONS", target, ENDPOINT)
     )
     if isinstance(options_response, Response):
-        print(f"OPTIONS {ENDPOINT} -> HTTP {options_response.status_code}")
+        logger.info(f"OPTIONS {ENDPOINT} -> HTTP {options_response.status_code}")
         if options_response.status_code in (200, 204):
             findings.append(add_finding(
                 "INFO",

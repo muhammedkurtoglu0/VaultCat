@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from core.report import add_finding
+from core.logger import logger
 
 
 def mask_secret(value):
@@ -8,7 +9,7 @@ def mask_secret(value):
 
 
 def scan_environment():
-    print("\n[+] Scanning environment variables...")
+    logger.info("\n[+] Scanning environment variables...")
 
     vault_vars = [
         "VAULT_TOKEN",
@@ -25,7 +26,7 @@ def scan_environment():
             found_any = True
             masked_value = mask_secret(value)
 
-            print(f"[!] {var} found: {masked_value}")
+            logger.warning(f"[!] {var} found: {masked_value}")
 
             if var == "VAULT_TOKEN":
                 add_finding(
@@ -42,7 +43,7 @@ def scan_environment():
                 )
 
     if not found_any:
-        print("[PASS] No Vault-related environment variables found.")
+        logger.info("[PASS] No Vault-related environment variables found.")
 
         add_finding(
             "PASS",
@@ -51,7 +52,7 @@ def scan_environment():
         )
 
 def scan_vault_token_file():
-    print("\n[+] Scanning for .vault-token file...")
+    logger.info("\n[+] Scanning for .vault-token file...")
 
     token_file = Path.home() / ".vault-token"
 
@@ -60,8 +61,8 @@ def scan_vault_token_file():
             token_value = token_file.read_text().strip()
             masked_value = mask_secret(token_value)
 
-            print(f"[!] .vault-token file found: {token_file}")
-            print(f"[!] Token preview: {masked_value}")
+            logger.warning(f"[!] .vault-token file found: {token_file}")
+            logger.warning(f"[!] Token preview: {masked_value}")
 
             add_finding(
                 "HIGH",
@@ -70,7 +71,7 @@ def scan_vault_token_file():
             )
 
         except Exception as error:
-            print(f"[!] Could not read .vault-token file: {error}")
+            logger.warning(f"[!] Could not read .vault-token file: {error}")
 
             add_finding(
                 "MEDIUM",
@@ -79,7 +80,7 @@ def scan_vault_token_file():
             )
 
     else:
-        print("[PASS] .vault-token file not found.")
+        logger.info("[PASS] .vault-token file not found.")
 
         add_finding(
             "PASS",

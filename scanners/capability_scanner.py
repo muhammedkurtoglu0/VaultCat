@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from core.report import add_finding
 from core.tls_config import get_verify, vault_request
+from core.logger import logger
 
 MODULE = "capability_scanner"
 
@@ -124,10 +125,10 @@ def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, time
     Mount paths are discovered dynamically via ``sys/internal/ui/mounts``
     (unauthenticated) so that environment-specific KV engines are included.
     """
-    print("\n[+] Auditing token capabilities with sys/capabilities-self...")
+    logger.info("\n[+] Auditing token capabilities with sys/capabilities-self...")
 
     if not vault_addr or not token:
-        print("[!] Capability audit requires both Vault address and token.")
+        logger.warning("[!] Capability audit requires both Vault address and token.")
         return []
 
     audit_paths = _normalize_paths(paths)
@@ -139,12 +140,12 @@ def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, time
             if p not in audit_paths:
                 audit_paths.append(p)
 
-    print(f"[*] Auditing {len(audit_paths)} paths...")
+    logger.info(f"[*] Auditing {len(audit_paths)} paths...")
 
     try:
         import hvac
     except ImportError:
-        print("[!] Missing dependency: hvac. Install requirements before running capability audit.")
+        logger.warning("[!] Missing dependency: hvac. Install requirements before running capability audit.")
         add_finding(
             severity="LOW",
             title="Capability audit dependency missing",
@@ -166,7 +167,7 @@ def audit_token_capabilities(vault_addr, token, paths=None, namespace=None, time
         )
         response = _query_capabilities_self(client, audit_paths)
     except Exception as error:
-        print(f"[!] Capability audit failed: {error}")
+        logger.warning(f"[!] Capability audit failed: {error}")
         add_finding(
             severity="LOW",
             title="Token capability audit failed",
@@ -456,7 +457,7 @@ def _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, verify):
     if not sudo_read_paths:
         return
 
-    print(f"\n[*] Probing {len(sudo_read_paths)} privileged wildcard path(s) for secrets...")
+    logger.info(f"\n[*] Probing {len(sudo_read_paths)} privileged wildcard path(s) for secrets...")
     vault_addr = vault_addr.rstrip("/")
 
     for wildcard_path in sudo_read_paths:
@@ -494,7 +495,7 @@ def _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, verify):
 
             found_any = True
             keys_found = list(secret_data.keys())
-            print(f"[+] SECRET FOUND: {secret_path} -> {keys_found}")
+            logger.info(f"[+] SECRET FOUND: {secret_path} -> {keys_found}")
 
             add_finding(
                 severity="CRITICAL",
@@ -514,7 +515,7 @@ def _probe_sudo_secrets(vault_addr, token, results, namespace, timeout, verify):
             )
 
         if not found_any:
-            print(f"    {wildcard_path} -> no secrets found under {data_base}")
+            logger.info(f"    {wildcard_path} -> no secrets found under {data_base}")
 
 
 def _wildcard_base_path(wildcard_path):

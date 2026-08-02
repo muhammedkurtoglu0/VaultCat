@@ -11,7 +11,7 @@ Usage::
 
     results = await search_web("Vault CVE-2024-2048 exploit", max_results=5)
     for r in results:
-        print(r["title"], r["url"])
+        logger.info(r["title"], r["url"])
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+from core.logger import logger
 
 # Cache directory
 _CACHE_DIR = Path("cache/web_search")
@@ -174,7 +175,7 @@ def _fetch_page_text(url: str) -> str | None:
         resp = requests.get(url, timeout=8, stream=True)
         resp.raise_for_status()
     except Exception as exc:
-        print(f"[web_search] Fetch error for {url}: {exc}")
+        logger.info(f"[web_search] Fetch error for {url}: {exc}")
         return None
 
     # Honour Content-Length if declared
@@ -183,7 +184,7 @@ def _fetch_page_text(url: str) -> str | None:
         try:
             cl = int(content_length_str)
             if cl > 200_000:
-                print(f"[web_search] Skipping {url}: Content-Length={cl} > 200KB")
+                logger.info(f"[web_search] Skipping {url}: Content-Length={cl} > 200KB")
                 resp.close()
                 return None
         except ValueError:
@@ -198,10 +199,10 @@ def _fetch_page_text(url: str) -> str | None:
                 chunks.append(chunk)
                 total += len(chunk)
                 if total > 200_000:
-                    print(f"[web_search] Truncating {url} at 200KB")
+                    logger.info(f"[web_search] Truncating {url} at 200KB")
                     break
     except Exception as exc:
-        print(f"[web_search] Stream error for {url}: {exc}")
+        logger.info(f"[web_search] Stream error for {url}: {exc}")
         resp.close()
         return None
     finally:
@@ -300,7 +301,7 @@ def _search_ddg_sync(query: str, max_results: int = 5) -> list[dict]:
         try:
             from duckduckgo_search import DDGS  # legacy package
         except ImportError:
-            print("[web_search] ddgs not installed. Run: pip install ddgs")
+            logger.info("[web_search] ddgs not installed. Run: pip install ddgs")
             return []
 
     try:
@@ -309,7 +310,7 @@ def _search_ddg_sync(query: str, max_results: int = 5) -> list[dict]:
             with DDGS() as ddgs:
                 raw = list(ddgs.text(query, max_results=max_results))
     except Exception as exc:
-        print(f"[web_search] DuckDuckGo error: {exc}")
+        logger.info(f"[web_search] DuckDuckGo error: {exc}")
         return []
 
     results: list[dict] = []
@@ -332,12 +333,12 @@ def _search_tavily_sync(query: str, max_results: int = 5) -> list[dict]:
     try:
         from tavily import TavilyClient
     except ImportError:
-        print("[web_search] tavily-python not installed. Run: pip install tavily-python")
+        logger.info("[web_search] tavily-python not installed. Run: pip install tavily-python")
         return []
 
     api_key = _get_tavily_key()
     if not api_key:
-        print("[web_search] TAVILY_API_KEY not set. Using DuckDuckGo instead.")
+        logger.info("[web_search] TAVILY_API_KEY not set. Using DuckDuckGo instead.")
         return _search_ddg_sync(query, max_results)
 
     try:
@@ -345,7 +346,7 @@ def _search_tavily_sync(query: str, max_results: int = 5) -> list[dict]:
         response = client.search(query=query, max_results=max_results)
         raw = response.get("results", [])
     except Exception as exc:
-        print(f"[web_search] Tavily error: {exc} — falling back to DuckDuckGo.")
+        logger.info(f"[web_search] Tavily error: {exc} — falling back to DuckDuckGo.")
         return _search_ddg_sync(query, max_results)
 
     results: list[dict] = []

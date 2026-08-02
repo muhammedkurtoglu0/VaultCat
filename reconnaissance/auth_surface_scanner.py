@@ -2,6 +2,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "auth_surface_scanner"
@@ -29,7 +30,7 @@ def scan_auth_surface(target, context=None):
     findings = []
     detected_mounts = {}
 
-    print("\n[+] Scanning authentication surface...")
+    logger.info("\n[+] Scanning authentication surface...")
 
     for endpoint in AUTH_ENDPOINTS:
         response = (
@@ -38,10 +39,10 @@ def scan_auth_surface(target, context=None):
         )
 
         if not isinstance(response, Response):
-            print(f"[-] {endpoint} request failed: {response}")
+            logger.warning(f"[-] {endpoint} request failed: {response}")
             continue
 
-        print(f"{endpoint} -> HTTP {response.status_code}")
+        logger.info(f"{endpoint} -> HTTP {response.status_code}")
 
         if endpoint == "/v1/sys/internal/ui/mounts":
             detected_mounts.update(_parse_ui_mounts_response(response, endpoint))

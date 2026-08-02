@@ -56,7 +56,7 @@ class CVEScannerModule(BaseExecutionModule):
 
                 # 3. Exploit edilebilir olanları dene
                 if cve.get("exploitable") and cve.get("exploit_func"):
-                    print(f"[*] [CVE] {cve['id']} exploit deneniyor...")
+                    logger.info(f"[*] [CVE] {cve['id']} exploit deneniyor...")
                     try:
                         exploit_result = cve["exploit_func"](target, token, context)
                         if exploit_result.get("success"):

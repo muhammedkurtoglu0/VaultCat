@@ -2,6 +2,7 @@ import asyncio
 
 from core.report import add_finding
 from core.tls_config import get_verify
+from core.logger import logger
 
 
 MODULE = "kv_enumerator"
@@ -185,7 +186,7 @@ def scan_kv_tree(
     read_leaves=True,
     blind_brute=False,
 ):
-    print("\n[+] Enumerating accessible KV secret paths...")
+    logger.info("\n[+] Enumerating accessible KV secret paths...")
 
     if not vault_addr or not token or not start_path:
         add_finding(
@@ -468,27 +469,27 @@ async def _blind_brute_path(
 
 
 def _print_tree(tree):
-    print(f"Mount      : {tree['mount']}")
-    print(f"KV Version : {tree['kv_version']}")
-    print(f"Start Path : {_display_path(tree['mount'], tree['start_path'])}")
-    print("\nAccessible KV Tree")
-    print("------------------")
+    logger.info(f"Mount      : {tree['mount']}")
+    logger.info(f"KV Version : {tree['kv_version']}")
+    logger.info(f"Start Path : {_display_path(tree['mount'], tree['start_path'])}")
+    logger.info("\nAccessible KV Tree")
+    logger.info("------------------")
     _print_nested_tree(tree["mount"], tree.get("tree", {}))
 
     if tree.get("blind_hits"):
-        print("\nBlind Enumeration Hits (LIST denied, brute-forced common names)")
-        print("---------------------------------------------------------------")
+        logger.info("\nBlind Enumeration Hits (LIST denied, brute-forced common names)")
+        logger.info("---------------------------------------------------------------")
         for hit in tree["blind_hits"]:
-            print(f"  {hit}")
+            logger.info(f"  {hit}")
     if tree.get("blind_hits_note"):
         for note in tree["blind_hits_note"]:
-            print(f"  [{note}]")
+            logger.info(f"  [{note}]")
 
     if tree["errors"]:
-        print("\nEnumeration Notes")
-        print("-----------------")
+        logger.info("\nEnumeration Notes")
+        logger.info("-----------------")
         for error in tree["errors"]:
-            print(f"{error['path']} -> {error['error']}")
+            logger.info(f"{error['path']} -> {error['error']}")
 
 
 def _build_nested_tree(tree):
@@ -512,7 +513,7 @@ def _build_nested_tree(tree):
 
 
 def _print_nested_tree(mount, nested_tree):
-    print(f"{mount.rstrip('/')}/")
+    logger.info(f"{mount.rstrip('/')}/")
     _print_nested_children(nested_tree, indent="  ")
 
 
@@ -523,9 +524,9 @@ def _print_nested_children(node, indent):
         child_type = child.get("_type")
         if child_type == "secret":
             readable = "readable" if child.get("readable") else "not-readable"
-            print(f"{indent}{name} ({readable}, keys: {child.get('key_count')})")
+            logger.info(f"{indent}{name} ({readable}, keys: {child.get('key_count')})")
         else:
-            print(f"{indent}{name}/")
+            logger.info(f"{indent}{name}/")
             _print_nested_children(child, indent + "  ")
 
 

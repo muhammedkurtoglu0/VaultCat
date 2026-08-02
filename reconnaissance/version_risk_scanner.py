@@ -4,6 +4,7 @@ from requests import Response
 
 from core.report import add_finding
 from reconnaissance.http_utils import safe_request
+from core.logger import logger
 
 
 MODULE_NAME = "version_risk_scanner"
@@ -21,7 +22,7 @@ RECOMMENDATION = (
 def scan_version_risk(target, context=None):
     findings = []
 
-    print("\n[+] Assessing Vault version risk...")
+    logger.info("\n[+] Assessing Vault version risk...")
 
     response = context.fetch_health_once() if context else safe_request("GET", target, "/v1/sys/health")
     if not isinstance(response, Response):

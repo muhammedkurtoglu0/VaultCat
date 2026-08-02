@@ -1,6 +1,7 @@
 from core.report import add_finding
 from core.tls_config import get_verify
 from scanners.policy_scanner import analyze_hcl_policy
+from core.logger import logger
 
 
 MODULE = "policy_auditor"
@@ -18,7 +19,7 @@ def scan_policy_audit(vault_addr, token, namespace=None, timeout=TIMEOUT):
     back to individual reads using candidate names derived from the token's
     own policies and well-known built-in names (default, root).
     """
-    print("\n[+] Auditing readable Vault ACL policies (sys/policies/acl)...")
+    logger.info("\n[+] Auditing readable Vault ACL policies (sys/policies/acl)...")
 
     if not vault_addr or not token:
         add_finding(
@@ -134,7 +135,7 @@ def scan_policy_audit(vault_addr, token, namespace=None, timeout=TIMEOUT):
         target=vault_addr,
     )
 
-    print(f"[+] Policy audit completed: {len(audited)} analyzed, {len(denied)} denied"
+    logger.info(f"[+] Policy audit completed: {len(audited)} analyzed, {len(denied)} denied"
           f"{' (fallback)' if fallback_used else ''}.")
     return {"policies": policy_names, "audited": audited, "denied": denied}
 

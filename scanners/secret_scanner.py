@@ -1,8 +1,9 @@
 from core.report import add_finding
+from core.logger import logger
 
 
 def test_secret_read(client, path):
-    print(f"\n[+] Testing secret read access: {path}")
+    logger.info(f"\n[+] Testing secret read access: {path}")
 
     response = client.request("GET", path)
 
@@ -10,8 +11,8 @@ def test_secret_read(client, path):
         return
 
     if response.status_code == 200:
-        print("[+] Secret read successful.")
-        print("[!] This token can access the given secret path.")
+        logger.info("[+] Secret read successful.")
+        logger.warning("[!] This token can access the given secret path.")
 
         add_finding(
             "INFO",
@@ -19,10 +20,10 @@ def test_secret_read(client, path):
             f"Token can read secret path: {path}"
         )
 
-        print(response.json())
+        logger.info(response.json())
 
     elif response.status_code == 403:
-        print("[-] Permission denied. Token cannot read this path.")
+        logger.warning("[-] Permission denied. Token cannot read this path.")
 
         add_finding(
             "PASS",
@@ -31,8 +32,8 @@ def test_secret_read(client, path):
         )
 
     elif response.status_code == 404:
-        print("[-] Secret path not found.")
+        logger.warning("[-] Secret path not found.")
 
     else:
-        print(f"[-] Status code: {response.status_code}")
-        print(response.text)
+        logger.warning(f"[-] Status code: {response.status_code}")
+        logger.info(response.text)

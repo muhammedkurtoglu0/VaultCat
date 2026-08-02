@@ -1,6 +1,7 @@
 from typing import Optional
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
+from core.logger import logger
 
 
 TIMEOUT = 10
@@ -28,7 +29,7 @@ class CloudPivotModule(BaseExecutionModule):
         provider = params.get("provider", "aws").lower()
         region = params.get("region", "us-east-1")
         
-        print(f"[*] [ACTIVE] Connecting to {provider.upper()} cloud...")
+        logger.info(f"[*] [ACTIVE] Connecting to {provider.upper()} cloud...")
 
         # AWS
         if provider == "aws":
