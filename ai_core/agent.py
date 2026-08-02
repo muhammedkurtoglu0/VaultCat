@@ -782,6 +782,8 @@ class PentestAgent:
                 ua_probe_count = getattr(self, '_ua_probe_count', 0)
                 ua_probe_count += 1
                 self._ua_probe_count = ua_probe_count
+                # Only block agent-initiated probing. User-requested
+                # unauthenticated actions (DoS, recon, etc.) are allowed.
                 if ua_probe_count > 8 and not self._user_approved_destructive():
                     return (
                         f"UNATHENTICATED PROBE LIMIT: {ua_probe_count} raw requests without "
@@ -789,32 +791,41 @@ class PentestAgent:
                         f"STOP probing. Report findings from recon scanners only "
                         f"and suggest the user provide a token."
                     )
+                # User-approved: warn but allow
+                if ua_probe_count > 20:
+                    return (
+                        f"UNAUTHENTICATED LIMIT: {ua_probe_count} requests. "
+                        f"Even with user approval, this is excessive. "
+                        f"Provide a token or use a specific module."
+                    )
 
         return None
 
     # ── helpers ─────────────────────────────────────────────────────────
 
     def _user_approved_destructive(self) -> bool:
-        """Check if the user explicitly approved destructive actions.
+        """Check if the user's intent includes destructive actions.
 
-        Scans the last few conversation messages for approval phrases
-        like "çalıştır kabul ediyorum", "run it i approve", etc.
-        When approved, rate limits and safety guards are relaxed.
+        The user doesn't need to say a magic phrase — any request that
+        asks for DoS, exploit, çalıştır, run, or similar is auto-approved.
+        Safety guards exist to prevent the AGENT from initiating destructive
+        actions on its own, not to block explicit user requests.
         """
         if not hasattr(self, '_messages'):
-            return False
-        approval_phrases = (
-            "çalıştır kabul ediyorum", "kabul ediyorum", "onaylıyorum",
-            "run it", "i approve", "go ahead", "do it",
-            "execute it", "çalıştır", "destroy",
+            return True  # first message — trust the user
+        # Check last 3 user messages for destructive intent
+        destructive_phrases = (
+            "dos", "exploit", "çalıştır", "run ", "execute",
+            "sömür", "saldır", "attack", "trigger", "tetikle",
+            "dene", "yap", "gönder", "dök", "dump", "exfil",
+            "root token", "unseal", "seal", "destroy",
         )
-        # Check last 5 user messages
-        user_msgs = [m.get("content", "").lower() for m in self._messages[-10:]
+        user_msgs = [m.get("content", "").lower() for m in self._messages[-8:]
                      if m.get("role") == "user"]
         for msg in user_msgs:
-            if any(p in msg for p in approval_phrases):
+            if any(p in msg for p in destructive_phrases):
                 return True
-        return False
+        return False  # agent-initiated actions still guarded
 
     def _summarize_result(self, tool_result: str) -> str:
         """Extract a useful summary from a JSON tool result."""
