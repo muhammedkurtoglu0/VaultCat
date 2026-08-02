@@ -404,10 +404,10 @@ async def search_web(
     # ── Race: DuckDuckGo vs Tavily, take whichever returns first ─────
     import asyncio
 
-    tasks = [asyncio.to_thread(_search_ddg_sync, query, max_results)]
+    tasks = [asyncio.create_task(asyncio.to_thread(_search_ddg_sync, query, max_results))]
     tavily_key = _get_tavily_key()
     if tavily_key:
-        tasks.append(asyncio.to_thread(_search_tavily_sync, query, max_results))
+        tasks.append(asyncio.create_task(asyncio.to_thread(_search_tavily_sync, query, max_results)))
 
     # Fire both, return the FIRST non-empty result (or the DDG result if
     # Tavily finishes first but DDG already has results).  We don't cancel

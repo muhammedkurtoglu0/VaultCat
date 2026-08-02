@@ -38,8 +38,11 @@ except ImportError:
 else:
     _logger.remove()  # drop default handler
 
-    # ── Custom SUCCESS level (25, between INFO=20 and WARNING=30) ──────
-    _logger.level("SUCCESS", no=25, color="<green>", icon="✅")
+    # ── Custom SUCCESS level (loguru >=0.7 has it built-in) ──────────
+    try:
+        _logger.level("SUCCESS", no=25, color="<green>", icon="✅")
+    except ValueError:
+        pass  # already registered (loguru >=0.7 ships SUCCESS built-in)
 
     LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
     LOG_DIR.mkdir(exist_ok=True)

@@ -782,7 +782,7 @@ class PentestAgent:
                 ua_probe_count = getattr(self, '_ua_probe_count', 0)
                 ua_probe_count += 1
                 self._ua_probe_count = ua_probe_count
-                if ua_probe_count > 8:
+                if ua_probe_count > 8 and not self._user_approved_destructive():
                     return (
                         f"UNATHENTICATED PROBE LIMIT: {ua_probe_count} raw requests without "
                         f"a token. Most Vault endpoints return 403 without auth. "
@@ -793,6 +793,28 @@ class PentestAgent:
         return None
 
     # ── helpers ─────────────────────────────────────────────────────────
+
+    def _user_approved_destructive(self) -> bool:
+        """Check if the user explicitly approved destructive actions.
+
+        Scans the last few conversation messages for approval phrases
+        like "çalıştır kabul ediyorum", "run it i approve", etc.
+        When approved, rate limits and safety guards are relaxed.
+        """
+        if not hasattr(self, '_messages'):
+            return False
+        approval_phrases = (
+            "çalıştır kabul ediyorum", "kabul ediyorum", "onaylıyorum",
+            "run it", "i approve", "go ahead", "do it",
+            "execute it", "çalıştır", "destroy",
+        )
+        # Check last 5 user messages
+        user_msgs = [m.get("content", "").lower() for m in self._messages[-10:]
+                     if m.get("role") == "user"]
+        for msg in user_msgs:
+            if any(p in msg for p in approval_phrases):
+                return True
+        return False
 
     def _summarize_result(self, tool_result: str) -> str:
         """Extract a useful summary from a JSON tool result."""

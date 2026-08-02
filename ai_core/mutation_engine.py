@@ -32,8 +32,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from ai_core.attack_techniques import (
 from core.logger import logger
+from ai_core.attack_techniques import (
     AttackTechnique,
     TechniqueDomain,
     TechniquePhase,
