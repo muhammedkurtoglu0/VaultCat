@@ -31,10 +31,11 @@ from core.tls_config import get_verify, set_insecure_mode
 
 
 class EvasionProfile(str, Enum):
-    PARANOID = "paranoid"    # Max stealth: 5-15s jitter, 1 concurrency, heavy UA rotation
-    STEALTH = "stealth"      # High stealth: 2-8s jitter, 2 concurrency
-    BALANCED = "balanced"    # Moderate: 1-3s jitter, 3 concurrency
-    AGGRESSIVE = "aggressive"  # Fast: 0-1s jitter, 5 concurrency (lab/dev)
+    PARANOID = "paranoid"      # Max stealth: 5-15s jitter, 1 concurrency, heavy UA rotation
+    STEALTH = "stealth"        # High stealth: 1-4s jitter, 2 concurrency
+    BALANCED = "balanced"      # Moderate: 0-1s jitter, 5 concurrency (good for most targets)
+    AGGRESSIVE = "aggressive"  # Fast: 0 jitter, 8 concurrency (lab/dev/known targets)
+    TURBO = "turbo"            # Full speed: 0 jitter, 15 concurrency (local lab only)
 
 
 # Profile settings
@@ -46,21 +47,27 @@ _PROFILE_CONFIG: dict[EvasionProfile, dict] = {
         "header_randomize": True,
     },
     EvasionProfile.STEALTH: {
-        "jitter_min": 2.0, "jitter_max": 8.0,
+        "jitter_min": 1.0, "jitter_max": 4.0,
         "max_concurrency": 2, "min_concurrency": 1,
         "ua_rotate_every": 3,
         "header_randomize": True,
     },
     EvasionProfile.BALANCED: {
-        "jitter_min": 1.0, "jitter_max": 3.0,
-        "max_concurrency": 3, "min_concurrency": 1,
+        "jitter_min": 0.0, "jitter_max": 1.0,
+        "max_concurrency": 5, "min_concurrency": 2,
         "ua_rotate_every": 10,
         "header_randomize": False,
     },
     EvasionProfile.AGGRESSIVE: {
-        "jitter_min": 0.0, "jitter_max": 1.0,
-        "max_concurrency": 5, "min_concurrency": 2,
+        "jitter_min": 0.0, "jitter_max": 0.0,
+        "max_concurrency": 8, "min_concurrency": 3,
         "ua_rotate_every": 50,
+        "header_randomize": False,
+    },
+    EvasionProfile.TURBO: {
+        "jitter_min": 0.0, "jitter_max": 0.0,
+        "max_concurrency": 15, "min_concurrency": 5,
+        "ua_rotate_every": 999,
         "header_randomize": False,
     },
 }

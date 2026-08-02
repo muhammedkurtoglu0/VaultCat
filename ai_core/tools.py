@@ -508,6 +508,55 @@ TOOL_RUN_NETWORK_PROBE = ToolDef(
     phase="recon",
 )
 
+TOOL_GET_FIX_COMMANDS = ToolDef(
+    name="get_fix_commands",
+    description=(
+        "Return exact Vault CLI commands to fix a specific finding. "
+        "Give it a finding title or description and it returns the "
+        "concrete 'vault policy write ...' / 'vault token revoke ...' "
+        "commands to remediate the issue. USE THIS when user asks "
+        "'how do I fix this?' or wants remediation steps."
+    ),
+    parameters=[
+        ToolParam(name="finding_title", type="string", description="Finding title or description to get fix commands for", required=True),
+        ToolParam(name="finding_module", type="string", description="Module that produced the finding (optional, helps narrow fixes)", required=False),
+        ToolParam(name="evidence", type="string", description="Finding evidence JSON (optional, for policy name extraction)", required=False),
+    ],
+    phase="report",
+)
+
+TOOL_SEARCH_TO_ACTIONS = ToolDef(
+    name="search_to_actions",
+    description=(
+        "Web'de arama yap ve sonuclari dogrudan calistirilabilir Vault API "
+        "cagrilarina (curl, vault CLI, requests) donustur. CVE exploit'leri "
+        "veya pentest teknikleri icin optimize edilmistir. "
+        "Sonuclar run_raw_vault_request ile hemen calistirilabilir."
+    ),
+    parameters=[
+        ToolParam(name="query", type="string", description="Search query (CVE ID, technique name, or free text)", required=True),
+        ToolParam(name="vault_addr", type="string", description="Target Vault URL to inject into action params", required=False),
+        ToolParam(name="max_results", type="integer", description="Max search results (default 3)", required=False),
+    ],
+    phase="recon",
+)
+
+TOOL_SET_PROFILE = ToolDef(
+    name="set_evasion_profile",
+    description=(
+        "Switch HTTP evasion profile mid-session. "
+        "'turbo' = 0 jitter, 15 concurrency (max speed, lab only). "
+        "'aggressive' = 0 jitter, 8 concurrency. "
+        "'balanced' = 0-1s jitter, 5 concurrency (default). "
+        "'stealth' = 1-4s jitter, 2 concurrency. "
+        "'paranoid' = 5-15s jitter, 1 concurrency."
+    ),
+    parameters=[
+        ToolParam(name="profile", type="string", description="Profile: turbo|aggressive|balanced|stealth|paranoid", required=True),
+    ],
+    phase="recon",
+)
+
 TOOL_EXPORT_FULL_REPORT = ToolDef(
     name="export_full_report",
     description=(
@@ -958,6 +1007,9 @@ ALL_TOOLS: list[ToolDef] = [
     TOOL_RUN_CONTAINER_SCAN,
     TOOL_GET_THREAT_INTEL,
     TOOL_GENERATE_DIFF_REPORT,
+    TOOL_GET_FIX_COMMANDS,
+    TOOL_SEARCH_TO_ACTIONS,
+    TOOL_SET_PROFILE,
 ]
 
 

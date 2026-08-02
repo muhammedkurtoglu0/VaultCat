@@ -408,6 +408,13 @@ def _analyze_agent_correlations(matches):
 
 
 def _analyze_cross_file_chains(matches):
+    """Detect complete Vault attack chains that span multiple files.
+
+    Unlike the per-file correlation in :func:`analyze_hijack_findings`,
+    this operates on the FULL match list across the entire scan scope.
+    Real attacks have ``VAULT_ADDR`` in one file and ``VAULT_TOKEN`` in
+    another — this function connects those dots.
+    """
     patterns = {match["pattern"] for match in matches}
     material_patterns = {
         match["pattern"]
@@ -415,29 +422,29 @@ def _analyze_cross_file_chains(matches):
         if match.get("material", True)
     }
 
-    has_vault_addr = bool({"vault_addr_assignment", "vault_8200_url"} & patterns)
-    has_approle_pair = (
-        "vault_role_id" in material_patterns
-        and "vault_secret_id" in material_patterns
-    )
+    # ── File-level grouping (for pinpointing which file has what) ──────
+    # Build a "constellation map": which files contain which credential types
+    addr_files = _files_with_patterns(matches, {"vault_addr_assignment", "vault_8200_url"})
+    token_files = _files_with_patterns(matches, {"vault_response_wrapped_token", "vault_token_value", "vault_token_assignment"})
+    role_id_files = _files_with_patterns(matches, {"vault_role_id"})
+    secret_id_files = _files_with_patterns(matches, {"vault_secret_id"})
+    aws_key_files = _files_with_patterns(matches, {"aws_access_key_id"}, material_only=True)
+    aws_secret_files = _files_with_patterns(matches, {"aws_secret_access_key"}, material_only=True)
+    db_user_files = _files_with_patterns(matches, {"database_static_username"}, material_only=True)
+    db_pass_files = _files_with_patterns(matches, {"database_static_password"}, material_only=True)
+
+    has_vault_addr = bool(addr_files)
+    has_token = bool(token_files)
+    has_approle_pair = bool(role_id_files and secret_id_files)
     has_aws_auth = bool({
-        "aws_iam_login",
-        "aws_cli_login",
-        "aws_auth_role_config",
-        "vault_aws_auth_reference",
-        "vault_aws_iam_server_id",
+        "aws_iam_login", "aws_cli_login", "aws_auth_role_config",
+        "vault_aws_auth_reference", "vault_aws_iam_server_id",
         "aws_bound_iam_principal",
     } & patterns)
-    has_aws_material = bool({
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        "aws_session_token",
-    } & material_patterns) or "aws_role_arn" in patterns
+    has_aws_material = bool(aws_key_files or aws_secret_files) or "aws_role_arn" in patterns
     has_database_context = bool({
-        "vault_database_config_path",
-        "vault_database_role_path",
-        "vault_database_creds_path",
-        "vault_database_plugin",
+        "vault_database_config_path", "vault_database_role_path",
+        "vault_database_creds_path", "vault_database_plugin",
         "vault_database_connection_url",
     } & patterns)
     has_database_static_password = "database_static_password" in material_patterns
@@ -446,24 +453,74 @@ def _analyze_cross_file_chains(matches):
     has_database_admin_policy_path = "vault_policy_database_role_admin_path" in patterns
     has_policy_write_capability = "vault_policy_write_capabilities" in patterns
 
+    # ── KEY PATTERN: VAULT_ADDR + VAULT_TOKEN across different files ───
+    if has_vault_addr and has_token:
+        distinct_files = addr_files | token_files
+        add_finding(
+            "CRITICAL",
+            "Cross-file Vault access chain: address + token",
+            (
+                f"VAULT_ADDR found in {_fmt_files(addr_files)} — "
+                f"VAULT_TOKEN found in {_fmt_files(token_files)}. "
+                f"An attacker with access to both files can authenticate "
+                f"directly to the Vault instance."
+            ),
+            recommendation="Treat all files containing Vault tokens as secret material. Never store tokens alongside configuration files.",
+            evidence=(
+                f"addr_files: {', '.join(sorted(addr_files)[:5])}, "
+                f"token_files: {', '.join(sorted(token_files)[:5])}, "
+                f"distinct_files: {len(distinct_files)}"
+            ),
+            module=MODULE_NAME,
+            target="scanned-scope",
+        )
+    elif has_vault_addr and not has_token:
+        add_finding(
+            "MEDIUM",
+            "Vault address found without token material",
+            (
+                f"VAULT_ADDR found in {_fmt_files(addr_files)} but no "
+                f"token material was discovered. Search for tokens in "
+                f"environment variables, CI secrets, or .vault-token files."
+            ),
+            recommendation="Audit where Vault tokens are stored and ensure they are not accessible from the scanned scope.",
+            evidence=f"addr_files: {', '.join(sorted(addr_files)[:5])}",
+            module=MODULE_NAME,
+            target="scanned-scope",
+        )
+
     if has_vault_addr and has_approle_pair:
+        # Show which files have which piece
+        if role_id_files != secret_id_files:
+            detail = (
+                f"Role ID in {_fmt_files(role_id_files)}, "
+                f"Secret ID in {_fmt_files(secret_id_files)} — "
+                f"separate files, combined access chain."
+            )
+        else:
+            detail = f"Both in {_fmt_files(role_id_files)}"
         add_finding(
             "HIGH",
             "Cross-file AppRole Vault access chain discovered",
-            "Vault address, AppRole Role ID, and AppRole Secret ID were discovered within the scanned scope.",
+            f"Vault address + AppRole pair discovered. {detail}",
             recommendation="Treat this as a potential Vault authentication chain and rotate exposed Secret IDs.",
-            evidence="scope: scanned path, vault_addr: present, role_id: present, secret_id: present",
+            evidence=f"addr: {_fmt_files(addr_files)}, role_id: {_fmt_files(role_id_files)}, secret_id: {_fmt_files(secret_id_files)}",
             module=MODULE_NAME,
             target="scanned-scope",
         )
 
     if has_vault_addr and has_aws_auth and has_aws_material:
+        aws_all = aws_key_files | aws_secret_files
         add_finding(
             "HIGH",
             "Cross-file AWS IAM Vault access chain discovered",
-            "Vault address, AWS IAM Vault auth references, and AWS credential or role material were discovered within the scanned scope.",
+            (
+                f"Vault address + AWS auth references + AWS credential material "
+                f"spanning {len(addr_files | aws_all)} files. "
+                f"Keys in {_fmt_files(aws_all)}"
+            ),
             recommendation="Review whether the discovered AWS material can authenticate to Vault and rotate exposed credentials where needed.",
-            evidence="scope: scanned path, vault_addr: present, aws_auth_reference: present, aws_material: present",
+            evidence=f"addr: {_fmt_files(addr_files)}, aws_material: {_fmt_files(aws_all)}",
             module=MODULE_NAME,
             target="scanned-scope",
         )
@@ -472,9 +529,13 @@ def _analyze_cross_file_chains(matches):
         add_finding(
             "HIGH",
             "Cross-file Vault database access chain discovered",
-            "Vault address, database secrets engine references, and static database password material were discovered within the scanned scope.",
+            (
+                f"Vault address + database context + static DB password "
+                f"across {len(addr_files | db_pass_files)} files. "
+                f"DB pass in {_fmt_files(db_pass_files)}"
+            ),
             recommendation="Treat this as a potential path to database access or dynamic user generation and rotate exposed database credentials.",
-            evidence="scope: scanned path, vault_addr: present, database_context: present, static_db_password: present",
+            evidence=f"addr: {_fmt_files(addr_files)}, db_pass: {_fmt_files(db_pass_files)}",
             module=MODULE_NAME,
             target="scanned-scope",
         )
@@ -483,9 +544,9 @@ def _analyze_cross_file_chains(matches):
         add_finding(
             "HIGH",
             "Cross-file static DB credential and Vault database context discovered",
-            "Static database credentials and Vault database secrets engine context were discovered within the scanned scope.",
+            f"DB user in {_fmt_files(db_user_files)}, DB pass in {_fmt_files(db_pass_files)}",
             recommendation="Review whether the static credential is the Vault database plugin user and enforce least privilege.",
-            evidence="scope: scanned path, database_context: present, db_username: present, db_password: present",
+            evidence=f"db_user: {_fmt_files(db_user_files)}, db_pass: {_fmt_files(db_pass_files)}",
             module=MODULE_NAME,
             target="scanned-scope",
         )
@@ -494,7 +555,7 @@ def _analyze_cross_file_chains(matches):
         add_finding(
             "HIGH",
             "Cross-file destructive Vault database role template risk discovered",
-            "Database secrets engine context and destructive SQL indicators were discovered within the scanned scope.",
+            "Database secrets engine context and destructive SQL indicators discovered within the scanned scope.",
             recommendation="Review database role templates before credential generation and restrict role update permissions.",
             evidence="scope: scanned path, database_context: present, destructive_sql: present",
             module=MODULE_NAME,
@@ -505,12 +566,36 @@ def _analyze_cross_file_chains(matches):
         add_finding(
             "HIGH",
             "Cross-file Vault database role tampering path discovered",
-            "Vault database role/config context and policy write capabilities were discovered within the scanned scope.",
+            "Vault database role/config context and policy write capabilities discovered within the scanned scope.",
             recommendation="Confirm that no application or low-trust token can create, update, delete, or sudo Vault database role/config paths.",
             evidence="scope: scanned path, database_context: present, database_admin_path: present, write_capability: present",
             module=MODULE_NAME,
             target="scanned-scope",
         )
+
+
+# ── Cross-file helpers ──────────────────────────────────────────────────
+
+
+def _files_with_patterns(matches, pattern_names: set[str], material_only: bool = False) -> set[str]:
+    """Return the set of file paths that contain any of *pattern_names*."""
+    result: set[str] = set()
+    for m in matches:
+        if m["pattern"] in pattern_names:
+            if material_only and not m.get("material", True):
+                continue
+            result.add(m["file"])
+    return result
+
+
+def _fmt_files(files: set[str], max_items: int = 3) -> str:
+    """Format file set for human-readable evidence."""
+    if not files:
+        return "(none)"
+    sorted_files = sorted(files)
+    if len(sorted_files) <= max_items:
+        return ", ".join(sorted_files)
+    return f"{', '.join(sorted_files[:max_items])} (+{len(sorted_files) - max_items} more)"
 
 
 def _ttl_matches(file_matches):

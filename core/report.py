@@ -169,6 +169,12 @@ class Report:
         print("------------")
         print(f"Risk Score : {risk['score']} / 100")
         print(f"Grade      : {risk['grade']}")
+        print(f"Deduplicated groups: {risk.get('effective_groups', '?')}")
+        if risk.get("damping_applied"):
+            print("(sqrt-damping applied — duplicate findings deduplicated)")
+        paradox = risk.get("token_paradox")
+        if paradox and paradox.get("paradox"):
+            print(f"\n⚠️  TOKEN PARADOX: {paradox['note'][:300]}")
 
     def export_json_report(self, output_path: str, target=None):
         report_path = _resolve_report_path(output_path)
@@ -224,7 +230,15 @@ class Report:
                     f"- Target: `{finding.get('target', '')}`",
                     f"- Description: {finding.get('description', '')}",
                     f"- Evidence: `{finding.get('evidence', '')}`",
-                    "",
+                ])
+                # Vault CLI fix commands
+                try:
+                    from core.fix_commands import get_fix_commands
+                    for cmd in get_fix_commands(finding):
+                        lines.append(f"  - Fix: `vault {cmd}`")
+                except ImportError:
+                    pass
+                lines.extend([
                 ])
 
         try:
@@ -382,6 +396,31 @@ class Report:
                     pdf.set_x(15)
                     pdf.cell(0, 4, f"Module: {mod}", new_x="LMARGIN", new_y="NEXT")
                     pdf.set_text_color(0, 0, 0)
+
+                # ── Vault CLI Fix Commands ──────────────────────────────
+                try:
+                    from core.fix_commands import get_fix_commands
+                    commands = get_fix_commands(finding)
+                    if commands:
+                        pdf.ln(2)
+                        pdf.set_font(body_font, "B", 8)
+                        pdf.set_fill_color(40, 120, 40)
+                        pdf.set_text_color(255, 255, 255)
+                        pdf.set_x(15)
+                        pdf.cell(18, 5, " FIX ", border=1, fill=True, new_x="RIGHT", new_y="TOP")
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.set_font(body_font, "", 7.5)
+                        for cmd in commands:
+                            if pdf.get_y() > pdf.h - 15:
+                                pdf.add_page()
+                            safe_cmd = cmd if _use_unicode else cmd.encode("ascii", errors="replace").decode()
+                            pdf.set_x(36)
+                            pdf.set_font(body_font, "", 7)
+                            pdf.set_text_color(60, 60, 60)
+                            pdf.multi_cell(0, 3.5, f"$ {safe_cmd}")
+                            pdf.set_text_color(0, 0, 0)
+                except ImportError:
+                    pass
 
                 pdf.ln(3)
 

@@ -2,16 +2,73 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Commands
+## Getting Started (for humans too!)
 
-**Install dependencies (Windows):**
+**Quick setup:**
+```bash
+git clone https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
+cd vault-pentest-tool
+uv sync                                          # deterministic build via uv.lock
+```
+
+**Run a scan (no token — unauthenticated recon only):**
+```bash
+uv run python main.py --target https://localhost:8200
+```
+
+**Run authenticated scan + capability audit:**
+```bash
+uv run python main.py --target https://localhost:8200 --token YOUR_TOKEN --capability-audit
+```
+
+**Start the lab (Docker):**
+```bash
+cd vault-pentest-lab
+docker compose up -d              # Vault 1.15.3 + PostgreSQL 16 + Pentest Tool
+./scripts/setup-lab.sh            # Init, unseal, seed secrets, create tokens
+source lab-tokens.env             # Load ROOT_TOKEN, LOW_PRIV_TOKEN, etc.
+cd ..
+uv run python main.py --target https://localhost:8200 --skip-tls-verify --token $ROOT_TOKEN
+```
+
+**Interactive AI agent:**
+```bash
+uv run python main.py chat --target https://localhost:8200 --token $ROOT_TOKEN --skip-tls-verify
+```
+
+**Run tests:**
+```bash
+uv run pytest                                          # all unit tests (fast)
+uv run pytest -m "not integration"                     # skip lab-dependent tests
+uv run pytest -m "integration" -v                      # only integration tests (lab required)
+```
+
+## Commands (Windows PowerShell)
+
+**Install:**
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+uv sync
 ```
 
 **Run all tests:**
+```powershell
+uv run pytest
+```
+
+**Run a single test file:**
+```powershell
+uv run pytest tests/test_scanners.py
+```
+
+**Run a single test by name:**
+```powershell
+uv run pytest tests/test_scanners.py -k test_hijack_analyzer_correlates_approle_pair_and_token_chain
+```
+
+On this Windows host, do not execute `.venv\Scripts\pytest.exe` directly. Windows Code Integrity blocks the generated
+console-script executable; always invoke pytest through `uv run pytest`.
+
+**Run all tests (legacy venv):**
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 ```

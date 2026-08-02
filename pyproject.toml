@@ -33,22 +33,38 @@ classifiers = [
   "Topic :: Security",
   "Topic :: System :: Systems Administration",
 ]
+
+# ── Runtime dependencies (mirrors requirements.txt) ─────────────────────
 dependencies = [
   "requests>=2.31.0",
   "hvac>=2.0.0",
   "aiohttp>=3.9.0",
   "python-hcl2>=6.0.0",
-  "mcp>=1.28.1",
+  "mcp>=1.28.1,<2.0.0",
   "openai>=2.44.0",
   "ollama>=0.6.0",
   "prompt_toolkit>=3.0.52",
   "fastapi>=0.139.0",
   "uvicorn>=0.50.2",
+  "anthropic>=0.57.0",
+  "typer>=0.15.0",
+  "fpdf2>=2.7.0",
+  "psycopg2-binary>=2.9",
+  "duckduckgo-search>=6.0",
+  "ddgs>=6.0",
+  "trafilatura>=1.6.0",
+  "beautifulsoup4>=4.12.0",
+  "customtkinter>=5.2.0",
+  "cryptography>=41.0.0",
+  "loguru>=0.7.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0.0",
+  "pytest-asyncio>=0.24.0",
+  "responses>=0.25.0",
+  "pytest-cov>=6.0.0",
 ]
 
 [project.urls]
@@ -74,3 +90,33 @@ packages = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+addopts = [
+  "--strict-markers",
+  "--tb=short",
+]
+markers = [
+  "integration: tests that require a running Vault lab (docker compose up)",
+  "mock_validity: tests that validate mock responses against real Vault API behavior",
+  "slow: tests that take > 5 seconds",
+]
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+  ".venv/*",
+  "tests/*",
+  "vault-pentest-lab/*",
+  "Lib/*",
+  "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_also = [
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "class .*\\bProtocol\\):",
+  "@(abc\\.)?abstractmethod",
+]
+fail_under = 70

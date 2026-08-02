@@ -13,6 +13,67 @@ from core.tls_config import get_verify, vault_request
 
 MODULE = "capability_scanner"
 
+# ── Wildcard deduplication ──────────────────────────────────────────────
+# Paths that are covered by a wildcard parent should NOT generate
+# separate findings — they inflate the report with duplicate spam.
+_WILDCARD_PARENTS: list[tuple[str, list[str]]] = [
+    # parent wildcard → children it covers (not worth separate findings)
+    ("*", []),  # universal — everything else is a duplicate
+    ("sys/*", ["sys/mounts", "sys/mounts/*", "sys/policies/*",
+               "sys/policies/acl/*", "sys/auth/*", "sys/audit/*",
+               "sys/seal", "sys/unseal", "sys/health"]),
+    ("auth/*", ["auth/token/*", "auth/token/create", "auth/token/lookup",
+                "auth/approle/*", "auth/userpass/*"]),
+    ("database/*", ["database/config/*", "database/roles/*",
+                    "database/creds/*", "database/static-roles/*"]),
+    ("secret/*", ["secret/data/*", "secret/metadata/*",
+                   "secret/data/admin/*", "secret/data/db/*",
+                   "secret/data/production/*", "secret/data/staging/*"]),
+    ("kv/*", ["kv/data/*", "kv/metadata/*"]),
+]
+
+# Per-mount wildcards: discovered dynamically for secret-X/*, secret-Y/* etc.
+_wildcard_cache: dict[str, set[str]] = {}
+
+
+def _is_covered_by_wildcard(path: str, wildcard_parents: list[str]) -> bool:
+    """Return True if *path* is already covered by any wildcard parent.
+
+    A path like ``secret/data/admin`` is covered by ``secret/*`` if the
+    token already has a finding for the parent wildcard.
+    """
+    for parent in wildcard_parents:
+        if parent.endswith("/*"):
+            base = parent[:-2]  # e.g. "secret" from "secret/*"
+            if path.startswith(base + "/") or path == base:
+                return True
+        elif parent == "*":
+            return True  # root wildcard covers everything
+    return False
+
+
+def _findings_have_wildcard_parent(path: str, existing_findings_titles: list[str]) -> bool:
+    """Check if existing findings already cover *path* via a wildcard.
+
+    Specifically: if we already reported "sudo on secret/*", don't also
+    report "sudo on secret/data/*" — it's the same finding.
+    """
+    for title in existing_findings_titles:
+        # Extract the path from the finding title pattern
+        # Titles look like: "Token has sudo capability on Vault path"
+        if " on " not in title:
+            continue
+        reported_path = title.rsplit(" on ", 1)[-1].strip()
+        if not reported_path:
+            continue
+        if reported_path.endswith("/*"):
+            base = reported_path[:-2]
+            if path.startswith(base + "/") or path == base:
+                return True
+        if reported_path == "*":
+            return True
+    return False
+
 DANGEROUS_CAPABILITIES = {"sudo", "create", "update", "delete", "patch", "root"}
 WRITE_CAPABILITIES = {"create", "update", "delete", "patch"}
 CRITICAL_PATH_PREFIXES = (
@@ -264,11 +325,19 @@ def _extract_capability_results(response, requested_paths):
 
 
 def _report_capability_findings(results, vault_addr):
+    """Report capability findings with wildcard deduplication.
+
+    When a token has ``sudo`` on ``secret/*``, we do NOT also report
+    separate findings for ``secret/data/*`` — the wildcard parent
+    already covers those sub-paths.  This prevents the classic
+    "50 identical findings spam" pentest report smell.
+    """
+    # ── Phase 1: collect raw findings by (type, path) ─────────────────
+    raw: list[dict] = []
     for result in results:
         path = result["path"]
         capabilities = set(result["capabilities"])
         dangerous = capabilities.intersection(DANGEROUS_CAPABILITIES)
-
         if not dangerous:
             continue
 
@@ -276,56 +345,59 @@ def _report_capability_findings(results, vault_addr):
             f"path: {path}; "
             f"capabilities: {', '.join(sorted(capabilities))}"
         )
-
-        if _is_over_privileged(path, dangerous):
-            add_finding(
-                severity="HIGH",
-                title="Over-privileged token capability on critical Vault path",
-                description=(
-                    "The supplied token has sudo or write-like capabilities on a critical Vault path. "
-                    "If the audited path contains a wildcard, the effective scope may be broader than least privilege."
-                ),
-                recommendation=(
-                    "Reduce the token policy to the minimum required paths and capabilities. "
-                    "Avoid wildcard access on system, auth, identity, and database role/config paths."
-                ),
-                evidence=f"{evidence}; {_over_privilege_evidence(path)}",
-                module=MODULE,
-                target=vault_addr,
-            )
-
         if "root" in dangerous:
-            add_finding(
-                severity="CRITICAL",
-                title="Token has root capability on Vault path",
-                description="The supplied token has root-equivalent access on the audited Vault path. ROOT MEANS FULL CONTROL.",
-                recommendation="This is a root token or has root policy. Never expose root tokens. Rotate immediately if compromised.",
-                evidence=evidence,
-                module=MODULE,
-                target=vault_addr,
-            )
+            raw.append({"type": "root", "severity": "CRITICAL",
+                         "title": f"Token has root capability — {path}",
+                         "desc": "ROOT means full control.", "rec": "Never expose root tokens.",
+                         "evidence": evidence, "path": path})
         elif "sudo" in dangerous:
-            add_finding(
-                severity="CRITICAL",
-                title="Token has sudo capability on Vault path",
-                description="The supplied token can perform privileged sudo operations on the audited Vault path.",
-                recommendation="Restrict sudo capabilities to tightly controlled administrative tokens and rotate exposed credentials.",
-                evidence=evidence,
-                module=MODULE,
-                target=vault_addr,
-            )
+            raw.append({"type": "sudo", "severity": "CRITICAL",
+                         "title": f"Token has sudo capability — {path}",
+                         "desc": "Privileged sudo operations permitted.", "rec": "Restrict sudo to tightly controlled admin tokens.",
+                         "evidence": evidence, "path": path})
+        elif dangerous.intersection(WRITE_CAPABILITIES):
+            raw.append({"type": "write", "severity": "HIGH",
+                         "title": f"Token has write capability — {path}",
+                         "desc": "Can modify data/configuration.", "rec": "Remove unnecessary write capabilities.",
+                         "evidence": evidence, "path": path})
+        elif _is_over_privileged(path, dangerous):
+            raw.append({"type": "over_privileged", "severity": "HIGH",
+                         "title": f"Over-privileged token capability — {path}",
+                         "desc": "Sudo/write-like on critical path.", "rec": "Reduce policy scope.",
+                         "evidence": f"{evidence}; {_over_privilege_evidence(path)}", "path": path})
 
-        write_caps = dangerous.intersection(WRITE_CAPABILITIES)
-        if write_caps:
-            add_finding(
-                severity="HIGH",
-                title="Token has write capability on Vault path",
-                description="The supplied token can modify data or configuration on the audited Vault path.",
-                recommendation="Review policy scope, remove unnecessary write capabilities, and rotate the exposed token if compromise is suspected.",
-                evidence=evidence,
-                module=MODULE,
-                target=vault_addr,
-            )
+    if not raw:
+        return
+
+    # ── Phase 2: deduplicate — wildcard parents cover children ─────────
+    wildcard_paths = {f["path"] for f in raw if f["path"].endswith("/*") or f["path"] == "*"}
+    skipped = 0
+    emitted: set[tuple[str, str]] = set()  # (type, path)
+
+    for f in sorted(raw, key=lambda x: (0 if x["path"].endswith("/*") else 1, x["path"])):
+        p = f["path"]
+        key = (f["type"], p)
+        if key in emitted:
+            continue
+
+        # Skip if a wildcard parent already covers this path
+        if not p.endswith("/*") and p != "*":
+            if _is_covered_by_wildcard(p, list(wildcard_paths)):
+                skipped += 1
+                continue
+
+        emitted.add(key)
+        add_finding(
+            severity=f["severity"],
+            title=f["title"],
+            description=f["desc"],
+            recommendation=f["rec"],
+            evidence=f["evidence"] + (
+                f"; wildcard_covers_{skipped}_sub_paths" if skipped and p.endswith("/*") else ""
+            ),
+            module=MODULE,
+            target=vault_addr,
+        )
 
 
 # -----------------------------------------------------------------------

@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from .registry import ExecutionResult, RiskLevel, risk_level_allowed
+from core.logger import logger
 
 
 class ActiveExecutionEngine:
@@ -113,21 +114,22 @@ class ActiveExecutionEngine:
             )
 
         params = step.get("params") or step.get("parameters") or {}
-        print(f"[*] Running active module: {module_id}")
+        logger.info(f"Running active module: {module_id}")
 
         try:
             # Offload synchronous module.execute to a thread
             result = await asyncio.to_thread(module.execute, context, params)
         except Exception as error:
+            logger.error(f"Active module execution failed: {module_id} — {error}")
             result = ExecutionResult(
                 status="error",
                 message=f"Active module execution failed: {error}",
                 evidence={"module_id": module_id, "error": str(error)},
             )
 
-        print(f"    -> {result.status}: {result.message}")
+        logger.info(f"  -> {result.status}: {result.message}")
         if result.evidence:
-            print(f"    Evidence: {result.evidence}")
+            logger.debug(f"  Evidence: {result.evidence}")
 
         # Sync discovered tokens from context → global store for auto-escalation
         _sync_context_to_global_store(context)
@@ -188,20 +190,21 @@ class ActiveExecutionEngine:
                 )
                 continue
 
-            print(f"[*] Running active module: {module_id}")
+            logger.info(f"Running active module: {module_id}")
             params = step.get("params") or step.get("parameters") or {}
             try:
                 result = module.execute(context, params)
             except Exception as error:
+                logger.error(f"Active module execution failed: {module_id} — {error}")
                 result = ExecutionResult(
                     status="error",
                     message=f"Active module execution failed: {error}",
                     evidence={"module_id": module_id, "error": str(error)},
                 )
             yield result
-            print(f"    -> {result.status}: {result.message}")
+            logger.info(f"  -> {result.status}: {result.message}")
             if result.evidence:
-                print(f"    Evidence: {result.evidence}")
+                logger.debug(f"  Evidence: {result.evidence}")
 
             # Sync discovered tokens from context → global store
             _sync_context_to_global_store(context)

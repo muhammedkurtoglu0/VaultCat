@@ -190,6 +190,22 @@ If you see a credential format you don't recognize:
 - System auto-injects the best available token. Only pass token explicitly when you need a SPECIFIC one.
 - **Hijack scan requires user approval**: NEVER run `run_hijack_scan` without asking FIRST. Never scan system-wide paths like `/`, `C:/`, `C:/Users`.
 - NEVER guess IPs or tokens — use only what's provided or discovered.
+
+## TOKEN PARADOX (READ THIS)
+If the user provides a ROOT or admin token, the capability audit WILL report
+"CRITICAL: token has sudo/root on *". This is EXPECTED — it's not a vulnerability,
+it's the nature of the credential the user gave you. When this happens:
+1. ACKNOWLEDGE it: "This assessment used a root/admin token, so wildcard sudo
+   findings are expected — they reflect the token's legitimate privilege, not a
+   discovered vulnerability."
+2. SUGGEST re-testing with a restricted token: "For a realistic pentest, re-run
+   with a low-privilege token (e.g. read-only) to discover actual privilege
+   escalation paths."
+3. REPORT what a LOW-privilege attacker could do differently: "With a restricted
+   token, the attack surface would be..."
+4. ALWAYS execute exploit modules (run_privilege_escalation, run_secret_exfiltration,
+   run_database_credential_harvest) after capability audit — don't just observe,
+   exploit where the audit finds high-value paths.
 ## HANDLING RESTRICTED TOKENS (everything returns 403)
 **CRITICAL: This section ONLY applies when you HAVE a token.**
 If you have NO token, skip this entire section — you are doing unauthenticated recon.
@@ -222,9 +238,10 @@ class PentestAgent:
 
     MAX_TURNS = 50  # safety limit per conversational session
     MAX_PLAN_TOOL_CALLS = 15  # max tool calls per plan execution
-    MAX_CONTEXT_MESSAGES = 150  # prune when message count exceeds this (~75K tokens safe for 128K ctx)
-    PRUNE_KEEP_RECENT = 32     # keep the most recent N messages during pruning
+    MAX_CONTEXT_MESSAGES = 100  # prune when message count exceeds this
+    PRUNE_KEEP_RECENT = 24     # keep the most recent N messages during pruning
     MIN_TURNS_TO_KEEP = 3      # never prune the last N complete turns
+    TOOL_RESULT_MAX_CHARS = 800  # truncate tool results to this many chars
 
     def __init__(
         self,
@@ -562,11 +579,13 @@ class PentestAgent:
                     ],
                 })
 
-                # ── Append ALL tool results ────────────────────────────
+                # ── Append ALL tool results (summarized) ───────────────
                 for rec in _collected:
                     messages.append({
                         "role": "tool",
-                        "content": rec["result"][:2000],
+                        "content": self._summarize_tool_result_for_context(
+                            rec["result"], rec["name"]
+                        ),
                         "tool_call_id": rec["call_id"],
                     })
 
@@ -1128,6 +1147,70 @@ class PentestAgent:
         )
         lowered = text.lower()
         return any(m in lowered for m in markers) and len(text) > 100
+
+    # ── tool result summarization ─────────────────────────────────────────
+
+    @staticmethod
+    def _summarize_tool_result_for_context(result: str, tool_name: str) -> str:
+        """Compress a tool result so it doesn't blow up the context window.
+
+        Full JSON blobs (5K-15K chars) from get_findings, recon scans etc.
+        are truncated to the most relevant fields.  This lets the agent
+        run 20-30 steps without hitting token limits.
+        """
+        max_chars = PentestAgent.TOOL_RESULT_MAX_CHARS
+        if len(result) <= max_chars:
+            return result
+
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            # Not JSON — just truncate
+            return result[:max_chars] + "\n[...truncated]"
+
+        if not isinstance(data, dict):
+            return result[:max_chars]
+
+        # ── Per-tool compression rules ────────────────────────────────
+        if tool_name == "get_findings":
+            # Keep severity counts + top 5 critical/high titles
+            findings = data.get("findings", [])
+            sev_counts: dict[str, int] = {}
+            for f in findings:
+                sev = f.get("severity", "?")
+                sev_counts[sev] = sev_counts.get(sev, 0) + 1
+            critical_high = [
+                f"[{f.get('severity','?')}] {f.get('title','')[:80]}"
+                for f in findings
+                if f.get("severity") in ("CRITICAL", "HIGH")
+            ][:5]
+            compact = {
+                "total": data.get("total", len(findings)),
+                "summary": sev_counts,
+                "top_findings": critical_high,
+            }
+            return json.dumps(compact, ensure_ascii=False)
+
+        if tool_name in ("run_unauthenticated_recon", "run_capability_audit",
+                         "run_kv_enumeration", "run_priv_esc_scan"):
+            # Keep status + findings count + first finding summary
+            findings = data.get("findings", [])
+            compact = {
+                "status": data.get("status", "?"),
+                "findings_count": data.get("findings_count", len(findings)),
+                "key_titles": [f.get("title", "")[:100] for f in findings[:3]],
+            }
+            return json.dumps(compact, ensure_ascii=False)
+
+        # Generic: keep status + message, drop raw evidence
+        compact = {
+            k: v for k, v in data.items()
+            if k in ("status", "message", "findings_count", "total",
+                      "risk_score", "risk_grade", "threat_count")
+        }
+        if not compact:
+            return result[:max_chars]
+        return json.dumps(compact, ensure_ascii=False)
 
     # ── context pruning ──────────────────────────────────────────────────
 

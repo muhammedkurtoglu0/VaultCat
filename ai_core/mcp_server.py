@@ -2641,6 +2641,127 @@ async def generate_diff_report(
     }, ensure_ascii=False)
 
 
+# ─── Chat Tools: Fix Commands ──────────────────────────────────────────────
+
+@mcp_server.tool(
+    name="get_fix_commands",
+    description=(
+        "Bir bulgu icin tam Vault CLI duzeltme komutlarini dondurur. "
+        "Finding title/description verirsiniz, size 'vault policy write ...' "
+        "'vault token revoke ...' gibi somut komutlari dondurur."
+    ),
+)
+async def get_fix_commands_tool(
+    finding_title: str,
+    finding_module: Optional[str] = None,
+    evidence: Optional[str] = None,
+) -> str:
+    """Return Vault CLI fix commands for a finding."""
+    import json as _json
+    from core.fix_commands import get_fix_commands
+
+    ev = None
+    if evidence:
+        try:
+            ev = _json.loads(evidence)
+        except (_json.JSONDecodeError, TypeError):
+            ev = evidence
+
+    finding = {
+        "title": finding_title,
+        "module": finding_module or "",
+        "evidence": ev or "",
+    }
+    cmds = get_fix_commands(finding)
+    return _json.dumps({
+        "finding": finding_title,
+        "fix_commands": cmds,
+        "count": len(cmds),
+    }, ensure_ascii=False)
+
+
+# ─── Chat Tools: Search → Actions Bridge ────────────────────────────────────
+
+@mcp_server.tool(
+    name="search_to_actions",
+    description=(
+        "Web'de arama yap ve sonuclari dogrudan calistirilabilir Vault API "
+        "cagrilarina donustur. CVE exploit'leri ve pentest teknikleri icin "
+        "optimize edilmistir."
+    ),
+)
+async def search_to_actions_tool(
+    query: str,
+    vault_addr: Optional[str] = None,
+    max_results: Optional[int] = None,
+) -> str:
+    """Search web and convert results to executable Vault actions."""
+    import json as _json
+    from ai_core.search_to_action import SearchToActionBridge, get_search_query
+    from ai_core.web_search import search_web_sync
+
+    optimized = get_search_query(query)
+    results = search_web_sync(optimized, max_results=max_results or 3, fetch_top_n=1)
+
+    bridge = SearchToActionBridge(vault_addr=vault_addr or "", token="")
+    actions = bridge.to_module_params(results)
+
+    return _json.dumps({
+        "query": optimized,
+        "results_found": len(results),
+        "actions": [
+            {
+                "module": a["module"],
+                "method": a.get("params", {}).get("method", "?"),
+                "path": a.get("params", {}).get("path", "?"),
+                "confidence": a.get("confidence", "?"),
+            }
+            for a in actions[:5]
+        ],
+        "ready_to_execute": len(actions) > 0,
+    }, ensure_ascii=False)
+
+
+# ─── Chat Tools: Evasion Profile ────────────────────────────────────────────
+
+@mcp_server.tool(
+    name="set_evasion_profile",
+    description=(
+        "HTTP evasion profilini oturum ortasinda degistir. "
+        "turbo/aggressive/balanced/stealth/paranoid."
+    ),
+)
+async def set_evasion_profile_tool(profile: str) -> str:
+    """Switch HTTP evasion profile mid-session."""
+    from reconnaissance.stealth_http import (
+        set_evasion_profile, EvasionProfile, _PROFILE_CONFIG,
+    )
+
+    profile_map = {
+        "turbo": EvasionProfile.TURBO,
+        "aggressive": EvasionProfile.AGGRESSIVE,
+        "balanced": EvasionProfile.BALANCED,
+        "stealth": EvasionProfile.STEALTH,
+        "paranoid": EvasionProfile.PARANOID,
+    }
+    selected = profile_map.get(profile.lower())
+    if not selected:
+        return json.dumps({
+            "status": "error",
+            "message": f"Unknown profile '{profile}'. Use: turbo, aggressive, balanced, stealth, paranoid",
+            "valid_profiles": list(profile_map.keys()),
+        }, ensure_ascii=False)
+
+    set_evasion_profile(selected)
+    cfg = _PROFILE_CONFIG.get(selected, {})
+    return json.dumps({
+        "status": "ok",
+        "profile": selected.value,
+        "jitter": f"{cfg.get('jitter_min', 0)}-{cfg.get('jitter_max', 0)}s",
+        "concurrency": cfg.get("max_concurrency", "?"),
+    }, ensure_ascii=False)
+
+
 # ─── Security MCP: Remediation Advice ─────────────────────────────────────
 
 

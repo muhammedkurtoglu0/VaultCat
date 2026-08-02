@@ -157,7 +157,9 @@ class UnauthenticatedAttackModule(BaseExecutionModule):
                                     matches = re.findall(pattern, content)
                                     if matches:
                                         results[key].extend(matches)
-                        except:
+                        except Exception as e:
+                            from core.logger import logger
+                            logger.warning(f"Pattern match failed on file {path}: {e}")
                             pass
         except Exception:
             pass

@@ -360,11 +360,78 @@ class AutoPentestRunner:
             yield msg
 
         self._total_turns += walk_result.total_steps
-        self._phases_seen.update(["recon", "audit", "report"])
+        self._phases_seen.update(["recon", "audit", "exploit", "report"])
 
         yield {"type": "status", "message": f"  Steps: {walk_result.total_steps} | Success: {walk_result.successes} | Fail: {walk_result.failures} | Escalations: {walk_result.escalations}"}
 
-        # ── 4. LLM Agent summary pass ───────────────────────────────────
+        # ── 4. Active Exploitation Phase ───────────────────────────────────
+        # Now that we've mapped capabilities, actually execute exploit modules.
+        # Don't just observe — exploit where the audit found high-value paths.
+        if self._tool_executor and self.token:
+            yield {"type": "status", "message": "\n--- Phase 4: Active Exploitation ---"}
+            exploit_count = 0
+
+            # Check findings to decide which exploits to run
+            from core.report import findings
+            finding_titles = " ".join(f.get("title", "") + " " + f.get("description", "")
+                                      for f in findings[-50:])
+            finding_modules = {f.get("module", "") for f in findings}
+
+            # 1. If any finding mentions sudo/wildcard → attempt privilege escalation
+            if any(w in finding_titles.lower() for w in ("sudo", "wildcard", "root capability")):
+                yield {"type": "status", "message": "  [!] Sudo/wildcard detected → attempting privilege escalation"}
+                try:
+                    esc_result = await self._tool_executor("run_privilege_escalation", {
+                        "vault_addr": self.vault_addr, "token": self.token,
+                    })
+                    yield {"type": "tool_result", "message": str(esc_result)[:300]}
+                    exploit_count += 1
+                    self._total_turns += 1
+                except Exception as e:
+                    yield {"type": "warning", "message": f"Privilege escalation failed: {e}"}
+
+            # 2. If token can access secrets → attempt secret exfiltration
+            if any(w in finding_titles.lower() for w in ("read", "list", "kv")) or "secret" in finding_modules:
+                yield {"type": "status", "message": "  [!] KV access detected → attempting secret exfiltration"}
+                try:
+                    exfil_result = await self._tool_executor("run_secret_exfiltration", {
+                        "vault_addr": self.vault_addr, "token": self.token,
+                    })
+                    yield {"type": "tool_result", "message": str(exfil_result)[:300]}
+                    exploit_count += 1
+                    self._total_turns += 1
+                except Exception as e:
+                    yield {"type": "warning", "message": f"Secret exfiltration failed: {e}"}
+
+            # 3. If database paths detected → attempt credential harvest
+            if "database" in finding_titles.lower() or "database" in str(finding_modules):
+                yield {"type": "status", "message": "  [!] DB engine detected → harvesting credentials"}
+                try:
+                    db_result = await self._tool_executor("run_database_credential_harvest", {
+                        "vault_addr": self.vault_addr, "token": self.token,
+                    })
+                    yield {"type": "tool_result", "message": str(db_result)[:300]}
+                    exploit_count += 1
+                    self._total_turns += 1
+                except Exception as e:
+                    yield {"type": "warning", "message": f"DB harvest failed: {e}"}
+
+            # 4. If AppRole detected → attempt AppRole exploit
+            if "approle" in finding_titles.lower() or "approle" in str(finding_modules):
+                yield {"type": "status", "message": "  [!] AppRole detected → attempting exploit"}
+                try:
+                    approle_result = await self._tool_executor("run_approle_exploit", {
+                        "vault_addr": self.vault_addr, "token": self.token,
+                    })
+                    yield {"type": "tool_result", "message": str(approle_result)[:300]}
+                    exploit_count += 1
+                    self._total_turns += 1
+                except Exception as e:
+                    yield {"type": "warning", "message": f"AppRole exploit failed: {e}"}
+
+            yield {"type": "status", "message": f"  Active exploits executed: {exploit_count}"}
+
+        # ── 5. LLM Agent summary pass ───────────────────────────────────
         if self._tool_executor:
             yield {"type": "status", "message": "\n--- Phase 4: Agent Analysis ---"}
             self._agent = PentestAgent(

@@ -11,6 +11,7 @@ import requests
 from typing import Optional
 
 from core.tls_config import get_verify
+from core.logger import logger
 
 
 class VaultClient:
@@ -49,5 +50,5 @@ class VaultClient:
                 method, url, headers=headers, timeout=5, verify=get_verify(),
             )
         except requests.exceptions.RequestException as error:
-            print(f"[!] Request error: {error}")
+            logger.error(f"Request error: {error}")
             return None

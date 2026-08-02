@@ -400,13 +400,43 @@ async def search_web(
     if cached is not None:
         return cached
 
-    # Run the search in a thread (DuckDuckGo is sync)
+    # ── Race: DuckDuckGo vs Tavily, take whichever returns first ─────
     import asyncio
-    results = await asyncio.to_thread(_search_ddg_sync, query, max_results)
 
-    # If DuckDuckGo returned nothing and Tavily key is set, try Tavily
-    if not results and _get_tavily_key():
-        results = await asyncio.to_thread(_search_tavily_sync, query, max_results)
+    tasks = [asyncio.to_thread(_search_ddg_sync, query, max_results)]
+    tavily_key = _get_tavily_key()
+    if tavily_key:
+        tasks.append(asyncio.to_thread(_search_tavily_sync, query, max_results))
+
+    # Fire both, return the FIRST non-empty result (or the DDG result if
+    # Tavily finishes first but DDG already has results).  We don't cancel
+    # the slower one — just take the winner.
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    results = []
+    for task in done:
+        try:
+            r = task.result()
+            if r:
+                results = r
+                break
+        except Exception:
+            pass
+
+    # If the first finisher was empty, wait briefly for the other
+    if not results and pending:
+        done2, _ = await asyncio.wait(pending, timeout=2.0)
+        for task in done2:
+            try:
+                r = task.result()
+                if r:
+                    results = r
+                    break
+            except Exception:
+                pass
+
+    # Cancel any still-pending tasks
+    for task in pending:
+        task.cancel()
 
     # Sort by domain preference
     results = _sort_by_score(results, prefer_domains)

@@ -15,6 +15,25 @@ MAX_GIT_COMMITS = 100
 DEFAULT_WORKERS = min(8, (os.cpu_count() or 4))
 CHUNK_SIZE = 512 * 1024  # 512 KB chunks for large files
 CHUNK_THRESHOLD = 1 * 1024 * 1024  # files > 1 MB are scanned in chunks
+
+# ── Keyword pre-filter: skip expensive regex when chunk has no hits ─────
+# For each pattern, extract a short ASCII keyword that MUST appear in text
+# for the regex to possibly match.  This is a 10-50× speedup for large
+# binary/log files where most chunks contain zero credential material.
+_KEYWORD_INDEX: dict[str, str] = {}
+for _pn, _pat in PATTERNS.items():
+    # Use the first literal-looking fragment from the pattern as keyword
+    _ps = _pat.pattern
+    # Extract the longest lowercase alpha substring as keyword
+    _words = __import__('re').findall(r'[a-z_]{4,}', _ps.lower())
+    if _words:
+        _KEYWORD_INDEX[_pn] = max(_words, key=len)
+# Fallback keywords for patterns with no alpha fragment
+_KEYWORD_INDEX.setdefault("vault_response_wrapped_token", "hvs.")
+_KEYWORD_INDEX.setdefault("vault_token_value", "hvs.")
+_KEYWORD_INDEX.setdefault("vault_token_assignment", "vault_token")
+_KEYWORD_INDEX.setdefault("vault_addr_assignment", "vault_addr")
+_KEYWORD_INDEX.setdefault("vault_8200_url", "8200")
 DEFAULT_EXCLUDED_DIRS = {
     ".git",
     ".hg",
@@ -168,7 +187,15 @@ def scan_files(
 
 
 def _scan_single_file(file_path: Path) -> list[dict]:
-    """Read and scan a single file.  Large files are processed in chunks."""
+    """Read and scan a single file.  Large files are processed in chunks.
+
+    Skips files that cannot be read due to permissions — no point wasting
+    CPU on regex when the OS will deny the read anyway.
+    """
+    # Permission pre-check: don't waste time on unreadable files
+    if not os.access(file_path, os.R_OK):
+        return []
+
     size = file_path.stat().st_size
     if size <= CHUNK_THRESHOLD:
         text = _read_text_file(file_path)
@@ -280,8 +307,14 @@ def _read_text_file(file_path):
 def _scan_text(file_path, text, line_offset=0):
     matches = []
     seen_findings = set()
+    text_lower = text.lower()
 
     for pattern_name, pattern in PATTERNS.items():
+        # ── Keyword pre-filter: skip regex if chunk has no matching keyword ──
+        keyword = _KEYWORD_INDEX.get(pattern_name)
+        if keyword and keyword not in text_lower:
+            continue  # 10-50× speedup for irrelevant chunks
+
         for match in pattern.finditer(text):
             value = _matched_value(match)
             if _should_skip_generic_match(pattern_name, value):

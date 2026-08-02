@@ -186,7 +186,7 @@ class AgentSidecarAttackModule(BaseExecutionModule):
                         for rf in role_files:
                             if os.path.isfile(rf):
                                 try:
-                                    with open(rf, "r") as fh:
+                                    with open(rf, "r", encoding="utf-8") as fh:
                                         role_id = fh.read().strip()
                                     evidence.setdefault("approle_values", []).append(
                                         {"file": rf, "role_id": role_id}
@@ -211,7 +211,7 @@ class AgentSidecarAttackModule(BaseExecutionModule):
                         for sf in secret_files:
                             if os.path.isfile(sf):
                                 try:
-                                    with open(sf, "r") as fh:
+                                    with open(sf, "r", encoding="utf-8") as fh:
                                         secret_id = fh.read().strip()
                                     evidence.setdefault("approle_values", []).append(
                                         {"file": sf, "secret_id": secret_id}
@@ -242,7 +242,7 @@ class AgentSidecarAttackModule(BaseExecutionModule):
 
                     if os.path.isfile(sink_path):
                         try:
-                            with open(sink_path, "r") as fh:
+                            with open(sink_path, "r", encoding="utf-8") as fh:
                                 sink_content = fh.read().strip()
                         except (OSError, PermissionError):
                             continue

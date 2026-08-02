@@ -129,17 +129,205 @@ class CloudPivotModule(BaseExecutionModule):
             )
 
     def _execute_azure(self, context, params):
-        """Azure kaynaklarını listele"""
-        return ExecutionResult(
-            status="success",
-            message="Azure pivot placeholder - implement with azure-mgmt-resource",
-            evidence={"provider": "azure", "status": "pending"},
-        )
+        """Enumerate Azure resources using REST API (no SDK required).
+
+        Authenticates via Client Credentials flow (tenant_id + client_id +
+        client_secret) and lists resource groups + VMs via Azure Resource
+        Manager REST API.
+        """
+        import json as _json
+        import requests as _r
+
+        tenant_id = params.get("tenant_id")
+        client_id = params.get("client_id")
+        client_secret = params.get("client_secret")
+        subscription_id = params.get("subscription_id")
+
+        if not all([tenant_id, client_id, client_secret, subscription_id]):
+            return ExecutionResult(
+                status="skipped",
+                message="Azure requires tenant_id, client_id, client_secret, subscription_id params.",
+                evidence={"missing": [k for k in ("tenant_id","client_id","client_secret","subscription_id") if not params.get(k)]},
+            )
+
+        try:
+            # Step 1: OAuth2 token
+            token_resp = _r.post(
+                f"https://login.microsoftonline.com/{tenant_id}/oauth2/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "resource": "https://management.azure.com/",
+                },
+                timeout=TIMEOUT,
+            )
+            if token_resp.status_code != 200:
+                return ExecutionResult(
+                    status="failed",
+                    message=f"Azure OAuth2 failed: {token_resp.status_code}",
+                    evidence={"response": token_resp.text[:300]},
+                )
+            access_token = token_resp.json().get("access_token")
+            auth_header = {"Authorization": f"Bearer {access_token}"}
+
+            # Step 2: List resource groups
+            rg_resp = _r.get(
+                f"https://management.azure.com/subscriptions/{subscription_id}/resourcegroups?api-version=2021-04-01",
+                headers=auth_header, timeout=TIMEOUT,
+            )
+            resource_groups = []
+            if rg_resp.status_code == 200:
+                resource_groups = [rg["name"] for rg in rg_resp.json().get("value", [])]
+
+            # Step 3: List VMs across all resource groups
+            vms = []
+            for rg_name in resource_groups[:5]:  # limit to first 5 groups
+                vm_resp = _r.get(
+                    f"https://management.azure.com/subscriptions/{subscription_id}/"
+                    f"resourceGroups/{rg_name}/providers/Microsoft.Compute/virtualMachines"
+                    f"?api-version=2021-07-01",
+                    headers=auth_header, timeout=TIMEOUT,
+                )
+                if vm_resp.status_code == 200:
+                    for vm in vm_resp.json().get("value", []):
+                        vms.append({
+                            "name": vm.get("name"),
+                            "location": vm.get("location"),
+                            "vmSize": vm.get("properties", {}).get("hardwareProfile", {}).get("vmSize"),
+                            "resourceGroup": rg_name,
+                        })
+
+            context.add_finding(
+                title="Azure resources enumerated",
+                description=f"Listed {len(resource_groups)} resource groups and {len(vms)} VMs.",
+                severity="HIGH",
+                evidence={"resource_groups": resource_groups, "vms": vms},
+            )
+            return ExecutionResult(
+                status="success",
+                message=f"Azure: {len(resource_groups)} resource groups, {len(vms)} VMs found.",
+                evidence={"resource_groups": resource_groups[:10], "vms": vms[:10]},
+            )
+        except Exception as e:
+            return ExecutionResult(
+                status="error",
+                message=f"Azure pivot failed: {e}",
+                evidence={"error": str(e)},
+            )
 
     def _execute_gcp(self, context, params):
-        """GCP kaynaklarını listele"""
-        return ExecutionResult(
-            status="success",
-            message="GCP pivot placeholder - implement with google-cloud-resource-manager",
-            evidence={"provider": "gcp", "status": "pending"},
-        )
+        """Enumerate GCP resources using REST API (no SDK required).
+
+        Authenticates via service account JSON key (either file path or
+        inline JSON) and lists projects + compute instances using GCP
+        Resource Manager and Compute Engine REST APIs.
+        """
+        import json as _json
+        import requests as _r
+
+        sa_key_path = params.get("service_account_key")
+        sa_key_json = params.get("service_account_key_json")
+
+        if not sa_key_path and not sa_key_json:
+            return ExecutionResult(
+                status="skipped",
+                message="GCP requires service_account_key (file path) or service_account_key_json (inline JSON).",
+                evidence={"missing": ["service_account_key or service_account_key_json"]},
+            )
+
+        try:
+            # Load service account credentials
+            if sa_key_json:
+                sa_info = _json.loads(sa_key_json) if isinstance(sa_key_json, str) else sa_key_json
+            else:
+                with open(sa_key_path, "r", encoding="utf-8") as f:
+                    sa_info = _json.load(f)
+
+            # Step 1: Get OAuth2 access token via JWT assertion
+            import time as _time
+            import jwt as _jwt  # PyJWT
+
+            now = int(_time.time())
+            assertion = {
+                "iss": sa_info["client_email"],
+                "scope": "https://www.googleapis.com/auth/cloud-platform",
+                "aud": "https://oauth2.googleapis.com/token",
+                "iat": now,
+                "exp": now + 3600,
+            }
+            signed = _jwt.encode(assertion, sa_info["private_key"], algorithm="RS256")
+            token_resp = _r.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    "assertion": signed,
+                },
+                timeout=TIMEOUT,
+            )
+            if token_resp.status_code != 200:
+                return ExecutionResult(
+                    status="failed",
+                    message=f"GCP OAuth2 failed: {token_resp.status_code}",
+                    evidence={"response": token_resp.text[:300]},
+                )
+            access_token = token_resp.json().get("access_token")
+            auth_header = {"Authorization": f"Bearer {access_token}"}
+
+            # Step 2: List projects
+            projects_resp = _r.get(
+                "https://cloudresourcemanager.googleapis.com/v1/projects",
+                headers=auth_header, timeout=TIMEOUT,
+            )
+            projects = []
+            if projects_resp.status_code == 200:
+                projects = [p["projectId"] for p in projects_resp.json().get("projects", [])]
+
+            # Step 3: List compute instances in first 3 projects
+            instances = []
+            for project_id in projects[:3]:
+                zones_resp = _r.get(
+                    f"https://compute.googleapis.com/compute/v1/projects/{project_id}/zones",
+                    headers=auth_header, timeout=TIMEOUT,
+                )
+                if zones_resp.status_code != 200:
+                    continue
+                for zone in zones_resp.json().get("items", [])[:3]:
+                    zone_name = zone["name"]
+                    inst_resp = _r.get(
+                        f"https://compute.googleapis.com/compute/v1/projects/{project_id}/zones/{zone_name}/instances",
+                        headers=auth_header, timeout=TIMEOUT,
+                    )
+                    if inst_resp.status_code == 200:
+                        for inst in inst_resp.json().get("items", []):
+                            instances.append({
+                                "name": inst["name"],
+                                "zone": zone_name,
+                                "machineType": inst.get("machineType", "").split("/")[-1],
+                                "status": inst.get("status"),
+                                "project": project_id,
+                            })
+
+            context.add_finding(
+                title="GCP resources enumerated",
+                description=f"Listed {len(projects)} projects and {len(instances)} compute instances.",
+                severity="HIGH",
+                evidence={"projects": projects, "instances": instances},
+            )
+            return ExecutionResult(
+                status="success",
+                message=f"GCP: {len(projects)} projects, {len(instances)} instances found.",
+                evidence={"projects": projects, "instances": instances[:10]},
+            )
+        except ImportError:
+            return ExecutionResult(
+                status="error",
+                message="GCP pivot requires PyJWT: pip install pyjwt",
+                evidence={"error": "Missing dependency: pyjwt"},
+            )
+        except Exception as e:
+            return ExecutionResult(
+                status="error",
+                message=f"GCP pivot failed: {e}",
+                evidence={"error": str(e)},
+            )

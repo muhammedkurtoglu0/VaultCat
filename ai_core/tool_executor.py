@@ -17,6 +17,32 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 
+# ── Tools whose MCP handler functions do NOT accept a "token" parameter.
+#    _inject_token skips these so the root/privileged token never leaks into
+#    tool-call traces for unauthenticated / utility operations.
+_TOOLS_WITHOUT_TOKEN: set[str] = {
+    "run_unauthenticated_recon",
+    "run_hijack_scan",
+    "run_env_scan",
+    "run_vault_agent_scan",
+    "get_findings",
+    "get_risk_score",
+    "refresh_nvd_cache",
+    "web_search",
+    "list_active_modules",
+    "run_network_probe",
+    "get_threat_intel",
+    "run_container_scan",
+    "export_full_report",
+    "send_notification",
+    "generate_diff_report",
+    "decode_generate_root_otp",
+    "get_fix_commands",
+    "search_to_actions",
+    "set_evasion_profile",
+}
+
+
 async def invoke_mcp_handler(handler, params: dict) -> str:
     """Invoke an MCP handler with the given params, filtering to valid kwargs.
 
@@ -82,7 +108,7 @@ class ToolExecutor:
             params["vault_addr"] = self.vault_addr
 
         # ── Dynamic token injection ─────────────────────────────────────
-        self._inject_token(params)
+        self._inject_token(params, tool_name)
 
         try:
             result = await self.call_mcp_tool(tool_name, params)
@@ -120,8 +146,18 @@ class ToolExecutor:
 
     # ── internals ──────────────────────────────────────────────────────
 
-    def _inject_token(self, params: dict) -> None:
-        """Overwrite the LLM's token with the session's best when appropriate."""
+    def _inject_token(self, params: dict, tool_name: str = "") -> None:
+        """Overwrite the LLM's token with the session's best when appropriate.
+
+        Skips tools whose MCP handlers don't accept a token parameter
+        (e.g. ``run_unauthenticated_recon``, ``web_search``) so the
+        privileged token never leaks into their call traces.
+        """
+        # ── Never inject a token into tools that don't accept one ───────
+        if tool_name in _TOOLS_WITHOUT_TOKEN:
+            params.pop("token", None)
+            return
+
         best_token = self.session.get_best_token_value()
         if best_token:
             llm_token = params.get("token", "")
@@ -195,6 +231,9 @@ def _build_tool_map() -> dict[str, Any]:
         run_pki_exploit,
         run_transit_exploit,
         run_vault_agent_scan,
+        get_fix_commands_tool,
+        search_to_actions_tool,
+        set_evasion_profile_tool,
     )
 
     return {
@@ -237,6 +276,9 @@ def _build_tool_map() -> dict[str, Any]:
         "run_pki_exploit": run_pki_exploit,
         "run_transit_exploit": run_transit_exploit,
         "run_vault_agent_scan": run_vault_agent_scan,
+        "get_fix_commands": get_fix_commands_tool,
+        "search_to_actions": search_to_actions_tool,
+        "set_evasion_profile": set_evasion_profile_tool,
     }
 
 

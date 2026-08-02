@@ -35,12 +35,26 @@ def get_verify() -> bool:
 
 
 def vault_request(method: str, url: str, **kwargs):
-    """Thin wrapper around requests.request that respects the global TLS setting.
+    """Wrapper around requests.request with TLS + 429 retry.
 
     Use this everywhere the tool talks to a Vault instance (or any
     internal host with self-signed certs).
+
+    Automatically retries on 429 (rate limit) with exponential backoff:
+    1s → 2s → 4s (max 3 retries).  Does NOT retry on 403, 5xx, or
+    connection errors — those are handled by the caller.
     """
-    import requests
+    import time as _time
+    import requests as _requests
+
     kwargs.setdefault("verify", _verify)
     kwargs.setdefault("timeout", 10)
-    return requests.request(method, url, **kwargs)
+
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        resp = _requests.request(method, url, **kwargs)
+        if resp.status_code != 429 or attempt >= max_retries:
+            return resp
+        delay = 1.0 * (2 ** attempt)  # 1s, 2s, 4s
+        _time.sleep(delay)
+    return resp

@@ -351,26 +351,95 @@ def _parse_connection_string(cs: str) -> dict | None:
 def _pg_connect(
     host: str, port: int, database: str,
     username: str, password: str, timeout: int = 10,
+    sslmode: str = "prefer",
+    sslrootcert: str = "",
 ):
-    """Connect to PostgreSQL. Returns connection or None."""
+    """Connect to PostgreSQL with SSL and version-aware error handling.
+
+    Parameters
+    ----------
+    sslmode:
+        PostgreSQL SSL mode: ``disable``, ``allow``, ``prefer`` (default),
+        ``require``, ``verify-ca``, ``verify-full``.
+    sslrootcert:
+        Path to CA certificate for ``verify-ca`` / ``verify-full`` modes.
+    """
     if not PSYCOPG2_AVAILABLE:
-        print("    [!] psycopg2 not installed. Run: pip install psycopg2-binary")
+        from core.logger import logger
+        logger.warning("psycopg2 not installed — cannot connect to PostgreSQL")
         return None
 
+    conn = None
+    errors: list[str] = []
+
+    # ── Attempt 1: requested SSL mode ──────────────────────────────────
     try:
-        conn = psycopg2.connect(
-            host=host,
-            port=port,
-            database=database,
-            user=username,
-            password=password,
-            connect_timeout=timeout,
-        )
+        kwargs: dict = {
+            "host": host, "port": port, "database": database,
+            "user": username, "password": password,
+            "connect_timeout": timeout,
+        }
+        if sslmode != "prefer":
+            kwargs["sslmode"] = sslmode
+        if sslrootcert:
+            kwargs["sslrootcert"] = sslrootcert
+
+        conn = psycopg2.connect(**kwargs)
         conn.autocommit = True
+        _check_pg_version(conn, host)
         return conn
+    except psycopg2.OperationalError as exc:
+        errors.append(f"{sslmode}: {str(exc)[:120]}")
+        if sslmode == "require":
+            # SSL required but failed — try with sslmode=disable as fallback
+            try:
+                conn = psycopg2.connect(
+                    host=host, port=port, database=database,
+                    user=username, password=password,
+                    connect_timeout=timeout, sslmode="disable",
+                )
+                conn.autocommit = True
+                from core.logger import logger
+                logger.warning(f"SSL required failed, connected without SSL to {host}:{port}")
+                _check_pg_version(conn, host)
+                return conn
+            except Exception as exc2:
+                errors.append(f"disable-fallback: {str(exc2)[:120]}")
     except Exception as exc:
-        print(f"    [-] Connection failed: {exc}")
-        return None
+        errors.append(f"unexpected: {str(exc)[:120]}")
+
+    # ── Attempt 2 (if first was not prefer): try prefer ─────────────────
+    if sslmode != "prefer":
+        try:
+            conn = psycopg2.connect(
+                host=host, port=port, database=database,
+                user=username, password=password,
+                connect_timeout=timeout, sslmode="prefer",
+            )
+            conn.autocommit = True
+            from core.logger import logger
+            logger.info(f"Connected to {host}:{port} with sslmode=prefer (fallback)")
+            _check_pg_version(conn, host)
+            return conn
+        except Exception:
+            pass
+
+    from core.logger import logger
+    logger.error(f"DB connection failed to {host}:{port}/{database}: {'; '.join(errors)}")
+    return None
+
+
+def _check_pg_version(conn, host: str) -> None:
+    """Log PostgreSQL version for diagnostics. Non-fatal."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT version()")
+        ver = cur.fetchone()[0]
+        from core.logger import logger
+        logger.debug(f"PostgreSQL {host}: {ver[:80]}")
+        cur.close()
+    except Exception:
+        pass  # version check is best-effort
 
 
 def _pg_check_privileges(conn, username: str) -> dict:

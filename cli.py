@@ -740,7 +740,8 @@ def chat(
     skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
     disable_web: bool = typer.Option(False, "--disable-web", help="Disable automatic web search (privacy/offline)"),
     auto_pilot: bool = typer.Option(False, "--auto-pilot", help="Auto-execute high-confidence PoCs from web search results"),
-    stealth: bool = typer.Option(False, "--stealth", help="Enable stealth HTTP (jitter, backoff, rate-limit evasion)"),
+    stealth: bool = typer.Option(False, "--stealth", help="Enable stealth HTTP (balanced profile: light jitter, 5 concurrency, 429 backoff)"),
+    profile: str = typer.Option("balanced", "--profile", help="Evasion profile: turbo|aggressive|balanced|stealth|paranoid"),
     # ── Auto mode ──
     auto: bool = typer.Option(
         False, "--auto",
@@ -790,10 +791,23 @@ def chat(
         print("❌ --interval must be >= 10 seconds.")
         raise typer.Exit(code=1)
 
-    if stealth:
-        from reconnaissance.stealth_http import enable_stealth
+    if stealth or profile != "balanced":
+        from reconnaissance.stealth_http import (
+            set_evasion_profile, EvasionProfile, enable_stealth,
+            _PROFILE_CONFIG,
+        )
+        profile_map = {
+            "turbo": EvasionProfile.TURBO,
+            "aggressive": EvasionProfile.AGGRESSIVE,
+            "balanced": EvasionProfile.BALANCED,
+            "stealth": EvasionProfile.STEALTH,
+            "paranoid": EvasionProfile.PARANOID,
+        }
+        selected = profile_map.get(profile, EvasionProfile.BALANCED)
         enable_stealth()
-        print("[*] Stealth HTTP enabled (jitter, backoff, rate-limit evasion)")
+        set_evasion_profile(selected)
+        cfg = _PROFILE_CONFIG.get(selected, {})
+        print(f"[*] Evasion profile: {selected.value} (jitter {cfg.get('jitter_min',0)}-{cfg.get('jitter_max',0)}s, concurrency {cfg.get('max_concurrency','?')})")
 
     if skip_tls_verify:
         from core.tls_config import set_insecure_mode

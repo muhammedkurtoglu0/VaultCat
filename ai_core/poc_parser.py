@@ -98,6 +98,50 @@ _VAULT_CLI_RE = re.compile(
     re.IGNORECASE,
 )
 
+# http.client — Python stdlib: conn.request("GET", "/v1/sys/health")
+_HTTP_CLIENT_RE = re.compile(
+    r'conn\.request\s*\(\s*'
+    r'[\'\"](?P<method>GET|POST|PUT|DELETE|PATCH)[\'\"]\s*,\s*'
+    r'[\'\"](/v1/(?P<path>[^\'\"]+))[\'\"]'
+    r'(?:\s*,\s*body\s*=\s*(?P<body>[^,)]+))?'
+    r'(?:\s*,\s*headers\s*=\s*(?P<headers>\{[^}]*\}))?',
+    re.IGNORECASE,
+)
+
+# urllib.request — Python stdlib
+_URLLIB_RE = re.compile(
+    r'urllib\.request\.(?:urlopen|Request)\s*\(\s*'
+    r'[\'\"](?P<url>https?://[^\'\"]+/v1/(?P<path>[^\'\"]+))[\'\"]'
+    r'(?:\s*,\s*data\s*=\s*(?P<body>[^,)]+))?',
+    re.IGNORECASE,
+)
+
+# httpie — popular CLI: http POST https://vault:8200/v1/auth/token/create X-Vault-Token:root policies:=["admin"]
+_HTTPIE_RE = re.compile(
+    r'https?\s+(?P<method>GET|POST|PUT|DELETE|PATCH)\s+'
+    r'(?P<url>https?://[^\s]+/v1/(?P<path>[^\s]+))'
+    r'(?:\s+(?P<args>.+))?',
+    re.IGNORECASE,
+)
+
+# vault write with field extraction: vault write -field=token auth/token/create policies=admin
+_VAULT_CLI_FIELD_RE = re.compile(
+    r'vault\s+(?P<cmd>write|read|list|delete|patch)\s+'
+    r'(?:-[a-z-]+(?:=[a-z-]+)?\s+)*'  # optional flags like -field=token
+    r'(?P<path>[^\s]+)'                 # path: auth/token/create
+    r'(?:\s+(?P<args>.+))?',           # optional key=value args
+    re.IGNORECASE,
+)
+
+# PowerShell Invoke-RestMethod — common in Windows pentest guides
+_PS_INVOKE_RE = re.compile(
+    r'Invoke-(?:RestMethod|WebRequest)\s+'
+    r'-(?:Method|Uri)\s+(?P<method>GET|POST|PUT|DELETE)\s+'
+    r'-Uri\s+[\'\"](?P<url>https?://[^\'\"]+/v1/(?P<path>[^\'\"]+))[\'\"]'
+    r'(?:\s+-Body\s+[\'\"](?P<body>\{[^\']*\})[\'\"])?',
+    re.IGNORECASE,
+)
+
 # Generic HTTP URL with Vault path: https://vault:8200/v1/sys/...
 _GENERIC_VAULT_URL_RE = re.compile(
     r'(https?://[^\s\'\"<>]+/v1/(?P<path>(?:sys|auth|secret|identity|database|pki|transit|kv)[^\s\'\"<>]*))',
@@ -186,24 +230,93 @@ def parse_poc_actions(
             confidence="high" if body else "medium",
         ))
 
-    # ── 3. Vault CLI commands ─────────────────────────────────────────
-    for match in _VAULT_CLI_RE.finditer(text):
+    # ── 3. http.client (Python stdlib) ─────────────────────────────────
+    for match in _HTTP_CLIENT_RE.finditer(text):
+        method = match.group("method").upper()
+        path = match.group("path")
+        actions.append(PoCAction(
+            method=method, path=path,
+            source_url=source_url, source_snippet=match.group(0)[:200],
+            description="http.client call from web search",
+            confidence="medium",
+        ))
+
+    # ── 4. urllib.request (Python stdlib) ──────────────────────────────
+    for match in _URLLIB_RE.finditer(text):
+        path = match.group("path")
+        body = None
+        body_str = match.group("body")
+        if body_str:
+            try:
+                body = json.loads(body_str.strip())
+            except json.JSONDecodeError:
+                body = body_str.strip()
+        actions.append(PoCAction(
+            method="POST" if body else "GET", path=path, body=body,
+            source_url=source_url, source_snippet=match.group(0)[:200],
+            description="urllib.request call from web search",
+            confidence="medium",
+        ))
+
+    # ── 5. httpie CLI ─────────────────────────────────────────────────
+    for match in _HTTPIE_RE.finditer(text):
+        method = match.group("method").upper()
+        path = match.group("path")
+        actions.append(PoCAction(
+            method=method, path=path,
+            source_url=source_url, source_snippet=match.group(0)[:200],
+            description="httpie command from web search",
+            confidence="high" if method != "GET" else "medium",
+        ))
+
+    # ── 6. PowerShell Invoke-RestMethod ───────────────────────────────
+    for match in _PS_INVOKE_RE.finditer(text):
+        method = match.group("method").upper()
+        path = match.group("path")
+        body_str = match.group("body")
+        body = None
+        if body_str:
+            try:
+                body = json.loads(body_str)
+            except json.JSONDecodeError:
+                body = body_str
+        actions.append(PoCAction(
+            method=method, path=path, body=body,
+            source_url=source_url, source_snippet=match.group(0)[:200],
+            description="PowerShell Invoke-RestMethod from web search",
+            confidence="medium",
+        ))
+
+    # ── 7. Vault CLI commands (enhanced — with -field extraction) ──────
+    for match in _VAULT_CLI_FIELD_RE.finditer(text):
         cmd = match.group("cmd").lower()
         path = match.group("path")
+        args = match.group("args") or ""
         method_map = {"write": "POST", "read": "GET", "list": "LIST",
                        "delete": "DELETE", "patch": "PATCH"}
         method = method_map.get(cmd, "GET")
 
+        # Parse key=value arguments into body dict for POST
+        body = None
+        if method == "POST" and args:
+            body = {}
+            for part in args.split():
+                if "=" in part and not part.startswith("-"):
+                    k, v = part.split("=", 1)
+                    # Try to parse array values: policies=admin,root
+                    vals = v.strip("'\"").split(",")
+                    body[k] = vals[0] if len(vals) == 1 else vals
+            if not body:
+                body = None
+
         actions.append(PoCAction(
-            method=method,
-            path=path,
-            source_url=source_url,
-            source_snippet=match.group(0)[:200],
-            description=f"Vault CLI '{cmd}' command from web search",
-            confidence="medium",
+            method=method, path=path, body=body,
+            source_url=source_url, source_snippet=match.group(0)[:200],
+            description=f"Vault CLI '{cmd}' — {path}",
+            confidence="high" if body else "medium",
         ))
 
-    # ── 4. Generic Vault URLs ─────────────────────────────────────────
+    # ── 8. Generic Vault URLs ─────────────────────────────────────────
     seen_paths = {a.path for a in actions}
     for match in _GENERIC_VAULT_URL_RE.finditer(text):
         path = match.group("path")

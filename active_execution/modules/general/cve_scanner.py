@@ -99,7 +99,9 @@ class CVEScannerModule(BaseExecutionModule):
             resp = vault_request("GET", f"{target}/v1/sys/health", timeout=5)
             if resp.status_code == 200:
                 return resp.json().get("version")
-        except:
+        except Exception as e:
+            from core.logger import logger
+            logger.warning(f"Vault version detection failed: {e}")
             pass
         return None
 
@@ -283,7 +285,7 @@ class CVEScannerModule(BaseExecutionModule):
             jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
             if not os.path.exists(jwt_path):
                 return {"success": False, "error": "K8s JWT token bulunamadı"}
-            with open(jwt_path, "r") as f:
+            with open(jwt_path, "r", encoding="utf-8") as f:
                 jwt = f.read().strip()
 
             # Kubernetes auth mount'larını bul
@@ -489,7 +491,7 @@ class CVEScannerModule(BaseExecutionModule):
             ]
             for path in raft_paths:
                 if os.path.exists(path):
-                    with open(path, "r", errors="ignore") as f:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read(1024)
                     return {"success": True, "path": path, "content_preview": content[:100]}
             return {"success": False, "error": "raft.db bulunamadı"}
