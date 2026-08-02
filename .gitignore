@@ -34,3 +34,4 @@ vault-pentest-lab/vault-target/cert.pem
 vault-pentest-lab/vault-target/key.pem
 cache/
 staj_defteri*.docx
+logs/
