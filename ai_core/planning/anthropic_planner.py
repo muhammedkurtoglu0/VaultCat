@@ -217,6 +217,14 @@ def _extract_tool_input(response: Any, tool_name: str) -> dict:
 
 
 def _build_plan(data: dict, thinking: str) -> PentestPlan:
+    # ── Validate & sanitize LLM output before building plan ─────────────
+    try:
+        from ai_core.planning.plan_validator import PlanValidator
+        validator = PlanValidator(strict=False)
+        data = validator.validate(data)
+    except ImportError:
+        pass  # validator not available — accept raw LLM output
+
     assessment_raw = data.get("token_assessment", {})
     assessment = TokenAssessment(
         power_level=assessment_raw.get("power_level", "unknown"),

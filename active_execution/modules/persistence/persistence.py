@@ -4,6 +4,7 @@ import json
 
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
+from ...cleanup_engine import RollbackAction, RollbackStrategy
 from core.logger import logger
 
 
@@ -197,6 +198,15 @@ class PersistenceModule(BaseExecutionModule):
                     "policies": policies,
                     "errors": errors,
                 },
+                rollback_actions=[
+                    RollbackAction(
+                        module_id="persistence.backdoor",
+                        description=f"Disable auth method '{auth_path}' (AppRole backdoor)",
+                        strategy=RollbackStrategy.DELETE_AUTH,
+                        vault_path=f"sys/auth/{auth_path}",
+                        metadata={"auth_path": auth_path, "role_name": role_name},
+                    ),
+                ],
             )
 
         return ExecutionResult(

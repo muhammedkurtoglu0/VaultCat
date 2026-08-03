@@ -2,6 +2,7 @@ from typing import Optional
 from core.tls_config import vault_request
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
+from ...cleanup_engine import RollbackAction, RollbackStrategy
 
 class MultiPersistenceModule(BaseExecutionModule):
     def __init__(self):
@@ -69,10 +70,39 @@ class MultiPersistenceModule(BaseExecutionModule):
         except Exception as e:
             errors.append(f"LDAP error: {e}")
 
+        # ── Build rollback actions for each enabled auth method ─────────
+        rollback_actions = []
+        if results.get("approle_enabled"):
+            rollback_actions.append(RollbackAction(
+                module_id="multi_persistence.backdoor",
+                description=f"Disable auth method '{auth_path}' (AppRole)",
+                strategy=RollbackStrategy.DELETE_AUTH,
+                vault_path=f"sys/auth/{auth_path}",
+            ))
+        if results.get("kubernetes_enabled"):
+            rollback_actions.append(RollbackAction(
+                module_id="multi_persistence.backdoor",
+                description=f"Disable auth method '{k8s_path}' (Kubernetes)",
+                strategy=RollbackStrategy.DELETE_AUTH,
+                vault_path=f"sys/auth/{k8s_path}",
+            ))
+        if results.get("ldap_enabled"):
+            rollback_actions.append(RollbackAction(
+                module_id="multi_persistence.backdoor",
+                description=f"Disable auth method '{ldap_path}' (LDAP)",
+                strategy=RollbackStrategy.DELETE_AUTH,
+                vault_path=f"sys/auth/{ldap_path}",
+            ))
+
         context.add_finding(
             title="CRITICAL: Multi-Persistence Installed",
             description=f"Enabled: AppRole={results.get('approle_enabled')}, Kubernetes={results.get('kubernetes_enabled')}, LDAP={results.get('ldap_enabled')}",
             severity="CRITICAL",
             evidence=results,
         )
-        return ExecutionResult(status="success", message="Multi-persistence installed", evidence={"results": results, "errors": errors})
+        return ExecutionResult(
+            status="success",
+            message="Multi-persistence installed",
+            evidence={"results": results, "errors": errors},
+            rollback_actions=rollback_actions,
+        )

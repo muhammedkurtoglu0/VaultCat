@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, Any, List
 
 
 class RiskLevel(str, Enum):
@@ -14,6 +14,10 @@ class ExecutionResult:
     status: str
     message: str
     evidence: dict = field(default_factory=dict)
+    rollback_actions: list = field(default_factory=list)
+    """List of :class:`~active_execution.cleanup_engine.RollbackAction`
+    instances produced by this execution.  Populated by state-changing
+    modules and auto-recorded by the execution engine."""
 
 
 class BaseExecutionModule:

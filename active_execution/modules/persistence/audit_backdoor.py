@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 from core.tls_config import vault_request
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
+from ...cleanup_engine import RollbackAction, RollbackStrategy
 
 class AuditBackdoorModule(BaseExecutionModule):
     """Disable Vault audit devices to conceal malicious activity.
@@ -54,16 +55,42 @@ class AuditBackdoorModule(BaseExecutionModule):
                 if resp_del.status_code in [200, 204]:
                     disabled.append(name)
             results["disabled"] = disabled
+            # Save original audit device configs for rollback
+            results["original_audits"] = {
+                name: {"type": info.get("type", "file"), "options": info.get("options", {})}
+                for name, info in audits.items()
+                if isinstance(info, dict)
+            }
             context.add_finding(
                 title="Audit Logs Disabled",
                 description=f"Disabled {len(disabled)} audit devices",
                 severity="CRITICAL",
                 evidence=results
             )
+
+            # Build rollback actions for each disabled device
+            rollback_actions = []
+            for name in disabled:
+                orig = results["original_audits"].get(name, {})
+                audit_type = orig.get("type", "file")
+                rollback_actions.append(RollbackAction(
+                    module_id="audit_backdoor.disable",
+                    description=f"Re-enable audit device '{name}' (type={audit_type})",
+                    strategy=RollbackStrategy.ENABLE_AUDIT,
+                    vault_path=f"sys/audit/{name}",
+                    vault_body={
+                        "type": audit_type,
+                        "description": "Restored by vault-pentest-tool cleanup",
+                        "options": orig.get("options", {}),
+                    },
+                    metadata={"device_name": name, "audit_type": audit_type},
+                ))
+
             return ExecutionResult(
                 status="success",
                 message=f"Disabled {len(disabled)} audit devices",
-                evidence=results
+                evidence=results,
+                rollback_actions=rollback_actions,
             )
             # ── Extended: Audit config analysis ──────────────────────
             for name, audit_info in audits.items():

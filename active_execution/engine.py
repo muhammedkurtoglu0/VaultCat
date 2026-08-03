@@ -201,6 +201,16 @@ class ActiveExecutionEngine:
                     message=f"Active module execution failed: {error}",
                     evidence={"module_id": module_id, "error": str(error)},
                 )
+            # ── Record rollback actions ─────────────────────────────────
+            if result.rollback_actions:
+                try:
+                    from .cleanup_engine import CleanupEngine
+                    engine = CleanupEngine.get()
+                    for action in result.rollback_actions:
+                        engine.record(action)
+                except ImportError:
+                    pass  # cleanup engine not available
+
             yield result
             logger.info(f"  -> {result.status}: {result.message}")
             if result.evidence:

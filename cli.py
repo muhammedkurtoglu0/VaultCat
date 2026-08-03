@@ -741,7 +741,9 @@ def chat(
     disable_web: bool = typer.Option(False, "--disable-web", help="Disable automatic web search (privacy/offline)"),
     auto_pilot: bool = typer.Option(False, "--auto-pilot", help="Auto-execute high-confidence PoCs from web search results"),
     stealth: bool = typer.Option(False, "--stealth", help="Enable stealth HTTP (balanced profile: light jitter, 5 concurrency, 429 backoff)"),
-    profile: str = typer.Option("balanced", "--profile", help="Evasion profile: turbo|aggressive|balanced|stealth|paranoid"),
+    profile: str = typer.Option("balanced", "--profile", help="Evasion profile: turbo|aggressive|balanced|stealth|paranoid|low_and_slow"),
+    waf_evasion: str = typer.Option("none", "--waf-evasion", help="WAF evasion profile: none|light|moderate|aggressive"),
+    auto_cleanup: bool = typer.Option(False, "--auto-cleanup", help="Automatically rollback all state changes when the session ends"),
     # ── Auto mode ──
     auto: bool = typer.Option(
         False, "--auto",
@@ -802,12 +804,28 @@ def chat(
             "balanced": EvasionProfile.BALANCED,
             "stealth": EvasionProfile.STEALTH,
             "paranoid": EvasionProfile.PARANOID,
+            "low_and_slow": EvasionProfile.LOW_AND_SLOW,
         }
         selected = profile_map.get(profile, EvasionProfile.BALANCED)
         enable_stealth()
         set_evasion_profile(selected)
         cfg = _PROFILE_CONFIG.get(selected, {})
         print(f"[*] Evasion profile: {selected.value} (jitter {cfg.get('jitter_min',0)}-{cfg.get('jitter_max',0)}s, concurrency {cfg.get('max_concurrency','?')})")
+
+    if waf_evasion != "none":
+        from active_execution.waf_evasion import (
+            enable_waf_evasion, set_waf_evasion_profile, WAFEvasionProfile,
+        )
+        waf_profile_map = {
+            "light": WAFEvasionProfile.LIGHT,
+            "moderate": WAFEvasionProfile.MODERATE,
+            "aggressive": WAFEvasionProfile.AGGRESSIVE,
+        }
+        selected_waf = waf_profile_map.get(waf_evasion)
+        if selected_waf:
+            enable_waf_evasion()
+            set_waf_evasion_profile(selected_waf)
+            print(f"[*] WAF evasion: {selected_waf.value} (body obfuscation + header diversity)")
 
     if skip_tls_verify:
         from core.tls_config import set_insecure_mode
@@ -843,6 +861,41 @@ def chat(
             auto_pilot=auto_pilot,
             interval=interval,
         )
+
+
+@app.command()
+def cleanup(
+    target: str = typer.Option(..., "--target", help="Vault address (https://vault.example.com:8200)"),
+    token: str = typer.Option(..., "--token", help="Vault token with sufficient privileges for cleanup"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would be cleaned without executing"),
+    skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
+) -> None:
+    """Execute rollback of all recorded state changes from a session."""
+    from active_execution.cleanup_engine import CleanupEngine
+
+    if skip_tls_verify:
+        from core.tls_config import set_insecure_mode
+        set_insecure_mode()
+        print("[*] TLS certificate verification disabled")
+
+    engine = CleanupEngine.get()
+
+    if dry_run:
+        for line in engine.dry_run():
+            print(line)
+        return
+
+    print(f"[*] Executing rollback against {target}...")
+    result = engine.execute_rollback(
+        vault_addr=target,
+        token=token,
+        verify_tls=not skip_tls_verify,
+    )
+    print(f"[*] Rollback complete: {result['succeeded']}/{result['total']} succeeded"
+          + (f", {result['failed']} failed" if result['failed'] else ""))
+
+    if result["failed"]:
+        raise typer.Exit(code=1)
 
 
 @app.command()

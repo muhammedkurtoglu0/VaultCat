@@ -193,7 +193,15 @@ def _parse_plan_json(raw: str) -> dict:
 
 
 def _build_plan(data: dict) -> PentestPlan:
-    """Convert raw JSON dict to typed PentestPlan."""
+    """Convert raw JSON dict to typed PentestPlan, with hallucination validation."""
+    # ── Validate & sanitize LLM output before building plan ─────────────
+    try:
+        from ai_core.planning.plan_validator import PlanValidator
+        validator = PlanValidator(strict=False)
+        data = validator.validate(data)
+    except ImportError:
+        pass  # validator not available — accept raw LLM output
+
     assessment_raw = data.get("token_assessment", {})
     assessment = TokenAssessment(
         power_level=assessment_raw.get("power_level", "unknown"),

@@ -21,6 +21,7 @@ from core.logger import logger
 
 from ...context import ExecutionContext
 from ...registry import BaseExecutionModule, ExecutionResult, RiskLevel
+from ...cleanup_engine import RollbackAction, RollbackStrategy
 
 
 TIMEOUT = 10
@@ -220,6 +221,31 @@ class PrivilegeEscalationModule(BaseExecutionModule):
         evidence["takeover_steps"] = takeover_steps
         evidence["full_takeover_complete"] = token_created
 
+        # ── Build rollback actions ─────────────────────────────────────
+        rollback_actions = []
+        if policy_created:
+            rollback_actions.append(RollbackAction(
+                module_id="privilege_escalation.token_abuse",
+                description=f"Delete backdoor policy '{backdoor_policy}'",
+                strategy=RollbackStrategy.DELETE_POLICY,
+                vault_path=f"sys/policies/acl/{backdoor_policy}",
+            ))
+        if token_created and escalated_token:
+            rollback_actions.append(RollbackAction(
+                module_id="privilege_escalation.token_abuse",
+                description=f"Revoke escalated token ({escalated_token[:8]}...)",
+                strategy=RollbackStrategy.REVOKE_TOKEN,
+                vault_path=escalated_token,
+                metadata={"token_preview": escalated_token[:8] + "..."},
+            ))
+        if persistence_deployed:
+            rollback_actions.append(RollbackAction(
+                module_id="privilege_escalation.token_abuse",
+                description="Disable userpass auth method (persistence)",
+                strategy=RollbackStrategy.DELETE_AUTH,
+                vault_path="sys/auth/userpass",
+            ))
+
         if token_created:
             return ExecutionResult(
                 status="success",
@@ -228,12 +254,14 @@ class PrivilegeEscalationModule(BaseExecutionModule):
                     f"generated root-equivalent token, persistence={'deployed' if persistence_deployed else 'skipped'}."
                 ),
                 evidence=evidence,
+                rollback_actions=rollback_actions,
             )
 
         return ExecutionResult(
             status="failed",
             message="Partial takeover: could not create escalated token.",
             evidence=evidence,
+            rollback_actions=rollback_actions,
         )
 
     # ── candidate-policy fallback ──────────────────────────────────────

@@ -107,6 +107,7 @@ class AutoPentestRunner:
         max_risk: str = DEFAULT_MAX_RISK,
         max_turns: int = DEFAULT_MAX_TURNS,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        auto_cleanup: bool = False,
     ):
         if not vault_addr:
             raise ValueError("Auto mode requires --target. No target, nothing to do.")
@@ -118,6 +119,7 @@ class AutoPentestRunner:
         self.max_risk = max_risk
         self.max_turns = max_turns
         self.timeout_seconds = timeout_seconds
+        self.auto_cleanup = auto_cleanup
 
         # Internal state
         self._agent: PentestAgent | None = None
@@ -458,6 +460,28 @@ class AutoPentestRunner:
 
         # ── Finalize ─────────────────────────────────────────────────────
         yield {"type": "status", "message": ""}
+
+        # ── Auto-cleanup ──────────────────────────────────────────────
+        if self.auto_cleanup and self.token:
+            try:
+                from active_execution.cleanup_engine import CleanupEngine
+                engine = CleanupEngine.get()
+                if engine.status["total_actions"] > 0:
+                    yield {"type": "status", "message": "[*] Auto-cleanup: rolling back state changes..."}
+                    result = engine.execute_rollback(
+                        vault_addr=self.vault_addr,
+                        token=self.token,
+                    )
+                    yield {
+                        "type": "status",
+                        "message": f"[*] Cleanup: {result['succeeded']}/{result['total']} succeeded"
+                        + (f", {result['failed']} failed" if result['failed'] else ""),
+                    }
+                else:
+                    yield {"type": "status", "message": "[*] Auto-cleanup: nothing to clean"}
+            except Exception as exc:
+                yield {"type": "status", "message": f"[!] Cleanup error: {exc}"}
+
         yield {"type": "status", "message": "=" * 54}
         yield {"type": "status", "message": "  Total LLM turns : {}".format(self._total_turns)}
         yield {"type": "status", "message": "  Phases covered   : {}".format(sorted(self._phases_seen) or "none")}

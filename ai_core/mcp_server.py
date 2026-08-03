@@ -2734,7 +2734,7 @@ async def search_to_actions_tool(
 async def set_evasion_profile_tool(profile: str) -> str:
     """Switch HTTP evasion profile mid-session."""
     from reconnaissance.stealth_http import (
-        set_evasion_profile, EvasionProfile, _PROFILE_CONFIG,
+        set_evasion_profile, EvasionProfile, _PROFILE_CONFIG, enable_stealth,
     )
 
     profile_map = {
@@ -2743,15 +2743,17 @@ async def set_evasion_profile_tool(profile: str) -> str:
         "balanced": EvasionProfile.BALANCED,
         "stealth": EvasionProfile.STEALTH,
         "paranoid": EvasionProfile.PARANOID,
+        "low_and_slow": EvasionProfile.LOW_AND_SLOW,
     }
     selected = profile_map.get(profile.lower())
     if not selected:
         return json.dumps({
             "status": "error",
-            "message": f"Unknown profile '{profile}'. Use: turbo, aggressive, balanced, stealth, paranoid",
+            "message": f"Unknown profile '{profile}'. Use: turbo, aggressive, balanced, stealth, paranoid, low_and_slow",
             "valid_profiles": list(profile_map.keys()),
         }, ensure_ascii=False)
 
+    enable_stealth()  # ensure stealth is active — profile switch alone doesn't enable it
     set_evasion_profile(selected)
     cfg = _PROFILE_CONFIG.get(selected, {})
     return json.dumps({
@@ -2759,6 +2761,89 @@ async def set_evasion_profile_tool(profile: str) -> str:
         "profile": selected.value,
         "jitter": f"{cfg.get('jitter_min', 0)}-{cfg.get('jitter_max', 0)}s",
         "concurrency": cfg.get("max_concurrency", "?"),
+    }, ensure_ascii=False)
+
+
+# ─── Chat Tools: WAF Evasion Profile ──────────────────────────────────────────
+
+@mcp_server.tool(
+    name="set_waf_evasion_profile",
+    description=(
+        "WAF evasion profilini oturum ortasinda degistir. "
+        "none/light/moderate/aggressive. "
+        "Body obfuscation, path manipulation, ve header diversification uygular."
+    ),
+)
+async def set_waf_evasion_profile_tool(profile: str) -> str:
+    """Switch WAF evasion profile mid-session."""
+    from active_execution.waf_evasion import (
+        enable_waf_evasion, set_waf_evasion_profile, WAFEvasionProfile,
+        get_evasion_engine,
+    )
+
+    profile_map = {
+        "none": WAFEvasionProfile.NONE,
+        "light": WAFEvasionProfile.LIGHT,
+        "moderate": WAFEvasionProfile.MODERATE,
+        "aggressive": WAFEvasionProfile.AGGRESSIVE,
+    }
+    selected = profile_map.get(profile.lower())
+    if not selected:
+        return json.dumps({
+            "status": "error",
+            "message": f"Unknown WAF evasion profile '{profile}'. Use: none, light, moderate, aggressive",
+            "valid_profiles": list(profile_map.keys()),
+        }, ensure_ascii=False)
+
+    if selected != WAFEvasionProfile.NONE:
+        enable_waf_evasion()
+    set_waf_evasion_profile(selected)
+    engine = get_evasion_engine()
+    return json.dumps({
+        "status": "ok",
+        "profile": selected.value,
+        "active_techniques": engine.status.get("active_techniques", {}),
+    }, ensure_ascii=False)
+
+
+# ─── Chat Tools: Cleanup / Rollback ─────────────────────────────────────────
+
+@mcp_server.tool(
+    name="run_cleanup",
+    description=(
+        "Kaydedilmis tum state-changing operasyonlari geri al. "
+        "Olusturulan auth method'lar, token'lar, policy'ler ve disable edilen "
+        "audit device'lar LIFO sirasiyla temizlenir."
+    ),
+)
+async def run_cleanup_tool(
+    vault_addr: str,
+    token: str,
+    dry_run: bool = False,
+) -> str:
+    """Execute or preview rollback of all recorded state changes."""
+    from active_execution.cleanup_engine import CleanupEngine
+
+    engine = CleanupEngine.get()
+
+    if dry_run:
+        lines = engine.dry_run()
+        return json.dumps({
+            "status": "dry_run",
+            "plan": lines,
+        }, ensure_ascii=False)
+
+    result = engine.execute_rollback(
+        vault_addr=vault_addr,
+        token=token,
+        verify_tls=False,
+    )
+    return json.dumps({
+        "status": "ok" if result["failed"] == 0 else "partial",
+        "total": result["total"],
+        "succeeded": result["succeeded"],
+        "failed": result["failed"],
+        "details": result["details"],
     }, ensure_ascii=False)
 
 

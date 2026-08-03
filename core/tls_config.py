@@ -35,7 +35,7 @@ def get_verify() -> bool:
 
 
 def vault_request(method: str, url: str, **kwargs):
-    """Wrapper around requests.request with TLS + 429 retry.
+    """Wrapper around requests.request with TLS + 429 retry + WAF evasion.
 
     Use this everywhere the tool talks to a Vault instance (or any
     internal host with self-signed certs).
@@ -43,12 +43,46 @@ def vault_request(method: str, url: str, **kwargs):
     Automatically retries on 429 (rate limit) with exponential backoff:
     1s → 2s → 4s (max 3 retries).  Does NOT retry on 403, 5xx, or
     connection errors — those are handled by the caller.
+
+    When WAF evasion is enabled via ``active_execution.waf_evasion``,
+    the request body, URL path, and headers are transparently obfuscated
+    before sending — no changes needed in calling modules.
     """
+    import json as _json
     import time as _time
     import requests as _requests
 
     kwargs.setdefault("verify", _verify)
     kwargs.setdefault("timeout", 10)
+
+    # ── WAF evasion: transform request before sending ───────────────
+    try:
+        from active_execution.waf_evasion import is_waf_evasion_enabled, get_evasion_engine
+
+        if is_waf_evasion_enabled():
+            engine = get_evasion_engine()
+            headers_in = kwargs.get("headers")
+            json_body = kwargs.get("json")
+            new_method, new_url, new_headers, new_body = engine.transform_request(
+                method, url, headers_in, json_body,
+            )
+            method = new_method
+            url = new_url
+            kwargs["headers"] = new_headers
+
+            if new_body is not None:
+                # Strip metadata key used for serialization control
+                compact = new_body.pop("__waf_compact__", True)
+                kwargs.pop("json", None)  # remove raw dict — use serialized
+                kwargs["data"] = _json.dumps(
+                    new_body, indent=None if compact else 2, ensure_ascii=False,
+                )
+                # Ensure Content-Type is set
+                if "Content-Type" not in kwargs.get("headers", {}):
+                    kwargs["headers"]["Content-Type"] = "application/json"
+    except (ImportError, Exception):
+        # WAF evasion not available or failed — fall through to direct request
+        pass
 
     max_retries = 3
     for attempt in range(max_retries + 1):
