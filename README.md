@@ -18,14 +18,17 @@ Full-lifecycle HashiCorp Vault penetration testing toolkit — recon, hijack, es
 ## Install
 
 ```bash
-pip install vault-pentest-tool          # from PyPI (once published)
-# or directly from GitHub:
+# Global install — vault-pentest doğrudan PATH'te olur
 pip install git+https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
 
-# Dev install (clone + deterministic build):
+# veya uv ile global:
+uv tool install git+https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
+
+# Dev install (clone + venv — uv run ile kullanılır):
 git clone https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
 cd vault-pentest-tool
-uv sync
+uv sync                         # venv içine kurar
+uv run vault-pentest chat       # venv'den çalıştırma
 ```
 
 ## Quick Start
