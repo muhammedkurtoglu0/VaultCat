@@ -40,8 +40,11 @@ vault-pentest scan --target https://vault.example.com:8200 --token hvs.xxx --cap
 # Local credential hijacking
 vault-pentest hijack ./my-repo --validate-token --target https://vault.example.com:8200
 
-# AI-powered pentest chat
-vault-pentest chat --target https://vault.example.com:8200 --token hvs.xxx
+# AI-powered pentest chat (terminal)
+vault-pentest chat
+
+# AI chat with desktop GUI
+vault-pentest chat --ui desktop
 
 # MCP server (for Claude Desktop integration)
 vault-pentest mcp
