@@ -1,6 +1,11 @@
+<p align="center">
+  <img src="docs/VaultCat_logo.jpeg" alt="VaultCat" width="200">
+</p>
+
 # VaultCat
 
 [![Test](https://github.com/muhammedkurtoglu0/vaultcat/actions/workflows/test.yml/badge.svg)](https://github.com/muhammedkurtoglu0/vaultcat/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/vaultcat)](https://pypi.org/project/vaultcat/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 

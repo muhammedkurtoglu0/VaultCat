@@ -98,6 +98,15 @@ class PentestGUI(ctk.CTk):
         self.title("VaultCat Agent")
         self.geometry("1100x750")
         self.minsize(800, 500)
+        # Set window icon from logo
+        try:
+            from PIL import Image, ImageTk
+            import os
+            logo_path = os.path.join(os.path.dirname(__file__), "..", "docs", "VaultCat_logo.jpeg")
+            logo = Image.open(logo_path)
+            self.iconphoto(True, ImageTk.PhotoImage(logo))
+        except Exception:
+            pass  # icon is cosmetic, don't crash if missing
 
         # ── build UI ────────────────────────────────────────────────
         self._build_settings_bar()
