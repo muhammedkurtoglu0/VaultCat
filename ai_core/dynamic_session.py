@@ -335,12 +335,66 @@ class DynamicCredentialStore:
 
 
 def _looks_like_vault_token(value: str) -> bool:
-    """Quick check: does this string look like a Vault token?"""
+    """Quick check: does this string look like a *real* Vault token?
+
+    Filters out documentation placeholders like ``hvs.xxx...`` and
+    ``hvs.example...`` that web search results often contain.
+    """
     if not value or not isinstance(value, str):
         return False
     if len(value) < 20:
         return False
-    return value.startswith(("hvs.", "hvb.", "s."))
+    if not value.startswith(("hvs.", "hvb.", "s.")):
+        return False
+
+    # ── Reject known placeholder / documentation patterns ──────────
+    lowered = value.lower()
+
+    # Long runs of 'x' or 'X' — the universal placeholder character
+    # in documentation (e.g. hvs.xxxxxxxxxxxxxxxxxxxxxxxxxx).
+    if _has_repeated_char_run(value.lower(), threshold=5, char="x"):
+        return False
+
+    # Placeholder prefixes right after "hvs." / "hvb." / "s."
+    # Real tokens start with base64 — never with human-readable words.
+    _placeholder_prefixes = (
+        "hvs.example", "hvs.fake", "hvs.mock", "hvs.placeholder",
+        "hvs.xxx", "hvs.token_here", "hvs.your_token", "hvs.insert_token",
+        "hvb.example", "hvb.fake", "hvb.mock",
+        "s.example", "s.fake", "s.mock",
+    )
+    for pp in _placeholder_prefixes:
+        if lowered.startswith(pp):
+            return False
+
+    # Known exact documentation placeholders
+    _known_placeholders = {
+        "hvs.xxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "hvs.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "hvs.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    }
+    if value in _known_placeholders:
+        return False
+
+    return True
+
+
+def _has_repeated_char_run(s: str, threshold: int = 5, char: str = "") -> bool:
+    """Return True if *s* contains a run of the same character >= *threshold*.
+
+    If *char* is given, only runs of that specific character count.
+    """
+    if len(s) < threshold:
+        return False
+    run = 1
+    for i in range(1, len(s)):
+        if s[i] == s[i - 1] and (not char or s[i] == char):
+            run += 1
+            if run >= threshold:
+                return True
+        else:
+            run = 1
+    return False
 
 
 def _infer_power(capabilities: list[str], policies: list[str]) -> str:
