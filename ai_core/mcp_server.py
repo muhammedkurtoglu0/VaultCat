@@ -16,6 +16,7 @@ from active_execution.modules.secrets.pki_engine_exploit import PKIEngineExploit
 from active_execution.modules.secrets.transit_engine_exploit import TransitEngineExploitModule
 from active_execution.modules.database.database_credential_harvest import DatabaseCredentialHarvestModule
 from active_execution.modules.cloud.cloud_key_exfiltration import CloudKeyExfiltrationModule
+from active_execution.modules.cloud.aws_auth_login import AwsIamAuthLoginModule
 from active_execution.registry import ActiveExecutionRegistry, RiskLevel, risk_level_allowed
 from ai_core.llm_engine import LLMClient, detect_provider
 from ai_core.session import session_manager
@@ -2384,6 +2385,67 @@ async def run_audit_log_scan(
         "suspicious_events": len(findings),
         "findings": findings,
     }, ensure_ascii=False)
+
+
+# ─── Security MCP: AWS IAM → Vault Login ────────────────────────────────────
+
+
+@mcp_server.tool(
+    name="run_aws_auth_login",
+    description=(
+        "AWS IAM credential'lari ile Vault'a login ol. "
+        "SigV4 ile sts:GetCallerIdentity imzalanir, POST auth/aws/login ile "
+        "Vault token'i alinir. Alinan token otomatik olarak dynamic session'a "
+        "kaydedilir ve sonraki tum islemlerde kullanilir. "
+        "Bu islem icin Vault token'i GEREKMEZ — sadece AWS credential'lari yeterlidir."
+    ),
+)
+async def run_aws_auth_login(
+    vault_addr: str,
+    access_key: str,
+    secret_key: str,
+    session_token: Optional[str] = None,
+    role: str = "",
+    mount_path: str = "aws",
+    region: str = "us-east-1",
+) -> str:
+    clear_module_findings("aws_auth.login")
+    context = ExecutionContext(
+        vault_addr=vault_addr.rstrip("/"),
+        token=None,  # No Vault token needed — that's the whole point
+    )
+    module = AwsIamAuthLoginModule()
+    params: dict[str, Any] = {
+        "access_key": access_key,
+        "secret_key": secret_key,
+        "mount_path": mount_path,
+        "region": region,
+    }
+    if session_token:
+        params["session_token"] = session_token
+    if role:
+        params["role"] = role
+
+    try:
+        result = module.execute(context, params)
+    except Exception as error:
+        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+
+    if result.status == "success" and result.evidence:
+        captured = result.evidence.get("vault_token")
+        if captured:
+            pentest_context["captured_token"] = captured
+            _default_session.set_escalated_token(captured)
+            _sync_context_to_session()
+
+    return json.dumps(
+        {
+            "status": result.status,
+            "message": result.message,
+            "evidence": result.evidence or {},
+        },
+        ensure_ascii=False,
+    )
 
 
 # ─── Security MCP: Container Security Scanner ──────────────────────────────

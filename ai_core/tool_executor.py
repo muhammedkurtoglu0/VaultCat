@@ -40,6 +40,7 @@ _TOOLS_WITHOUT_TOKEN: set[str] = {
     "get_fix_commands",
     "search_to_actions",
     "set_evasion_profile",
+    "run_aws_auth_login",
 }
 
 
@@ -231,6 +232,7 @@ def _build_tool_map() -> dict[str, Any]:
         run_pki_exploit,
         run_transit_exploit,
         run_vault_agent_scan,
+        run_aws_auth_login,
         get_fix_commands_tool,
         search_to_actions_tool,
         set_evasion_profile_tool,
@@ -254,6 +256,7 @@ def _build_tool_map() -> dict[str, Any]:
         "run_cloud_key_exfiltration": run_cloud_key_exfiltration,
         "list_active_modules": list_active_modules,
         "run_active_module": run_active_module,
+        "run_aws_auth_login": run_aws_auth_login,
         "get_findings": get_findings,
         "get_risk_score": get_risk_score,
         "refresh_nvd_cache": refresh_nvd_cache,

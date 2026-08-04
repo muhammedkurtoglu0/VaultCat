@@ -446,6 +446,27 @@ TOOL_RUN_ACTIVE_MODULE = ToolDef(
     phase="active",
 )
 
+TOOL_RUN_AWS_AUTH_LOGIN = ToolDef(
+    name="run_aws_auth_login",
+    description=(
+        "AWS IAM credential'lari ile Vault'a login ol. Vault token'i GEREKMEZ. "
+        "SigV4 ile sts:GetCallerIdentity imzalanir, POST auth/aws/login yapilir, "
+        "alinan token sonraki tum islemlerde otomatik kullanilir. "
+        "Eger elinde AWS_ACCESS_KEY_ID ve AWS_SECRET_ACCESS_KEY varsa token'siz "
+        "authenticated assessment zincirini baslatabilirsin."
+    ),
+    parameters=[
+        ToolParam("vault_addr", "string", "Target Vault URL", required=True),
+        ToolParam("access_key", "string", "AWS Access Key ID (AKIA...)", required=True),
+        ToolParam("secret_key", "string", "AWS Secret Access Key", required=True),
+        ToolParam("session_token", "string", "AWS Session Token (STS / assumed roles)"),
+        ToolParam("role", "string", "Vault AWS auth role name (auto-detect if omitted)"),
+        ToolParam("mount_path", "string", "Auth mount path (default: aws)"),
+        ToolParam("region", "string", "AWS region for STS signing (default: us-east-1)"),
+    ],
+    phase="active",
+)
+
 # ── Meta / reporting ─────────────────────────────────────────────────────
 
 TOOL_GET_FINDINGS = ToolDef(
@@ -936,6 +957,7 @@ TOOL_DOMAIN_MAP: dict[str, set[str]] = {
     # ── Active module gateway — domain filtering at runtime via registry
     "list_active_modules":           {"*"},
     "run_active_module":             {"*"},
+    "run_aws_auth_login":            {"cloud"},
 
     # ── Universal — all specialists ────────────────────────────────────
     "web_search":                    {"*"},
@@ -985,6 +1007,7 @@ ALL_TOOLS: list[ToolDef] = [
     TOOL_RUN_CLOUD_KEY_EXFILTRATION,
     TOOL_LIST_ACTIVE_MODULES,
     TOOL_RUN_ACTIVE_MODULE,
+    TOOL_RUN_AWS_AUTH_LOGIN,
     TOOL_GET_FINDINGS,
     TOOL_GET_RISK_SCORE,
     TOOL_REFRESH_NVD_CACHE,
