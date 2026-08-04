@@ -1,5 +1,8 @@
 # Vault Pentest Tool
 
+[![Test](https://github.com/muhammedkurtoglu0/vault-pentest-tool/actions/workflows/test.yml/badge.svg)](https://github.com/muhammedkurtoglu0/vault-pentest-tool/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Python-based offensive security tool for authorized HashiCorp Vault penetration testing. Covers the full attack lifecycle — recon, hijack, escalate, exfiltrate, pivot, and persist — across three operational modes:
 
 ### 1. External Reconnaissance (Zero-Knowledge)
