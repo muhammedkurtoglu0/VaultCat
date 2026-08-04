@@ -28,8 +28,6 @@ cd vault-pentest-tool
 uv sync
 ```
 
-[Detailed installation guide →](docs/installation.md)
-
 ## Quick Start
 
 ```bash
