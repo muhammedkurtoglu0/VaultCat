@@ -3296,10 +3296,10 @@ async def decode_generate_root_otp(
 
 # ─── Servis başlatıcı ─────────────────────────────────────────────────────
 
-def start_mcp_service(host: str = "127.0.0.1", port: int = 8000):
+def start_mcp_service(host: str = "127.0.0.1", port: int = 8000, transport: str = "streamable-http"):
     mcp_server.settings.host = host
     mcp_server.settings.port = port
-    mcp_server.run(transport="streamable-http")
+    mcp_server.run(transport=transport)
 
 
 def tool_schema(tool: Any) -> dict[str, Any]:

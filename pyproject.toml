@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vault-pentest-tool"
-version = "0.1.0"
-description = "Authorized HashiCorp Vault reconnaissance and credential hijacking risk assessment CLI."
+version = "1.0.0"
+description = "Full-lifecycle HashiCorp Vault penetration testing toolkit — recon, hijack, escalate, exfiltrate, pivot, and persist across CLI, AI chat, and MCP server modes."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -17,11 +17,17 @@ keywords = [
   "vault",
   "security",
   "pentest",
+  "penetration-testing",
   "reconnaissance",
-  "credential-hygiene"
+  "credential-hygiene",
+  "red-team",
+  "ai-pentesting",
+  "mcp-server",
+  "vulnerability-assessment",
+  "privilege-escalation",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Environment :: Console",
   "Intended Audience :: Information Technology",
   "Intended Audience :: System Administrators",
@@ -30,8 +36,10 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Security",
   "Topic :: System :: Systems Administration",
+  "Topic :: System :: Networking :: Monitoring",
 ]
 
 # ── Runtime dependencies (mirrors requirements.txt) ─────────────────────
@@ -76,12 +84,21 @@ Issues = "https://github.com/muhammedkurtoglu0/vault-pentest-tool/issues"
 vault-pentest = "main:main"
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "vault_cli"]
 packages = [
   "core",
   "active_execution",
   "active_execution.modules",
+  "active_execution.modules.cloud",
+  "active_execution.modules.database",
+  "active_execution.modules.general",
+  "active_execution.modules.persistence",
+  "active_execution.modules.pivot",
+  "active_execution.modules.seal",
+  "active_execution.modules.secrets",
+  "active_execution.modules.token",
   "ai_core",
+  "ai_core.planning",
   "credential_hijacking",
   "reconnaissance",
   "scanners",

@@ -100,7 +100,7 @@ python main.py mcp    # starts MCP server on 127.0.0.1:8000
 
 ## Architecture
 
-`main.py` is the single CLI entry point (argparse). It orchestrates all modules and calls `print_report()` / `export_*_report()` at the end of every run.
+`main.py` is a backward-compatible shim that delegates to the Typer CLI in `vault_cli.py` (5 commands: `scan`, `hijack`, `chat`, `cleanup`, `mcp`). It orchestrates all modules and calls `print_report()` / `export_*_report()` at the end of every run.
 
 ### `core/`
 - `client.py` — `VaultClient`: thin `requests` wrapper that adds the `X-Vault-Token` header. Used only for authenticated legacy checks; most scanners make their own requests.
@@ -132,7 +132,7 @@ Plugin-style system for state-changing assessment modules:
 - `modules/` — concrete module implementations (`PrivilegeEscalationModule`, `SecretExfiltrationModule`).
 
 ### `ai_core/`
-- `mcp_server.py` — FastMCP server (streamable HTTP, `127.0.0.1:8000`) exposing 36 MCP tools: recon scanners, audit scanners, active execution modules (`run_privilege_escalation`, `run_secret_exfiltration`, …), session management (`get_session_status`, `reset_session`, `create_attack_plan`, `execute_attack_plan`), agentic orchestration (`run_orchestrated_attack`, `run_auto_pentest` — both driven by `_make_mcp_tool_executor`, which hard-blocks state-changing tools when `max_risk=read_only`), remediation (`get_remediation_advice`, backed by `core/remediation_engine.py`), and meta tools (`get_findings`, `get_risk_score`, `list_active_modules`, `run_active_module`). Maintains a `PentestSession` per session ID via `ai_core.session.SessionManager`.
+- `mcp_server.py` — FastMCP server (`127.0.0.1:8000`, supports `streamable-http`/`stdio`/`sse` transports) exposing 52 MCP tools: recon scanners, audit scanners, active execution modules (`run_privilege_escalation`, `run_secret_exfiltration`, …), session management (`get_session_status`, `reset_session`, `create_attack_plan`, `execute_attack_plan`), agentic orchestration (`run_orchestrated_attack`, `run_auto_pentest` — both driven by `_make_mcp_tool_executor`, which hard-blocks state-changing tools when `max_risk=read_only`), remediation (`get_remediation_advice`, backed by `core/remediation_engine.py`), and meta tools (`get_findings`, `get_risk_score`, `list_active_modules`, `run_active_module`). Maintains a `PentestSession` per session ID via `ai_core.session.SessionManager`.
 - `agent.py` — `PentestAgent`: ReAct-loop conversational agent with hallucination guards (fake token/IP detection, duplicate-call prevention). Also supports `run_with_plan()` for autonomous multi-step plan execution with pause/resume/abort controls, phase tracking (`PhaseTracker`), and conditional step failure handling.
 - `llm_engine.py` — `LLMClient`: multi-provider (Ollama/OpenAI/Anthropic/DeepSeek) with unified `chat()` interface, native tool calling, ReAct fallback for Ollama, retry with exponential backoff (`RetryableError`/`FatalError`), circuit breaker (`CircuitBreaker`), and `health()` status.
 - `session.py` — `PentestSession` dataclass (targets, token history, active plan, phase tracking) + thread-safe `SessionManager` with TTL cleanup and export/import.

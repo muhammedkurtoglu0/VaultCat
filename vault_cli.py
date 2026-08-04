@@ -7,10 +7,10 @@ Commands:
     mcp      Start MCP server
 
 Usage:
-    python cli.py scan --target http://localhost:8200 --token ROOT
-    python cli.py hijack --path ./repo
-    python cli.py chat --provider deepseek
-    python cli.py mcp
+    vault-pentest scan --target http://localhost:8200 --token ROOT
+    vault-pentest hijack --path ./repo
+    vault-pentest chat --provider deepseek
+    vault-pentest mcp
 """
 
 from __future__ import annotations
@@ -901,14 +901,19 @@ def cleanup(
 @app.command()
 def mcp(
     skip_tls_verify: bool = typer.Option(False, "--skip-tls-verify", help="Disable TLS certificate verification"),
+    transport: str = typer.Option("streamable-http", "--transport", help="MCP transport: streamable-http | stdio | sse"),
 ) -> None:
-    """Start MCP server on 127.0.0.1:8000."""
+    """Start MCP server on 127.0.0.1:8000.
+
+    Use --transport stdio for Claude Desktop integration.
+    Use --transport sse for SSE-compatible clients.
+    """
     if skip_tls_verify:
         from core.tls_config import set_insecure_mode
         set_insecure_mode()
         print("[*] TLS certificate verification disabled")
     from ai_core.mcp_server import start_mcp_service
-    start_mcp_service()
+    start_mcp_service(transport=transport)
 
 
 # ---------------------------------------------------------------------------
