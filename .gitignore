@@ -38,3 +38,4 @@ logs/
 
 # Build artifacts
 *.egg-info/
+.coverage
