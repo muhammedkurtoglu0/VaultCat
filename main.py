@@ -26,6 +26,9 @@ _KNOWN_COMMANDS = frozenset({"scan", "hijack", "chat", "cleanup", "mcp"})
 def _apply_shim() -> None:
     """Insert the default ``scan`` command when no subcommand is given."""
     first = sys.argv[1] if len(sys.argv) > 1 else ""
+    # --help / -h without a subcommand → show top-level help (all commands)
+    if first in ("--help", "-h"):
+        return
     if not first or first.startswith("-") or first not in _KNOWN_COMMANDS:
         sys.argv.insert(1, "scan")
 
