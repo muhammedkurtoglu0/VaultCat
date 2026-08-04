@@ -146,11 +146,15 @@ When a user gives you a string, FIRST identify its type by FORMAT before trying 
 ### Vault-native formats
 | Format | Type | What to do |
 |---|---|---|
-| `hvs.xxx...` (starts with hvs.) | Vault token | Use as token for API calls; try lookup-self first |
-| `s.xxx...` (starts with s.) | Legacy Vault token | Same as hvs. token |
+| `hvs.xxx...` (**FORMAT EXAMPLE — NOT A REAL TOKEN!**) | Vault token prefix | Real tokens look like `hvs.CAES...` or `hvs.Y0H...` — random base64, NEVER repeated 'x' chars |
+| `s.xxx...` (**FORMAT EXAMPLE — NOT A REAL TOKEN!**) | Legacy Vault token prefix | Same as hvs. — random chars, not literal 'xxx' |
 | 64 hex chars `[0-9a-f]{64}` | **Unseal key / Shamir share** | Check seal status; use with unseal or generate-root |
-| UUID `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` | AppRole role_id | Pair with secret_id for approle login |
+| UUID `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (**FORMAT EXAMPLE**) | AppRole role_id | Pair with secret_id for approle login |
 | Long base64 string (no hvs. prefix) | AppRole secret_id | Pair with role_id for approle login |
+
+**⚠️ CRITICAL: `hvs.xxx...`, `hvs.xxxxxxxxxxxxxxxxxxxxxxxxxx`, `s.xxx...` are DOCUMENTATION PLACEHOLDERS — they are NOT real tokens!**
+Never pass them as token values. A real token looks random: `hvs.CAESIBhSJj-hrrQpXdSpxLB...`.
+If the only "token" you see is a placeholder pattern, tell the user you need a REAL token.
 
 ### External platform credentials (pivot opportunities!)
 When you discover a credential that does NOT match Vault formats, it may unlock other platforms:
@@ -371,6 +375,7 @@ class PentestAgent:
                 #     OpenAI/DeepSeek API format even after context pruning.
                 import uuid
                 _collected: list[dict] = []  # {name, arguments, result, enrichment_notes, call_id}
+                _blocked_fake_token = False  # set when LLM hallucinates a token
                 for tool_call in response["tool_calls"]:
                     name = tool_call["name"]
                     arguments = tool_call.get("arguments", {})
@@ -378,6 +383,7 @@ class PentestAgent:
                     # ---- GUARD: validate + inject target/token -----------
                     blocked = self._guard_tool_call(name, arguments)
                     if blocked:
+                        is_fake_token = "FAKE TOKEN" in blocked
                         yield {"type": "warning", "message": blocked}
                         messages.append({
                             "role": "assistant",
@@ -391,6 +397,14 @@ class PentestAgent:
                                 "then wait for them to provide it."
                             ),
                         })
+                        # Fake-token hallucination poisons the entire turn.
+                        # Break immediately so the LLM sees the system
+                        # message above instead of retrying with the same
+                        # fake token on different paths (wasted turns).
+                        if is_fake_token:
+                            _collected.clear()
+                            _blocked_fake_token = True
+                            break
                         continue
                     # ----------------------------------------------------------
 
