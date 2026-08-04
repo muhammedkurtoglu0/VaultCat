@@ -1800,9 +1800,11 @@ async def run_active_module(
     vault_addr: str,
     token: Optional[str] = None,
     params: Optional[dict[str, Any]] = None,
-    max_risk: str = "state_changing",
+    max_risk: str = "read_only",
     namespace: Optional[str] = None,
 ) -> str:
+    # Safety: default to read_only. The LLM must explicitly request
+    # state_changing or destructive to run higher-risk modules.
     # Only clear this specific module's findings, not all findings
     registry = build_active_registry()
     module = registry.get(module_id)

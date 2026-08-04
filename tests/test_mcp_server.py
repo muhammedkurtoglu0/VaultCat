@@ -330,6 +330,7 @@ def test_mcp_run_active_module_executes_registered_module_and_stores_token(monke
         vault_addr="http://vault.test:8200/",
         token="hvs.low-token",
         params={"ttl": "20m"},
+        max_risk="state_changing",
     ))
 
     assert "hvs.generic-admin-token" in result
