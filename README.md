@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/VaultCat_logo.jpeg" alt="VaultCat" width="200">
+  <img src="docs/VaultCat_logo.png" alt="VaultCat" width="200">
 </p>
 
 # VaultCat

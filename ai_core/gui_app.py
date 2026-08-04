@@ -102,7 +102,7 @@ class PentestGUI(ctk.CTk):
         try:
             from PIL import Image, ImageTk
             import os
-            logo_path = os.path.join(os.path.dirname(__file__), "..", "docs", "VaultCat_logo.jpeg")
+            logo_path = os.path.join(os.path.dirname(__file__), "..", "docs", "VaultCat_logo.png")
             logo = Image.open(logo_path)
             self.iconphoto(True, ImageTk.PhotoImage(logo))
         except Exception:
