@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/VaultCat_logo.png" alt="VaultCat" width="200" style="pointer-events: none">
+  <a href=""><img src="docs/VaultCat_logo.png" alt="VaultCat" width="200"></a>
 </p>
 
 # VaultCat
