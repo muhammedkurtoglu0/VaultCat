@@ -57,9 +57,13 @@ vault-pentest mcp
 
 | Guide | What it covers |
 |-------|---------------|
-| [CLI Flags Reference](docs/CLI_FLAGS.md) | All 50+ flags across 5 commands (`scan`, `hijack`, `chat`, `cleanup`, `mcp`) |
+| [Reconnaissance](docs/RECON.md) | Unauthenticated scanning — TLS, CORS, CVE matching, auth surface |
+| [Authenticated Assessment](docs/AUTHENTICATED_ASSESSMENT.md) | Token-based audit — capability, policy, KV, TTL, AppRole validation |
+| [Credential Hijacking](docs/CREDENTIAL_HIJACKING.md) | File/git scanning (56 patterns), correlation, validation |
+| [Active Execution Modules](docs/MODULES.md) | 30 state-changing modules with risk levels and parameters |
+| [AI-Powered Pentesting](docs/AI_PENTESTING.md) | Chat agent, auto mode, tree walker, stealth, web search |
 | [MCP Integration](docs/MCP_INTEGRATION.md) | Connect Claude Desktop, VS Code, and other AI clients |
-| [Modules](docs/MODULES.md) | 30 active execution modules with risk levels and parameters |
+| [CLI Flags Reference](docs/CLI_FLAGS.md) | All 50+ flags across 5 commands |
 | [Architecture](docs/ARCHITECTURE.md) | Component flow, package layout, attack tree design |
 | [Environment Variables](docs/ENV_VARS.md) | LLM keys, base URLs, NVD, web search configuration |
 
