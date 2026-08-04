@@ -684,15 +684,28 @@ class PentestAgent:
         if name in token_tools and not self.token and not arguments.get("token"):
             return "No token. Ask: set token hvs.ABC..."
 
-        # ---- inject real target (override any hallucinated one) ----
-        if self.vault_addr and name in vault_tools:
-            # Normalize: strip path/query from vault_addr (user may paste UI URLs)
-            addr = self.vault_addr
-            if "://" in addr:
-                from urllib.parse import urlparse, urlunparse
-                p = urlparse(addr)
-                addr = urlunparse((p.scheme, p.netloc, "", "", "", ""))
-            arguments["vault_addr"] = addr
+        # ---- inject real target (override only hallucinated / placeholder ones) ----
+        if name in vault_tools:
+            arg_addr = str(arguments.get("vault_addr", "")).strip().rstrip("/")
+            # Determine whether the LLM-provided address looks legitimate.
+            llm_addr_valid = bool(arg_addr) and not any(
+                arg_addr == fake or arg_addr.startswith(fake.rstrip("/"))
+                for fake in fake_ips
+            )
+            if llm_addr_valid:
+                # LLM provided a real address — trust it and update our state
+                # so subsequent calls use the same target.
+                if arg_addr != self.vault_addr:
+                    self.vault_addr = arg_addr
+                    self.memory.set_context("vault_addr", arg_addr)
+            elif self.vault_addr:
+                # LLM gave no address or a fake one → inject the known target
+                addr = self.vault_addr
+                if "://" in addr:
+                    from urllib.parse import urlparse, urlunparse
+                    p = urlparse(addr)
+                    addr = urlunparse((p.scheme, p.netloc, "", "", "", ""))
+                arguments["vault_addr"] = addr
 
         # ---- inject best available token (global store > agent default) ----
         # CRITICAL: respect the LLM's explicit token choice.

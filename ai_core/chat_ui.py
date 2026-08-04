@@ -27,6 +27,47 @@ from ai_core.models import get_models, get_default_model, list_providers, get_pr
 from ai_core.tools import ALL_TOOLS
 
 
+def _extract_target_url(text: str) -> str | None:
+    """Extract a Vault target URL from natural-language user input.
+
+    Returns a normalized ``scheme://host:port`` string if the text
+    contains an HTTP(S) URL pointing to a Vault-like port (8200, 8201)
+    or a path that looks like a Vault UI, otherwise ``None``.
+    """
+    import re
+    from urllib.parse import urlparse, urlunparse
+
+    # Match http:// or https:// URLs
+    for match in re.finditer(r"https?://[^\s]+", text):
+        raw = match.group(0).rstrip(".,;:)")
+        try:
+            p = urlparse(raw)
+        except Exception:
+            continue
+        if not p.hostname:
+            continue
+        # Accept if port is 8200/8201, or path looks Vault-related,
+        # or the user explicitly said "hedef" / "target" nearby.
+        is_vault_port = p.port in (8200, 8201)
+        is_vault_path = any(
+            seg in (p.path or "")
+            for seg in ("/ui/vault", "/v1/sys", "/v1/auth")
+        )
+        is_target_keyword = any(
+            kw in text.lower()
+            for kw in ("hedef", "target", "yeni hedef", "new target")
+        )
+        if is_vault_port or is_vault_path or is_target_keyword:
+            return urlunparse((p.scheme, p.netloc, "", "", "", ""))
+        # Fallback: any https:// URL on port 443 with Vault TLD might be legit
+        if p.scheme == "https" and not p.port:
+            # User gave https://IP — likely Vault UI
+            if is_target_keyword:
+                return urlunparse((p.scheme, p.netloc, "", "", "", ""))
+
+    return None
+
+
 class ChatUI:
     """Terminal chat interface for the AI pentest agent."""
 
@@ -196,6 +237,23 @@ class ChatUI:
                 if cmd.startswith("set "):
                     self._handle_set(user_input[4:])
                     continue
+
+                # ── Auto-detect target URLs in natural language ──────────
+                # Users often paste URLs like "https://IP:8200 yeni hedef bu"
+                # instead of typing "set target https://IP:8200".
+                _auto_target = _extract_target_url(user_input)
+                if _auto_target and _auto_target != self.vault_addr:
+                    prev = self.vault_addr
+                    self.vault_addr = _auto_target
+                    self.agent.vault_addr = _auto_target
+                    self.memory.set_context("vault_addr", _auto_target)
+                    if _auto_target.startswith("https://"):
+                        from core.tls_config import set_insecure_mode
+                        set_insecure_mode()
+                    print(f"🔄 Target auto-detected: {prev or 'none'} → {_auto_target}")
+                    print("   (use 'set target <url>' to change explicitly)")
+                    # Don't continue — feed the original message to the agent
+                    # so it can act on the new target immediately.
 
                 # Run the agent for any other input
                 asyncio.run(self._run_agent(user_input))
