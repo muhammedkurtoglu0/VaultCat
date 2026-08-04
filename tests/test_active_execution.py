@@ -1411,6 +1411,12 @@ class TestAuditBackdoorExtended:
             return FakeResponse(status_code=403)
 
         monkeypatch.setattr(core.tls_config, "vault_request", fake_request)
+        # audit_backdoor imports vault_request directly at module level, so it
+        # also needs the module-level reference patched (not just core.tls_config).
+        monkeypatch.setattr(
+            "active_execution.modules.persistence.audit_backdoor.vault_request",
+            fake_request,
+        )
 
         context = ExecutionContext(vault_addr="https://vault.test/", token="hvs.test", verify_tls=False)
         result = AuditBackdoorModule().execute(context)

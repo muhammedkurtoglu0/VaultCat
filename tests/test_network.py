@@ -323,6 +323,9 @@ def test_auth_config_audit_flags_kubernetes_aws_and_ldap_risks(monkeypatch):
                 }
             }
         ),
+        ("GET", f"{target}/v1/auth/kubernetes/config"): FakeRequestsResponse(
+            payload={"data": {"disable_iss_validation": False, "disable_local_ca_jwt": False}}
+        ),
         ("LIST", f"{target}/v1/auth/aws/role"): FakeRequestsResponse(
             payload={"data": {"keys": ["wide-aws"]}}
         ),
@@ -350,7 +353,7 @@ def test_auth_config_audit_flags_kubernetes_aws_and_ldap_risks(monkeypatch):
     result = auth_config_scanner.scan_auth_config_security(target, "hvs.fake-token")
 
     assert result["risk_score"] == 90
-    assert sorted(check["risk_score"] for check in result["checks"]) == [25, 25, 40]
+    assert sorted(check["risk_score"] for check in result["checks"]) == [0, 25, 25, 40]
     titles = [finding["title"] for finding in report.findings]
     assert "Kubernetes auth role allows all service accounts" in titles
     assert "AWS auth role uses wildcard IAM principal binding" in titles
@@ -381,6 +384,9 @@ def test_auth_config_audit_reports_pass_for_scoped_external_auth(monkeypatch):
                     "bound_service_account_namespaces": ["prod"],
                 }
             }
+        ),
+        ("GET", f"{target}/v1/auth/kubernetes/config"): FakeRequestsResponse(
+            payload={"data": {"disable_iss_validation": False, "disable_local_ca_jwt": False}}
         ),
         ("LIST", f"{target}/v1/auth/aws/role"): FakeRequestsResponse(
             payload={"data": {"keys": ["app"]}}

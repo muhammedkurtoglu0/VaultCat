@@ -346,26 +346,26 @@ def _report_capability_findings(results, vault_addr):
             f"path: {path}; "
             f"capabilities: {', '.join(sorted(capabilities))}"
         )
-        if "root" in dangerous:
-            raw.append({"type": "root", "severity": "CRITICAL",
-                         "title": f"Token has root capability — {path}",
-                         "desc": "ROOT means full control.", "rec": "Never expose root tokens.",
-                         "evidence": evidence, "path": path})
-        elif "sudo" in dangerous:
-            raw.append({"type": "sudo", "severity": "CRITICAL",
-                         "title": f"Token has sudo capability — {path}",
-                         "desc": "Privileged sudo operations permitted.", "rec": "Restrict sudo to tightly controlled admin tokens.",
-                         "evidence": evidence, "path": path})
-        elif dangerous.intersection(WRITE_CAPABILITIES):
-            raw.append({"type": "write", "severity": "HIGH",
-                         "title": f"Token has write capability — {path}",
-                         "desc": "Can modify data/configuration.", "rec": "Remove unnecessary write capabilities.",
-                         "evidence": evidence, "path": path})
-        elif _is_over_privileged(path, dangerous):
+        if _is_over_privileged(path, dangerous):
             raw.append({"type": "over_privileged", "severity": "HIGH",
-                         "title": f"Over-privileged token capability — {path}",
+                         "title": "Over-privileged token capability on critical Vault path",
                          "desc": "Sudo/write-like on critical path.", "rec": "Reduce policy scope.",
                          "evidence": f"{evidence}; {_over_privilege_evidence(path)}", "path": path})
+        if "root" in dangerous:
+            raw.append({"type": "root", "severity": "CRITICAL",
+                         "title": "Token has root capability on Vault path",
+                         "desc": "ROOT means full control.", "rec": "Never expose root tokens.",
+                         "evidence": evidence, "path": path})
+        if "sudo" in dangerous:
+            raw.append({"type": "sudo", "severity": "CRITICAL",
+                         "title": "Token has sudo capability on Vault path",
+                         "desc": "Privileged sudo operations permitted.", "rec": "Restrict sudo to tightly controlled admin tokens.",
+                         "evidence": evidence, "path": path})
+        if dangerous.intersection(WRITE_CAPABILITIES):
+            raw.append({"type": "write", "severity": "HIGH",
+                         "title": "Token has write capability on Vault path",
+                         "desc": "Can modify data/configuration.", "rec": "Remove unnecessary write capabilities.",
+                         "evidence": evidence, "path": path})
 
     if not raw:
         return

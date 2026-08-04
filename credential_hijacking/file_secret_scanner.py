@@ -23,18 +23,36 @@ CHUNK_THRESHOLD = 1 * 1024 * 1024  # files > 1 MB are scanned in chunks
 # binary/log files where most chunks contain zero credential material.
 _KEYWORD_INDEX: dict[str, str] = {}
 for _pn, _pat in PATTERNS.items():
-    # Use the first literal-looking fragment from the pattern as keyword
-    _ps = _pat.pattern
+    # Strip word-boundary escapes so '\b' is not mistaken for a literal
+    # 'b' glued onto the following word (e.g. '\bhvs\.CAES' must yield
+    # the keyword 'caes', not the never-present 'bhvs').
+    _ps = _pat.pattern.replace("\\b", "").lower()
     # Extract the longest lowercase alpha substring as keyword
-    _words = __import__('re').findall(r'[a-z_]{4,}', _ps.lower())
+    _words = __import__('re').findall(r'[a-z_]{4,}', _ps)
     if _words:
         _KEYWORD_INDEX[_pn] = max(_words, key=len)
-# Fallback keywords for patterns with no alpha fragment
-_KEYWORD_INDEX.setdefault("vault_response_wrapped_token", "hvs.")
-_KEYWORD_INDEX.setdefault("vault_token_value", "hvs.")
-_KEYWORD_INDEX.setdefault("vault_token_assignment", "vault_token")
-_KEYWORD_INDEX.setdefault("vault_addr_assignment", "vault_addr")
-_KEYWORD_INDEX.setdefault("vault_8200_url", "8200")
+# Explicit keywords for patterns whose auto-extracted keyword (the longest
+# alpha substring) is NOT guaranteed to appear in every possible match —
+# typically alternations where no single alternative is required.  The
+# pre-filter must never suppress a real detection, so these are pinned to a
+# substring every match is guaranteed to contain ("" disables the filter).
+_KEYWORD_INDEX.update({
+    "vault_response_wrapped_token": "caes",   # \bhvs\.CAES...
+    "vault_token_value": "hvs.",              # hvs.X / hvc.X
+    "vault_8200_url": "8200",                 # ...:8200
+    "vault_api_path": "/v1/",                 # /v1/secret|sys|auth|kv/...
+    "vault_role_id": "role",                  # VAULT_ROLE_ID|role_id|role-id|roleId
+    "vault_secret_id": "secret",              # VAULT_SECRET_ID|secret_id|secret-id|secretId
+    "vault_database_plugin": "database-plugin",
+    "vault_database_connection_url": "://",   # postgresql://, jdbc:mysql://, ...
+    "database_static_username": "user",
+    "database_static_password": "pass",
+    "vault_aws_auth_reference": "auth_method",
+    "aws_role_arn": "role_arn",
+    # Alternations with no single required substring — always scan.
+    "vault_database_broad_privilege_statement": "",
+    "vault_database_destructive_statement": "",
+})
 DEFAULT_EXCLUDED_DIRS = {
     ".git",
     ".hg",

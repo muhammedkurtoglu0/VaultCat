@@ -925,6 +925,8 @@ TOOL_DOMAIN_MAP: dict[str, set[str]] = {
     "run_hijack_scan":               {"general"},
     "run_env_scan":                  {"general"},
     "run_vault_agent_scan":          {"general"},
+    "search_to_actions":             {"general"},
+    "set_evasion_profile":           {"general"},
 
     # ── Audit — token domain ───────────────────────────────────────────
     "run_capability_audit":          {"token"},
@@ -976,6 +978,7 @@ TOOL_DOMAIN_MAP: dict[str, set[str]] = {
     "export_full_report":            {"*"},
     "send_notification":             {"*"},
     "generate_diff_report":          {"*"},
+    "get_fix_commands":              {"*"},
     "decode_generate_root_otp":      {"*"},
     "run_database_pivot":            {"database"},
     "run_reverse_shell":             {"payload"},
