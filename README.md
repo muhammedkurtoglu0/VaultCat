@@ -130,12 +130,6 @@ Authenticated checks only run when a token is supplied.
 python main.py --target http://localhost:8200 --token YOUR_TOKEN
 ```
 
-Legacy authenticated address usage is also supported:
-
-```bash
-python main.py --addr http://localhost:8200 --token YOUR_TOKEN
-```
-
 Optional secret path and policy checks:
 
 ```bash
