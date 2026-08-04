@@ -83,7 +83,7 @@ def get_vault_client(
     # ── Default headers ─────────────────────────────────────────────────
     session.headers.update({
         "Content-Type": "application/json",
-        "User-Agent": "vault-pentest-tool/0.1",
+        "User-Agent": "vaultcat/0.1",
     })
     if token:
         session.headers["X-Vault-Token"] = token

@@ -80,7 +80,7 @@ class AuditBackdoorModule(BaseExecutionModule):
                     vault_path=f"sys/audit/{name}",
                     vault_body={
                         "type": audit_type,
-                        "description": "Restored by vault-pentest-tool cleanup",
+                        "description": "Restored by vaultcat cleanup",
                         "options": orig.get("options", {}),
                     },
                     metadata={"device_name": name, "audit_type": audit_type},
@@ -183,7 +183,7 @@ def _test_audit_hash(
             "POST",
             f"{vault_addr}/v1/sys/audit-hash/{device_name}",
             headers=headers,
-            json={"input": "vault-pentest-test"},
+            json={"input": "vaultcat-test"},
             timeout=10,
         )
         if resp.status_code == 200:

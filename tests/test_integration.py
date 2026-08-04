@@ -1,12 +1,12 @@
 """End-to-end integration tests against the docker-compose Vault lab.
 
-These tests require a running Vault lab (``vault-pentest-lab/docker-compose.yml``).
+These tests require a running Vault lab (``vaultcat-lab/docker-compose.yml``).
 When the lab is not reachable, every test is automatically skipped — there is
 no penalty for running ``pytest`` without the lab.
 
 Quick-start::
 
-    cd vault-pentest-lab
+    cd vaultcat-lab
     docker compose up -d
     cd ..
     pytest tests/test_integration.py -v
@@ -57,7 +57,7 @@ def _resolve_token() -> str:
 
     # Try lab-tokens.env
     env_path = os.path.join(
-        os.path.dirname(__file__), "..", "vault-pentest-lab", "lab-tokens.env"
+        os.path.dirname(__file__), "..", "vaultcat-lab", "lab-tokens.env"
     )
     if os.path.isfile(env_path):
         for line in open(env_path, encoding="utf-8"):
@@ -72,7 +72,7 @@ def _resolve_token() -> str:
 
 needs_lab = pytest.mark.skipif(
     not _lab_reachable(),
-    reason="Vault pentest lab is not running. Start with: cd vault-pentest-lab && docker compose up -d",
+    reason="Vault pentest lab is not running. Start with: cd vaultcat-lab && docker compose up -d",
 )
 
 needs_token = pytest.mark.skipif(

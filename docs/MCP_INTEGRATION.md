@@ -1,13 +1,13 @@
 # MCP Integration Guide
 
-The Vault Pentest Tool exposes **43 pentest tools** via a FastMCP server on `127.0.0.1:8000`. Connect any MCP-compatible AI client (Claude Desktop, Continue, Cursor, etc.) to give it direct Vault pentest capabilities.
+The VaultCat exposes **43 pentest tools** via a FastMCP server on `127.0.0.1:8000`. Connect any MCP-compatible AI client (Claude Desktop, Continue, Cursor, etc.) to give it direct Vault pentest capabilities.
 
 ## Quick Start
 
 ### 1. Start the MCP Server
 
 ```bash
-vault-pentest mcp
+vaultcat mcp
 # or: python main.py mcp
 ```
 
@@ -20,7 +20,7 @@ Open Claude Desktop → **Settings** → **Developer** → **Edit Config**, then
 ```json
 {
   "mcpServers": {
-    "vault-pentest": {
+    "vaultcat": {
       "url": "http://127.0.0.1:8000/mcp"
     }
   }
@@ -68,7 +68,7 @@ For **VS Code / Continue**, add to `~/.continue/config.json`:
   "experimental": {
     "modelContextProtocolServers": [
       {
-        "name": "vault-pentest",
+        "name": "vaultcat",
         "url": "http://127.0.0.1:8000/mcp"
       }
     ]
@@ -78,7 +78,7 @@ For **VS Code / Continue**, add to `~/.continue/config.json`:
 
 ## Troubleshooting
 
-**"Connection refused"**: Make sure the MCP server is running (`vault-pentest mcp`).
+**"Connection refused"**: Make sure the MCP server is running (`vaultcat mcp`).
 
 **"Tool call failed"**: Check that you've set `--target` and optionally `--token`. The server inherits no default configuration.
 

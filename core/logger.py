@@ -21,7 +21,7 @@ except ImportError:
     # it will be picked up on the next import.
     import logging as _logging
 
-    _fallback = _logging.getLogger("vault-pentest")
+    _fallback = _logging.getLogger("vaultcat")
     _fallback.setLevel(_logging.DEBUG)
     _h = _logging.StreamHandler(sys.stderr)
     _h.setFormatter(_logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
@@ -48,7 +48,7 @@ else:
     LOG_DIR.mkdir(exist_ok=True)
 
     _logger.add(
-        LOG_DIR / "vault-pentest-{time:YYYY-MM-DD}.log",
+        LOG_DIR / "vaultcat-{time:YYYY-MM-DD}.log",
         rotation="10 MB",
         retention="30 days",
         compression="gz",

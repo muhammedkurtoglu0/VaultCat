@@ -86,13 +86,13 @@
 
 ```bash
 # Read-only: no --confirm-active needed
-vault-pentest scan --target URL --token TOKEN --active-auto
+vaultcat scan --target URL --token TOKEN --active-auto
 
 # State-changing: requires confirmation
-vault-pentest scan --target URL --token TOKEN --active-auto \
+vaultcat scan --target URL --token TOKEN --active-auto \
   --active-max-risk state_changing --confirm-active
 
 # Single module
-vault-pentest scan --target URL --token TOKEN \
+vaultcat scan --target URL --token TOKEN \
   --module privilege_escalation.token_abuse --confirm-active
 ```

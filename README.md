@@ -1,6 +1,6 @@
-# Vault Pentest Tool
+# VaultCat
 
-[![Test](https://github.com/muhammedkurtoglu0/vault-pentest-tool/actions/workflows/test.yml/badge.svg)](https://github.com/muhammedkurtoglu0/vault-pentest-tool/actions/workflows/test.yml)
+[![Test](https://github.com/muhammedkurtoglu0/vaultcat/actions/workflows/test.yml/badge.svg)](https://github.com/muhammedkurtoglu0/vaultcat/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
@@ -18,39 +18,40 @@ Full-lifecycle HashiCorp Vault penetration testing toolkit — recon, hijack, es
 ## Install
 
 ```bash
-# Install from GitHub (PyPI package coming soon)
-pip install git+https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
+pip install vaultcat
+```
 
-# Or with uv (isolated environment, PATH-linked)
-uv tool install git+https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
+[![PyPI](https://img.shields.io/pypi/v/vaultcat)](https://pypi.org/project/vaultcat/)
 
-# Dev install (clone + venv):
-git clone https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
-cd vault-pentest-tool
+For development:
+
+```bash
+git clone https://github.com/muhammedkurtoglu0/vaultcat.git
+cd vaultcat
 uv sync
-uv run vault-pentest chat
+uv run vaultcat chat
 ```
 
 ## Quick Start
 
 ```bash
 # Unauthenticated recon
-vault-pentest scan --target https://vault.example.com:8200
+vaultcat scan --target https://vault.example.com:8200
 
 # Authenticated audit
-vault-pentest scan --target https://vault.example.com:8200 --token hvs.xxx --capability-audit
+vaultcat scan --target https://vault.example.com:8200 --token hvs.xxx --capability-audit
 
 # Local credential hijacking
-vault-pentest hijack ./my-repo --validate-token --target https://vault.example.com:8200
+vaultcat hijack ./my-repo --validate-token --target https://vault.example.com:8200
 
 # AI-powered pentest chat (terminal)
-vault-pentest chat
+vaultcat chat
 
 # AI chat with desktop GUI
-vault-pentest chat --ui desktop
+vaultcat chat --ui desktop
 
 # MCP server (for Claude Desktop integration)
-vault-pentest mcp
+vaultcat mcp
 ```
 
 ## Documentation
@@ -70,7 +71,7 @@ vault-pentest mcp
 ## Connect to Claude Desktop
 
 ```bash
-vault-pentest mcp --transport stdio
+vaultcat mcp --transport stdio
 ```
 
 Then add to your Claude Desktop config:
@@ -78,8 +79,8 @@ Then add to your Claude Desktop config:
 ```json
 {
   "mcpServers": {
-    "vault-pentest": {
-      "command": "vault-pentest",
+    "vaultcat": {
+      "command": "vaultcat",
       "args": ["mcp", "--transport", "stdio"]
     }
   }
@@ -118,20 +119,20 @@ active_execution/       30 state-changing assessment modules
     secrets/            KV dump, PKI, Transit, Raft storage
     token/              Priv esc, token/policy exploits, K8s/JWT/AppRole
 ai_core/                LLM agent, MCP server, chat UI, planning, session
-vault-pentest-lab/      Docker-based lab (Vault 1.15.3 + PostgreSQL 16)
+vaultcat-lab/      Docker-based lab (Vault 1.15.3 + PostgreSQL 16)
 tests/                  23 test files, 600+ tests
 ```
 
 ## Vault Pentest Lab
 
 ```bash
-cd vault-pentest-lab
+cd vaultcat-lab
 docker compose up -d
 ./scripts/setup-lab.sh
 source lab-tokens.env
 ```
 
-[Full lab guide →](vault-pentest-lab/README.md)
+[Full lab guide →](vaultcat-lab/README.md)
 
 ## License
 

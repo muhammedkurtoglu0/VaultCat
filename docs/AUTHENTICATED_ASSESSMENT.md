@@ -7,16 +7,16 @@ Requires a Vault token with at least default policy access.
 ## Quick Start
 
 ```bash
-vault-pentest scan --target https://vault.example.com:8200 --token hvs.xxx
+vaultcat scan --target https://vault.example.com:8200 --token hvs.xxx
 ```
 
 ## Capability Audit
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --capability-audit
+vaultcat scan --target URL --token TOKEN --capability-audit
 
 # With specific paths:
-vault-pentest scan --target URL --token TOKEN --capability-audit \
+vaultcat scan --target URL --token TOKEN --capability-audit \
   --capability-path "sys/*" --capability-path "auth/*" \
   --capability-path "database/roles/*"
 ```
@@ -29,7 +29,7 @@ Uses `sys/capabilities-self` to check what the token can do on critical paths. F
 ## Privilege Escalation Simulation
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --priv-esc-audit
+vaultcat scan --target URL --token TOKEN --priv-esc-audit
 ```
 
 Safely simulates whether the token can update its own ACL policy or create child tokens. **Does not create or modify anything.**
@@ -37,7 +37,7 @@ Safely simulates whether the token can update its own ACL policy or create child
 ## Auth Configuration Audit
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --auth-config-audit
+vaultcat scan --target URL --token TOKEN --auth-config-audit
 ```
 
 Audits external auth method configurations:
@@ -49,10 +49,10 @@ Audits external auth method configurations:
 ## TTL Governance
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --ttl-audit
+vaultcat scan --target URL --token TOKEN --ttl-audit
 
 # Custom thresholds:
-vault-pentest scan --target URL --token TOKEN --ttl-audit \
+vaultcat scan --target URL --token TOKEN --ttl-audit \
   --max-mount-ttl-seconds 2592000 \
   --max-pki-cert-ttl-seconds 7776000
 ```
@@ -62,21 +62,21 @@ Checks `sys/mounts` for `max_lease_ttl` and PKI role `ttl`/`max_ttl` values agai
 ## KV Enumeration
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --kv-enum
+vaultcat scan --target URL --token TOKEN --kv-enum
 
 # Specific path and engine:
-vault-pentest scan --target URL --token TOKEN --kv-enum \
+vaultcat scan --target URL --token TOKEN --kv-enum \
   --kv-path secret/ --kv-version 2
 
 # Deep scan:
-vault-pentest scan --target URL --token TOKEN --kv-enum \
+vaultcat scan --target URL --token TOKEN --kv-enum \
   --kv-path kv/app --kv-max-depth 5 --kv-concurrency 3
 
 # List-only (don't read metadata):
-vault-pentest scan --target URL --token TOKEN --kv-enum --kv-no-read
+vaultcat scan --target URL --token TOKEN --kv-enum --kv-no-read
 
 # Blind brute-force on 403:
-vault-pentest scan --target URL --token TOKEN --kv-enum --kv-blind
+vaultcat scan --target URL --token TOKEN --kv-enum --kv-blind
 ```
 
 Recursively lists accessible KV paths using parallel async workers. Builds a tree of readable secrets without printing values.
@@ -84,7 +84,7 @@ Recursively lists accessible KV paths using parallel async workers. Builds a tre
 ## Policy Analysis
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --policy admin
+vaultcat scan --target URL --token TOKEN --policy admin
 ```
 
 Enumerates ACL policies and parses HCL rules for wildcard patterns, sudo grants, and privilege boundaries.
@@ -92,7 +92,7 @@ Enumerates ACL policies and parses HCL rules for wildcard patterns, sudo grants,
 ## Secret Path Check
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --secret-path secret/data/myapp
+vaultcat scan --target URL --token TOKEN --secret-path secret/data/myapp
 ```
 
 Tests read access to a specific secret path.
@@ -100,11 +100,11 @@ Tests read access to a specific secret path.
 ## AppRole Validation
 
 ```bash
-vault-pentest scan --target URL --validate-approle \
+vaultcat scan --target URL --validate-approle \
   --role-id ROLE_ID --secret-id SECRET_ID
 
 # With capability audit of resulting token:
-vault-pentest scan --target URL --validate-approle \
+vaultcat scan --target URL --validate-approle \
   --role-id ROLE_ID --secret-id SECRET_ID \
   --capability-path "database/roles/*" --capability-path "sys/*"
 ```
@@ -114,7 +114,7 @@ Performs an AppRole login with the supplied pair, analyzes the returned token's 
 ## Database Secrets Engine Validation
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --validate-db
+vaultcat scan --target URL --token TOKEN --validate-db
 ```
 
 Checks visible database mounts, listable roles, role TTLs, and creation statement exposure. Does **not** generate dynamic credentials.
@@ -122,7 +122,7 @@ Checks visible database mounts, listable roles, role TTLs, and creation statemen
 ## Report Export
 
 ```bash
-vault-pentest scan --target URL --token TOKEN \
+vaultcat scan --target URL --token TOKEN \
   --json report.json --markdown report.md --pdf-report report.pdf \
   --min-severity HIGH
 ```

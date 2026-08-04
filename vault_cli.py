@@ -1,4 +1,4 @@
-"""Vault Pentest Tool — Typer CLI entry point.
+"""VaultCat — Typer CLI entry point.
 
 Commands:
     scan     Full pentest assessment (default)
@@ -7,10 +7,10 @@ Commands:
     mcp      Start MCP server
 
 Usage:
-    vault-pentest scan --target http://localhost:8200 --token ROOT
-    vault-pentest hijack --path ./repo
-    vault-pentest chat --provider deepseek
-    vault-pentest mcp
+    vaultcat scan --target http://localhost:8200 --token ROOT
+    vaultcat hijack --path ./repo
+    vaultcat chat --provider deepseek
+    vaultcat mcp
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ DB_TYPE_CHOICES = ["postgres", "mysql", "mssql"]
 # ---------------------------------------------------------------------------
 
 app = typer.Typer(
-    name="vault-pentest",
+    name="vaultcat",
     help="HashiCorp Vault penetration testing tool",
     no_args_is_help=True,
     add_completion=False,

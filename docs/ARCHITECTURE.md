@@ -81,7 +81,7 @@ active_execution/       State-changing assessment modules (30 modules)
     secrets/            KV dump, PKI, Transit, Raft storage
     token/              Privilege escalation, token/policy exploits, K8s/JWT/AppRole
 ai_core/                LLM agent, MCP server, chat UI, planning, session (20+ files)
-vault-pentest-lab/      Docker-based pentest lab (Vault 1.15.3 + PostgreSQL 16)
+vaultcat-lab/      Docker-based pentest lab (Vault 1.15.3 + PostgreSQL 16)
 tests/                  23 test files, 600+ tests
 ```
 

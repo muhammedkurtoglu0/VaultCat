@@ -34,7 +34,7 @@ def _lab_token() -> str:
     global ROOT_TOKEN
     if ROOT_TOKEN:
         return ROOT_TOKEN
-    env_path = os.path.join(os.path.dirname(__file__), "..", "vault-pentest-lab", "lab-tokens.env")
+    env_path = os.path.join(os.path.dirname(__file__), "..", "vaultcat-lab", "lab-tokens.env")
     if os.path.isfile(env_path):
         for line in open(env_path, encoding="utf-8"):
             if line.startswith("ROOT_TOKEN="):

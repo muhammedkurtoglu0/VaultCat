@@ -1,4 +1,4 @@
-# Wrapper to launch Vault Pentest Tool using uv-managed Python.
+# Wrapper to launch VaultCat using uv-managed Python.
 # Bypasses Windows Device Guard which blocks the venv's copied python.exe.
 # Usage: uv-python run_gui.py chat --ui desktop --skip-tls-verify
 

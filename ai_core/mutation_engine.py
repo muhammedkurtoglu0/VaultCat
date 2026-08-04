@@ -650,7 +650,7 @@ class MutationEngine:
         """Build the LLM prompt that generates creative attack alternatives."""
         state_json = json.dumps(state, indent=2, ensure_ascii=False)
 
-        return f"""You are an expert red-team operator. A Vault pentest tool just FAILED.
+        return f"""You are an expert red-team operator. A VaultCat just FAILED.
 Analyse the state and generate the BEST possible alternative attack paths.
 
 === CURRENT STATE ===

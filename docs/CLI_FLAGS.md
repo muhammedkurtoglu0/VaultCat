@@ -9,7 +9,7 @@ All flags for the 5 commands: `scan`, `hijack`, `chat`, `cleanup`, `mcp`.
 ## `scan` — Full Pentest Assessment
 
 ```
-vault-pentest scan [OPTIONS]
+vaultcat scan [OPTIONS]
 ```
 
 ### Target & Auth
@@ -126,7 +126,7 @@ vault-pentest scan [OPTIONS]
 ## `hijack` — Credential Hijacking Scan
 
 ```
-vault-pentest hijack <PATH> [OPTIONS]
+vaultcat hijack <PATH> [OPTIONS]
 ```
 
 | Flag | Type | Default | Description |
@@ -153,7 +153,7 @@ vault-pentest hijack <PATH> [OPTIONS]
 ## `chat` — AI-Powered Pentest Agent
 
 ```
-vault-pentest chat [OPTIONS]
+vaultcat chat [OPTIONS]
 ```
 
 | Flag | Type | Default | Description |
@@ -182,7 +182,7 @@ vault-pentest chat [OPTIONS]
 ## `cleanup` — Rollback State Changes
 
 ```
-vault-pentest cleanup [OPTIONS]
+vaultcat cleanup [OPTIONS]
 ```
 
 | Flag | Type | Default | Description |
@@ -197,7 +197,7 @@ vault-pentest cleanup [OPTIONS]
 ## `mcp` — MCP Server
 
 ```
-vault-pentest mcp [OPTIONS]
+vaultcat mcp [OPTIONS]
 ```
 
 | Flag | Type | Default | Description |

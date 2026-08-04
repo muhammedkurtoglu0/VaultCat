@@ -3301,9 +3301,9 @@ def start_mcp_service(host: str = "127.0.0.1", port: int = 8000, transport: str 
     mcp_server.settings.port = port
     import sys
     if transport == "stdio":
-        print(f"[vault-pentest] MCP server ready (transport: stdio)", file=sys.stderr)
+        print(f"[vaultcat] MCP server ready (transport: stdio)", file=sys.stderr)
     else:
-        print(f"[vault-pentest] MCP server starting on http://{host}:{port} (transport: {transport})")
+        print(f"[vaultcat] MCP server starting on http://{host}:{port} (transport: {transport})")
     sys.stderr.flush()
     mcp_server.run(transport=transport)
 

@@ -3117,7 +3117,7 @@ wheels = [
 ]
 
 [[package]]
-name = "vault-pentest-tool"
+name = "vaultcat"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

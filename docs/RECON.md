@@ -5,7 +5,7 @@ Zero-knowledge external recon — start with **only a target URL**, no credentia
 ## Quick Start
 
 ```bash
-vault-pentest scan --target https://vault.example.com:8200
+vaultcat scan --target https://vault.example.com:8200
 ```
 
 This runs all safe unauthenticated checks. No token required.
@@ -43,7 +43,7 @@ Curated list of known unauthenticated Vault endpoints:
 ## Async Recon (`--vault-recon`)
 
 ```bash
-vault-pentest scan --target https://vault.example.com:8200 --vault-recon
+vaultcat scan --target https://vault.example.com:8200 --vault-recon
 ```
 
 Queries health, seal-status, and leader endpoints in parallel. Reports sealed state, cluster metadata, version, and leader info.
@@ -57,7 +57,7 @@ When a Vault version is discovered, the tool automatically:
 
 ```bash
 # Force-refresh NVD cache
-vault-pentest scan --target URL --nvd-refresh
+vaultcat scan --target URL --nvd-refresh
 
 # Use NVD API key for higher rate limits
 export NVD_API_KEY=your-key-here
@@ -70,7 +70,7 @@ Results appear in findings and via `get_threat_intel`.
 If you're re-scanning or only want authenticated checks:
 
 ```bash
-vault-pentest scan --target URL --token TOKEN --skip-recon
+vaultcat scan --target URL --token TOKEN --skip-recon
 ```
 
 ## Recon Modules

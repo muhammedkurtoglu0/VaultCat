@@ -1,4 +1,4 @@
-"""Vault Pentest Tool — entry point.
+"""VaultCat — entry point.
 
 Delegates to the Typer CLI in ``cli.py``.  Backward-compatible shim:
 ``python main.py --target URL`` is automatically rewritten to
@@ -31,7 +31,7 @@ def _apply_shim() -> None:
 
 
 def main() -> None:
-    """Entry point for ``vault-pentest`` console script (pip install)."""
+    """Entry point for ``vaultcat`` console script (pip install)."""
     _apply_shim()
     from vault_cli import app
     app()

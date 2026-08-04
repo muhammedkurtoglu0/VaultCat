@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vault-pentest-tool"
+name = "vaultcat"
 version = "1.0.0"
 description = "Full-lifecycle HashiCorp Vault penetration testing toolkit — recon, hijack, escalate, exfiltrate, pivot, and persist across CLI, AI chat, and MCP server modes."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
-  { name = "vault-pentest-tool contributors" }
+  { name = "vaultcat contributors" }
 ]
 keywords = [
   "hashicorp-vault",
@@ -76,12 +76,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/muhammedkurtoglu0/vault-pentest-tool"
-Repository = "https://github.com/muhammedkurtoglu0/vault-pentest-tool"
-Issues = "https://github.com/muhammedkurtoglu0/vault-pentest-tool/issues"
+Homepage = "https://github.com/muhammedkurtoglu0/vaultcat"
+Repository = "https://github.com/muhammedkurtoglu0/vaultcat"
+Issues = "https://github.com/muhammedkurtoglu0/vaultcat/issues"
 
 [project.scripts]
-vault-pentest = "main:main"
+vaultcat = "main:main"
 
 [tool.setuptools]
 py-modules = ["main", "vault_cli"]
@@ -122,7 +122,7 @@ source = ["."]
 omit = [
   ".venv/*",
   "tests/*",
-  "vault-pentest-lab/*",
+  "vaultcat-lab/*",
   "Lib/*",
   "*/__pycache__/*",
   # CLI + GUI — integration-tested, not unit-tested

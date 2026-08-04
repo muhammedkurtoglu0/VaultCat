@@ -180,7 +180,7 @@ class Report:
     def export_json_report(self, output_path: str, target=None):
         report_path = _resolve_report_path(output_path)
         report_data = {
-            "tool": "vault-pentest-tool",
+            "tool": "vaultcat",
             "target": target,
             "summary": self.get_risk_summary(),
             "risk": calculate_risk(self._visible_findings()),
@@ -202,7 +202,7 @@ class Report:
         risk = calculate_risk(self._visible_findings())
 
         lines = [
-            "# Vault Pentest Tool Report",
+            "# VaultCat Report",
             "",
             f"Target: `{target}`",
             "",
@@ -562,7 +562,7 @@ class Report:
             f"Risk Score: {risk['score']} / 100\n"
             f"Grade: {risk['grade']}\n\n"
             f"{grade_text}\n\n"
-            f"This report was generated automatically by the Vault Pentest Tool.\n"
+            f"This report was generated automatically by the VaultCat.\n"
             f"Findings are categorized by severity and include evidence where available.\n"
             f"Review each finding and prioritize remediation based on risk level.\n\n"
             f"A detailed remediation plan with concrete CLI commands is included\n"

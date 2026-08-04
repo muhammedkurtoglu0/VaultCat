@@ -95,7 +95,7 @@ class PentestGUI(ctk.CTk):
         self._agent_running = False
 
         # ── window ──────────────────────────────────────────────────
-        self.title("Vault Pentest Agent")
+        self.title("VaultCat Agent")
         self.geometry("1100x750")
         self.minsize(800, 500)
 
@@ -109,7 +109,7 @@ class PentestGUI(ctk.CTk):
 
         # ── initial status ───────────────────────────────────────────
         self._append_chat(
-            f"Welcome to Vault Pentest Agent\n"
+            f"Welcome to VaultCat Agent\n"
             f"Provider: {self.provider}  |  Model: {self.model}  |  "
             f"Tools: {len(ALL_TOOLS)}\n"
             f"Target: {self.vault_addr or 'not set — use Settings'}\n"
@@ -174,7 +174,7 @@ class PentestGUI(ctk.CTk):
             side="left", padx=(8, 4)
         )
         ctk.CTkLabel(
-            bar, text="Vault Pentest Agent", font=ctk.CTkFont(weight="bold", size=14)
+            bar, text="VaultCat Agent", font=ctk.CTkFont(weight="bold", size=14)
         ).pack(side="left", padx=4)
 
         # Spacer

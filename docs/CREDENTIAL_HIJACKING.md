@@ -5,7 +5,7 @@ Local file system and git history scanning for leaked Vault credentials. For pos
 ## Quick Start
 
 ```bash
-vault-pentest hijack ./target-directory
+vaultcat hijack ./target-directory
 ```
 
 ## What Gets Detected (56 regex patterns)
@@ -54,16 +54,16 @@ The `hijack_analyzer` performs:
 
 ```bash
 # Validate discovered tokens against live Vault
-vault-pentest hijack ./repo --validate-token --target https://vault:8200 --token AUTH_TOKEN
+vaultcat hijack ./repo --validate-token --target https://vault:8200 --token AUTH_TOKEN
 
 # Validate AppRole pairs
-vault-pentest hijack ./repo --validate-approle --target https://vault:8200
+vaultcat hijack ./repo --validate-approle --target https://vault:8200
 
 # Validate database secrets engine
-vault-pentest hijack ./repo --validate-db --target https://vault:8200 --token AUTH_TOKEN
+vaultcat hijack ./repo --validate-db --target https://vault:8200 --token AUTH_TOKEN
 
 # Direct AppRole login + capability audit
-vault-pentest scan --target https://vault:8200 --validate-approle \
+vaultcat scan --target https://vault:8200 --validate-approle \
   --role-id ROLE_ID --secret-id SECRET_ID \
   --capability-path "database/roles/*" --capability-path "sys/*"
 ```
@@ -71,7 +71,7 @@ vault-pentest scan --target https://vault:8200 --validate-approle \
 ## Noise & Scope Controls
 
 ```bash
-vault-pentest hijack ./repo \
+vaultcat hijack ./repo \
   --min-severity HIGH \
   --no-git-history \
   --exclude-dir vendor --exclude-dir build \
@@ -93,7 +93,7 @@ vault-pentest hijack ./repo \
 ## Export
 
 ```bash
-vault-pentest hijack ./repo --json findings.json --markdown findings.md
+vaultcat hijack ./repo --json findings.json --markdown findings.md
 ```
 
 ## Modules

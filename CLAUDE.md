@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Quick setup:**
 ```bash
-git clone https://github.com/muhammedkurtoglu0/vault-pentest-tool.git
-cd vault-pentest-tool
+git clone https://github.com/muhammedkurtoglu0/vaultcat.git
+cd vaultcat
 uv sync                                          # deterministic build via uv.lock
 ```
 
@@ -23,7 +23,7 @@ uv run python main.py --target https://localhost:8200 --token YOUR_TOKEN --capab
 
 **Start the lab (Docker):**
 ```bash
-cd vault-pentest-lab
+cd vaultcat-lab
 docker compose up -d              # Vault 1.15.3 + PostgreSQL 16 + Pentest Tool
 ./scripts/setup-lab.sh            # Init, unseal, seed secrets, create tokens
 source lab-tokens.env             # Load ROOT_TOKEN, LOW_PRIV_TOKEN, etc.
