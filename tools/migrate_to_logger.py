@@ -28,7 +28,7 @@ SKIP_FILES = {
 
 SKIP_DIRS = {
     ".venv", "Lib", "__pycache__", ".git",
-    "vault-pentest-lab", "vault_pentest_tool.egg-info",
+    "vaultcat-lab", "vault_pentest_tool.egg-info",
 }
 
 # Files that already have the logger import (don't re-add)

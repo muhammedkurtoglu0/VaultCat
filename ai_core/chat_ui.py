@@ -11,13 +11,37 @@ import json
 import sys
 from typing import Any, Optional
 
-try:
-    import readline  # noqa: F401
-except ImportError:
+# Cross-platform readline support via prompt_toolkit (already a dependency).
+# prompt_toolkit provides history, line editing, and syntax highlighting
+# on all platforms — no need for Unix-only readline or abandoned pyreadline3.
+# PromptSession is created lazily on first use so the module can be imported
+# in non-interactive contexts (tests, CI) without hitting a console error.
+
+_prompt_session: Any = None  # prompt_toolkit.shortcuts.PromptSession | None
+
+
+def _input(prompt_text: str = "") -> str:
+    """Drop-in replacement for :func:`input` with cross-platform readline support.
+
+    Falls back to plain :func:`input` when running in a non-interactive
+    terminal or when ``prompt_toolkit`` cannot initialise (e.g. tests, CI).
+    """
+    global _prompt_session
+    if _prompt_session is None:
+        try:
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.history import InMemoryHistory
+            _prompt_session = PromptSession(history=InMemoryHistory())
+        except Exception:
+            _prompt_session = False  # sentinel: fall back to plain input()
+
+    if _prompt_session is False:
+        return input(prompt_text)
+
     try:
-        import pyreadline3 as readline  # noqa: F401
-    except ImportError:
-        pass
+        return _prompt_session.prompt(prompt_text)
+    except EOFError:
+        raise KeyboardInterrupt
 
 from ai_core.agent import PentestAgent
 from ai_core.dynamic_session import global_store
@@ -164,7 +188,7 @@ class ChatUI:
 
         while self.running:
             try:
-                user_input = input("\n🔓 YOU: ").strip()
+                user_input = _input("\n🔓 YOU: ").strip()
                 if not user_input:
                     continue
 
@@ -326,7 +350,7 @@ class ChatUI:
 
             while True:
                 try:
-                    choice = input(
+                    choice = _input(
                         f"  Sağlayıcı numarası [1-{len(providers)}, Enter={self.provider}]: "
                     ).strip()
                     if not choice:
@@ -374,7 +398,7 @@ class ChatUI:
             print()
             while True:
                 try:
-                    choice = input(
+                    choice = _input(
                         f"  Model numarası [1-{len(models)}, Enter={default_model or models[0].id}]: "
                     ).strip()
                     if not choice:
@@ -443,7 +467,7 @@ class ChatUI:
                     icon = " ✅" if alt_ready else ""
                     print(f"      [{i}] {p['name']}{icon}")
                 print(f"    [q]      Quit")
-                choice = input("  Choice [Enter=retry]: ").strip().lower()
+                choice = _input("  Choice [Enter=retry]: ").strip().lower()
                 if choice == "q":
                     print("  Exiting...")
                     sys.exit(1)
@@ -494,7 +518,7 @@ class ChatUI:
                 icon = " ✅" if alt_ready else ""
                 print(f"      [{i}] {p['name']}{icon}")
             print(f"    [q]        Quit")
-            choice = input("  Choice: ").strip()
+            choice = _input("  Choice: ").strip()
 
             if choice.lower() == "q":
                 print("  Exiting...")
@@ -1421,7 +1445,7 @@ class ChatUI:
         print()
         while True:
             try:
-                choice = input(
+                choice = _input(
                     f"  Model numarası [1-{len(models)}, Enter={default_model or models[0].id}]: "
                 ).strip()
                 if not choice:
