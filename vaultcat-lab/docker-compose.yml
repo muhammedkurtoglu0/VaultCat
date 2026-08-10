@@ -3,7 +3,9 @@ services:
     image: hashicorp/vault:1.15.3
     container_name: vault-target
     cap_add: [IPC_LOCK]
-    user: "0:0"
+    # Run as the 'vault' user (100:1000) instead of root.
+    # IPC_LOCK capability above allows mlock without root.
+    user: "100:1000"
     ports:
       - "8200:8200"
     volumes:

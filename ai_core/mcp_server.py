@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -22,6 +23,7 @@ from ai_core.llm_engine import LLMClient, detect_provider
 from ai_core.session import session_manager
 from core.report import clear_findings, clear_module_findings, findings as report_findings
 from core.risk_score import calculate_risk
+from core.logger import logger
 from scanners.capability_scanner import audit_token_capabilities
 from scanners.auth_config_scanner import scan_auth_config_security
 from scanners.kv_enumerator import scan_kv_tree
@@ -46,6 +48,67 @@ from reconnaissance.cors_scanner import scan_cors
 from reconnaissance.header_scanner import scan_headers
 from reconnaissance.endpoint_scanner import scan_endpoints
 
+
+# ── MCP server authentication ──────────────────────────────────────────────
+# When MCP_AUTH_TOKEN is set in the environment, every MCP tool invocation
+# must include ``Authorization: Bearer <token>`` or
+# ``X-MCP-Auth-Token: <token>`` in the request headers.
+#
+# Without this, ANY process on the host can call the 50+ MCP tools —
+# including raw Vault API requests, credential hijacking, and state-changing
+# operations — by hitting http://127.0.0.1:8000.
+#
+# Set a strong random token:
+#   $env:MCP_AUTH_TOKEN = (python -c "import secrets; print(secrets.token_urlsafe(32))")
+#
+# If MCP_AUTH_TOKEN is NOT set, the server prints a warning but still starts
+# (backward compatibility for isolated lab environments).
+
+_MCP_AUTH_TOKEN: str | None = os.environ.get("MCP_AUTH_TOKEN")
+
+if _MCP_AUTH_TOKEN:
+    _auth_status = f"required (token: {_MCP_AUTH_TOKEN[:8]}...)"
+else:
+    _auth_status = "DISABLED — all tools are accessible without authentication"
+
+
+def _validate_mcp_auth(headers: dict | None) -> bool:
+    """Check whether the request is authorized to call MCP tools.
+
+    Returns True when auth is disabled OR the request carries the correct token.
+    """
+    if _MCP_AUTH_TOKEN is None:
+        return True  # auth not configured — allow all (backward compat)
+
+    if headers is None:
+        return False
+
+    # Accept Authorization: Bearer <token>
+    auth_header = headers.get("authorization", "") or headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and auth_header[7:] == _MCP_AUTH_TOKEN:
+        return True
+
+    # Accept X-MCP-Auth-Token: <token> (for clients that can't set Authorization)
+    alt_token = headers.get("x-mcp-auth-token", "") or headers.get("X-MCP-Auth-Token", "")
+    if alt_token == _MCP_AUTH_TOKEN:
+        return True
+
+    return False
+
+
+def _auth_error_response() -> str:
+    """Return a standardized auth-required error."""
+    return json.dumps({
+        "status": "error",
+        "message": (
+            "MCP authentication required. Set the MCP_AUTH_TOKEN environment "
+            "variable and pass it as 'Authorization: Bearer <token>' or "
+            "'X-MCP-Auth-Token: <token>' in your request headers."
+        ),
+    }, ensure_ascii=False)
+
+
+# ── MCP server ─────────────────────────────────────────────────────────────
 
 mcp_server = FastMCP(
     name="VaultPentestAgent",
@@ -73,6 +136,165 @@ def build_active_registry() -> ActiveExecutionRegistry:
     """Return the default active execution registry with all modules registered."""
     from active_execution.modules import get_default_registry
     return get_default_registry()
+
+
+# ── Token redaction & error sanitization ───────────────────────────────────
+# Vault tokens (hvs.xxx, hvc.xxx) and wrapping tokens (hvs.CAESxxx) are
+# high-value secrets.  We never return raw tokens in MCP responses — instead
+# we show masked versions like "hvs.A1b2...Xy9z" so the operator can verify
+# the token was captured without exposing the full value in logs or chat.
+
+
+def _redact_token(token: str | None) -> str | None:
+    """Redact a Vault token for safe display.
+
+    Returns ``"hvs.A1b2...Xy9z"`` instead of the full token value.
+    Non-Vault tokens (lack ``hvs.`` / ``hvc.`` prefix) are masked as
+    ``"<token:N>"`` where N is the length.
+    """
+    if token is None:
+        return None
+    if not isinstance(token, str) or len(token) < 16:
+        return "<redacted>"
+    lowered = token.lower()
+    if lowered.startswith(("hvs.", "hvc.")):
+        return f"{token[:8]}...{token[-4:]}"
+    # Generic credential: show length hint, no content
+    return f"<credential:{len(token)}chars>"
+
+
+def _redact_tokens_in_dict(obj: dict[str, Any]) -> dict[str, Any]:
+    """Recursively redact token-like values in a dict.
+
+    Keys named ``captured_token``, ``escalated_token``, ``token``, ``secret_key``,
+    ``secret_id``, ``password``, ``sink_token``, and ``client_token`` are
+    automatically redacted.  The dict is mutated in place.
+    """
+    _token_keys = {
+        "captured_token", "escalated_token", "token", "secret_key",
+        "secret_id", "password", "client_token", "sink_tokens",
+        "access_key",  # partially mask — show last 4
+    }
+    _partial_mask_keys = {"access_key"}  # show AKIA...XXXX not full AKIA
+
+    for key, value in obj.items():
+        if key in _token_keys and isinstance(value, str) and value:
+            obj[key] = _redact_token(value)
+        elif key in _partial_mask_keys and isinstance(value, str) and len(value) > 8:
+            obj[key] = f"{value[:4]}...{value[-4:]}"
+        elif isinstance(value, dict):
+            _redact_tokens_in_dict(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _redact_tokens_in_dict(item)
+    return obj
+
+
+def _sanitize_error(error: Exception) -> str:
+    """Return a safe error string that won't leak credentials or paths.
+
+    If the exception message contains a Vault token, redacts it.
+    Also truncates very long error messages (>500 chars).
+    """
+    msg = str(error)
+    # Redact any hvs./hvc. tokens that might appear in error text
+    import re as _re
+    msg = _re.sub(r'(hvs|hvc)\.[A-Za-z0-9+/=_-]{20,}', r'\1.<redacted>', msg)
+    # Truncate long messages
+    if len(msg) > 500:
+        msg = msg[:500] + "..."
+    return msg
+
+
+def _safe_response(data: dict[str, Any]) -> str:
+    """Serialize a dict to JSON after redacting tokens and sanitizing.
+
+    Call this instead of ``json.dumps(...)`` for any MCP tool response that
+    may contain captured tokens, evidence with credential material, or error
+    strings from Vault API calls.
+    """
+    return json.dumps(_redact_tokens_in_dict(data), ensure_ascii=False)
+
+
+def _safe_error(error: Exception, extra: dict[str, Any] | None = None) -> str:
+    """Return a sanitized error response JSON string.
+
+    Shortcut for the common ``except Exception as error: return json.dumps({"status": "error", "message": str(error)})``
+    pattern — but with token redaction and truncation applied.
+    """
+    payload: dict[str, Any] = {"status": "error", "message": _sanitize_error(error)}
+    if extra:
+        payload.update(extra)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+# ── Input validation ─────────────────────────────────────────────────────
+# Reject obviously malicious/invalid values early, before they reach
+# scanners or the Vault API.
+
+_MAX_VAULT_ADDR_LEN = 512
+_MAX_PATH_LEN = 1024
+_MAX_TOKEN_LEN = 256
+_MAX_NAMESPACE_LEN = 256
+_MAX_POLICY_NAME_LEN = 256
+
+_INVALID_PATH_CHARS_RE = __import__("re").compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+
+
+def _validate_vault_addr(addr: str) -> str | None:
+    """Validate a Vault address. Returns an error message or None."""
+    if not addr or not isinstance(addr, str):
+        return "vault_addr is required"
+    if len(addr) > _MAX_VAULT_ADDR_LEN:
+        return f"vault_addr exceeds {_MAX_VAULT_ADDR_LEN} characters"
+    if not (addr.startswith("http://") or addr.startswith("https://")):
+        # Allow unix://socket for local testing too
+        if not addr.startswith("unix://"):
+            return "vault_addr must start with http:// or https://"
+    if _INVALID_PATH_CHARS_RE.search(addr):
+        return "vault_addr contains invalid characters"
+    return None
+
+
+def _validate_path(path: str, param_name: str = "path") -> str | None:
+    """Validate a file/directory path. Returns an error message or None."""
+    if not path or not isinstance(path, str):
+        return f"{param_name} is required"
+    if len(path) > _MAX_PATH_LEN:
+        return f"{param_name} exceeds {_MAX_PATH_LEN} characters"
+    if _INVALID_PATH_CHARS_RE.search(path):
+        return f"{param_name} contains invalid characters"
+    return None
+
+
+def _validate_token(token: str | None) -> str | None:
+    """Validate a Vault token. Returns an error message or None."""
+    if token is None:
+        return None  # token is often optional
+    if not isinstance(token, str):
+        return "token must be a string"
+    if len(token) > _MAX_TOKEN_LEN:
+        return f"token exceeds {_MAX_TOKEN_LEN} characters"
+    return None
+
+
+def _validate_kv_depth(depth: int, max_allowed: int = 20) -> str | None:
+    """Validate KV enumeration depth. Returns an error message or None."""
+    if not isinstance(depth, int) or depth < 0:
+        return "depth must be a non-negative integer"
+    if depth > max_allowed:
+        return f"depth exceeds maximum allowed ({max_allowed})"
+    return None
+
+
+def _validate_file_size_mb(size_mb: int, max_allowed: int = 100) -> str | None:
+    """Validate max file size for hijack scan. Returns error or None."""
+    if not isinstance(size_mb, int) or size_mb < 1:
+        return "max_file_size_mb must be a positive integer"
+    if size_mb > max_allowed:
+        return f"max_file_size_mb exceeds maximum allowed ({max_allowed})"
+    return None
 
 
 def _module_metadata(module: Any) -> dict[str, Any]:
@@ -154,7 +376,7 @@ async def run_unauthenticated_recon(vault_addr: str) -> str:
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── Credential Hijack Scan ────────────────────────────────────────────────
@@ -176,6 +398,16 @@ async def run_hijack_scan(
     include_git_history: bool = True,
     max_file_size_mb: int = 5,
 ) -> str:
+    # ── Input validation ──────────────────────────────────────────────
+    if err := _validate_path(path):
+        return _safe_response({"status": "error", "message": err})
+    if err := _validate_file_size_mb(max_file_size_mb):
+        return _safe_response({"status": "error", "message": err})
+    if vault_addr is not None and (err := _validate_vault_addr(vault_addr)):
+        return _safe_response({"status": "error", "message": err})
+    if err := _validate_token(token):
+        return _safe_response({"status": "error", "message": err})
+
     # ── Guard: require user confirmation for large scans ──────────────
     _scan_root = path.rstrip("/\\")
     if _scan_root in ("/", "C:", "C:\\", "D:", "D:\\") or _scan_root.endswith(":\\"):
@@ -211,7 +443,7 @@ async def run_hijack_scan(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── Environment Scan ─────────────────────────────────────────────────────
@@ -239,7 +471,7 @@ async def run_env_scan() -> str:
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── Vault Agent Scan ──────────────────────────────────────────────────────
@@ -278,10 +510,10 @@ async def run_vault_agent_scan(
             },
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_response({"status": "error", "message": _sanitize_error(error)})
 
     evidence = result.evidence or {}
-    return json.dumps(
+    return _safe_response(
         {
             "status": result.status,
             "message": result.message,
@@ -291,10 +523,9 @@ async def run_vault_agent_scan(
             "env_tokens": len(evidence.get("env_tokens", [])),
             "approle_credentials": len(evidence.get("approle_values", [])),
             "misconfigurations": evidence.get("misconfigurations", []),
-            "captured_token": getattr(context, "captured_token", None),
+            "captured_token": _redact_token(getattr(context, "captured_token", None)),
             "findings": context.findings,
         },
-        ensure_ascii=False,
     )
 
 
@@ -330,7 +561,7 @@ async def run_capability_audit(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── KV Enumeration ───────────────────────────────────────────────────────
@@ -354,6 +585,16 @@ async def run_kv_enumeration(
     read_leaves: bool = False,
     blind_brute: bool = False,
 ) -> str:
+    # ── Input validation ──────────────────────────────────────────────
+    if err := _validate_vault_addr(vault_addr):
+        return _safe_response({"status": "error", "message": err})
+    if err := _validate_token(token):
+        return _safe_response({"status": "error", "message": err})
+    if err := _validate_kv_depth(max_depth):
+        return _safe_response({"status": "error", "message": err})
+    if concurrency < 1 or concurrency > 20:
+        return _safe_response({"status": "error", "message": "concurrency must be between 1 and 20"})
+
     clear_module_findings("kv_enumerator")
     try:
         scan_kv_tree(
@@ -377,7 +618,7 @@ async def run_kv_enumeration(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── TTL Audit ────────────────────────────────────────────────────────────
@@ -415,7 +656,7 @@ async def run_ttl_audit(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── Privilege Escalation Scanner (read-only simulation) ──────────────────
@@ -453,7 +694,7 @@ async def run_priv_esc_scan(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── Auth Config Audit ────────────────────────────────────────────────────
@@ -484,7 +725,7 @@ async def run_auth_config_audit(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── Policy Auditor ───────────────────────────────────────────────────────
@@ -519,7 +760,7 @@ async def run_policy_auditor(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
 
 # ─── Single Policy Read ────────────────────────────────────────────────────
@@ -699,10 +940,7 @@ async def run_raw_vault_request(
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps(
-            {"status": "error", "method": method, "path": path, "message": str(error)},
-            ensure_ascii=False,
-        )
+        return _safe_error(error, extra={"method": method, "path": path})
 
 
 # ─── Findings & Risk Score ─────────────────────────────────────────────────
@@ -778,10 +1016,7 @@ async def refresh_nvd_cache() -> str:
             ensure_ascii=False,
         )
     except Exception as error:
-        return json.dumps(
-            {"status": "error", "message": str(error)},
-            ensure_ascii=False,
-        )
+        return _safe_error(error)
 
 
 # ─── Web Search ──────────────────────────────────────────────────────
@@ -820,10 +1055,7 @@ async def web_search(
             ],
         }, ensure_ascii=False)
     except Exception as error:
-        return json.dumps(
-            {"status": "error", "message": str(error)},
-            ensure_ascii=False,
-        )
+        return _safe_error(error)
 
 
 # ─── Session Management ──────────────────────────────────────────────────
@@ -1099,7 +1331,7 @@ async def run_privilege_escalation(
     try:
         result = module.execute(context, params)
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_response({"status": "error", "message": _sanitize_error(error)})
 
     evidence = result.evidence or {}
     if result.status == "success":
@@ -1110,15 +1342,14 @@ async def run_privilege_escalation(
             session.set_escalated_token(captured)
             _sync_context_to_session()
 
-    return json.dumps(
+    return _safe_response(
         {
             "status": result.status,
             "message": result.message,
             "evidence": evidence,
-            "captured_token": pentest_context.get("captured_token"),
+            "captured_token": _redact_token(pentest_context.get("captured_token")),
             "findings": context.findings,
         },
-        ensure_ascii=False,
     )
 
 
@@ -1163,7 +1394,7 @@ async def run_secret_exfiltration(
     try:
         result = module.execute(context, {"namespace": namespace, "max_depth": max_depth})
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     summary = "Sizdirma basarili" if result.status == "success" else "Sizdirma basarisiz"
 
@@ -1233,7 +1464,7 @@ async def run_database_credential_harvest(
             },
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     evidence = result.evidence or {}
     harvested = evidence.get("credentials", [])
@@ -1298,7 +1529,7 @@ async def run_transit_exploit(
             },
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     evidence = result.evidence or {}
     return json.dumps(
@@ -1360,7 +1591,7 @@ async def run_pki_exploit(
             },
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     evidence = result.evidence or {}
     return json.dumps(
@@ -1412,20 +1643,20 @@ async def run_approle_exploit(
             "namespace": namespace,
         })
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_response({"status": "error", "message": _sanitize_error(error)})
 
     ev = result.evidence or {}
     captured = ev.get("_captured_token") or getattr(context, "captured_token", None)
     if captured:
         pentest_context["captured_token"] = captured
-    return json.dumps({
+    return _safe_response({
         "status": result.status, "message": result.message,
         "roles_audited": ev.get("roles_audited", 0),
         "dangerous_configs": ev.get("dangerous_configs", []),
         "bypass_tests": len(ev.get("bypass_tests", [])),
-        "captured_token": captured,
+        "captured_token": _redact_token(captured),
         "findings": context.findings,
-    }, ensure_ascii=False)
+    })
 
 
 # ─── Active Execution: Raft Storage Exploitation ──────────────────────────
@@ -1459,7 +1690,7 @@ async def run_raft_exploit(
             "mode": mode, "namespace": namespace,
         })
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     ev = result.evidence or {}
     return json.dumps({
@@ -1503,7 +1734,7 @@ async def run_jwt_oidc_exploit(
             "jwt": jwt, "namespace": namespace,
         })
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     ev = result.evidence or {}
     return json.dumps({
@@ -1559,14 +1790,14 @@ async def run_kubernetes_auth_exploit(
             },
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_response({"status": "error", "message": _sanitize_error(error)})
 
     evidence = result.evidence or {}
     captured_token = getattr(context, "captured_token", None)
     if captured_token:
         pentest_context["captured_token"] = captured_token
 
-    return json.dumps(
+    return _safe_response(
         {
             "status": result.status,
             "message": result.message,
@@ -1575,10 +1806,9 @@ async def run_kubernetes_auth_exploit(
             "successful_logins": len(evidence.get("successful_logins", [])),
             "suspicious_configs": evidence.get("suspicious_configs", []),
             "jwt_claims": evidence.get("jwt_claims"),
-            "captured_token": captured_token,
+            "captured_token": _redact_token(captured_token),
             "findings": context.findings,
         },
-        ensure_ascii=False,
     )
 
 
@@ -1637,7 +1867,7 @@ async def run_cloud_key_exfiltration(
             },
         )
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     evidence = result.evidence or {}
     harvested = evidence.get("credentials", [])
@@ -1699,7 +1929,7 @@ async def run_database_pivot(
     try:
         result = module.execute(context, _mapped)
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     evidence = result.evidence or {}
     return json.dumps({
@@ -1755,7 +1985,7 @@ async def run_reverse_shell(
     try:
         result = module.execute(context, _mapped)
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_error(error)
 
     evidence = result.evidence or {}
     return json.dumps({
@@ -1874,9 +2104,8 @@ async def run_active_module(
     try:
         result = module.execute(context, module_params)
     except Exception as error:
-        return json.dumps(
-            {"status": "error", "message": f"Execution failed: {error}"},
-            ensure_ascii=False,
+        return _safe_response(
+            {"status": "error", "message": _sanitize_error(error)},
         )
 
     evidence = result.evidence or {}
@@ -1891,16 +2120,15 @@ async def run_active_module(
         session.set_escalated_token(captured)
         _sync_context_to_session()
 
-    return json.dumps(
+    return _safe_response(
         {
             "status": result.status,
             "message": result.message,
             "module": _module_metadata(module),
             "evidence": evidence,
-            "captured_token": captured,
+            "captured_token": _redact_token(captured),
             "findings": context.findings,
         },
-        ensure_ascii=False,
     )
 
 
@@ -2429,7 +2657,7 @@ async def run_aws_auth_login(
     try:
         result = module.execute(context, params)
     except Exception as error:
-        return json.dumps({"status": "error", "message": str(error)}, ensure_ascii=False)
+        return _safe_response({"status": "error", "message": _sanitize_error(error)})
 
     if result.status == "success" and result.evidence:
         captured = result.evidence.get("vault_token")
@@ -2438,13 +2666,12 @@ async def run_aws_auth_login(
             _default_session.set_escalated_token(captured)
             _sync_context_to_session()
 
-    return json.dumps(
+    return _safe_response(
         {
             "status": result.status,
             "message": result.message,
             "evidence": result.evidence or {},
         },
-        ensure_ascii=False,
     )
 
 
@@ -2467,6 +2694,18 @@ async def run_container_scan(
     """Scan Vault container for security misconfigurations."""
     findings: list[dict] = []
     target_container = container_name or "vault-target"
+
+    # ── Validate container name (prevent injection / traversal) ──────
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$', target_container):
+        return json.dumps({
+            "status": "error",
+            "message": (
+                f"Invalid container name: '{target_container}'. "
+                "Container names must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,127} "
+                "(Docker naming rules)."
+            ),
+        }, ensure_ascii=False)
 
     # ── Docker inspect (if available) ────────────────────────────────
     try:
@@ -2549,7 +2788,7 @@ async def run_container_scan(
                 })
 
         else:
-            # Try docker-compose
+            # Try docker ps (container_name already validated above)
             r2 = subprocess.run(
                 ["docker", "ps", "--filter", f"name={target_container}", "--format", "{{.Names}}\t{{.Status}}"],
                 capture_output=True, text=True, timeout=5,
@@ -3299,13 +3538,85 @@ async def decode_generate_root_otp(
 def start_mcp_service(host: str = "127.0.0.1", port: int = 8000, transport: str = "streamable-http"):
     mcp_server.settings.host = host
     mcp_server.settings.port = port
+
+    # ── Inject MCP authentication middleware ────────────────────────────
+    if _MCP_AUTH_TOKEN is not None:
+        _install_auth_middleware(mcp_server)
+
     import sys
     if transport == "stdio":
         print(f"[vaultcat] MCP server ready (transport: stdio)", file=sys.stderr)
     else:
         print(f"[vaultcat] MCP server starting on http://{host}:{port} (transport: {transport})")
+        if _MCP_AUTH_TOKEN:
+            print(f"[vaultcat]   Auth: required (MCP_AUTH_TOKEN configured)", file=sys.stderr)
+        else:
+            print(
+                f"[vaultcat]   ⚠ Auth: DISABLED — set MCP_AUTH_TOKEN env var to enable",
+                file=sys.stderr,
+            )
     sys.stderr.flush()
     mcp_server.run(transport=transport)
+
+
+def _install_auth_middleware(mcp: FastMCP) -> None:
+    """Wrap the FastMCP's streamable_http_app and sse_app with auth middleware.
+
+    Intercepts HTTP requests BEFORE they reach MCP tools and validates
+    the ``Authorization: Bearer`` or ``X-MCP-Auth-Token`` header against
+    the ``MCP_AUTH_TOKEN`` environment variable.
+
+    This is a minimal custom middleware — FastMCP's built-in auth system
+    (``TokenVerifier`` / OAuth) is overkill for a local pentest tool,
+    and its configuration surface is not stable across versions.
+    """
+    try:
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        _original_streamable = mcp.streamable_http_app
+        _original_sse = mcp.sse_app
+
+        class _MCPAuthMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                # Skip auth for GET requests (health checks, SSE polling)
+                if request.method in ("GET", "HEAD", "OPTIONS"):
+                    return await call_next(request)
+
+                # Validate POST requests (MCP tool calls)
+                if not _validate_mcp_auth(dict(request.headers)):
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "status": "error",
+                            "message": (
+                                "MCP authentication required. Set MCP_AUTH_TOKEN "
+                                "and pass it as 'Authorization: Bearer <token>'."
+                            ),
+                        },
+                    )
+                return await call_next(request)
+
+        def _patched_streamable():
+            app = _original_streamable()
+            app.add_middleware(_MCPAuthMiddleware)
+            return app
+
+        def _patched_sse(mount_path: str | None = None):
+            app = _original_sse(mount_path)
+            app.add_middleware(_MCPAuthMiddleware)
+            return app
+
+        mcp.streamable_http_app = _patched_streamable  # type: ignore[method-assign]
+        mcp.sse_app = _patched_sse  # type: ignore[method-assign]
+
+        logger.info("[mcp] Auth middleware installed (MCP_AUTH_TOKEN configured)")
+
+    except ImportError:
+        logger.warning("[mcp] Starlette middleware not available — auth disabled")
+    except Exception as exc:
+        logger.warning(f"[mcp] Could not install auth middleware: {exc}")
 
 
 def tool_schema(tool: Any) -> dict[str, Any]:

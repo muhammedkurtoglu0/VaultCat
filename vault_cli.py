@@ -831,9 +831,6 @@ def chat(
         from core.tls_config import set_insecure_mode
         set_insecure_mode()
         print("[*] TLS certificate verification disabled")
-    elif resolved_target and resolved_target.startswith("https://"):
-        from core.tls_config import set_insecure_mode
-        set_insecure_mode()
 
     if ui == "desktop":
         from ai_core.gui_app import start_gui
