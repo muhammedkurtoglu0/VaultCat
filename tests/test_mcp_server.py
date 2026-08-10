@@ -160,7 +160,10 @@ def test_mcp_privilege_escalation_uses_arguments_and_stores_captured_token(monke
         namespace="admin",
     ))
 
-    assert "hvs.admin-token" in result
+    # Token is now redacted in JSON response: "hvs.admin-token" (15 chars) → "<redacted>"
+    assert "<redacted>" in result
+    assert "admin" in result  # selected_policy still visible
+    assert "success" in result
     assert mcp_server.pentest_context["captured_token"] == "hvs.admin-token"
 
 
@@ -333,7 +336,9 @@ def test_mcp_run_active_module_executes_registered_module_and_stores_token(monke
         max_risk="state_changing",
     ))
 
-    assert "hvs.generic-admin-token" in result
+    # Token is now redacted in JSON response: "hvs.generic-admin-token" → "hvs.gene...oken"
+    assert "hvs.gene...oken" in result
+    assert "success" in result
     assert mcp_server.pentest_context["captured_token"] == "hvs.generic-admin-token"
 
 

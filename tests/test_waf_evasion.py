@@ -313,7 +313,9 @@ class TestTransformRequest:
             None,
         )
         assert body is None
-        assert "X-Vault-Token" in headers or "x-vault-token" in headers
+        # Headers may be case-randomized by _vary_header_case — check case-insensitively
+        header_keys_lower = {k.lower() for k in headers}
+        assert "x-vault-token" in header_keys_lower
         assert "vault.test" in url
 
     def test_transform_with_body(self):
