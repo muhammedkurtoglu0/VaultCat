@@ -412,21 +412,31 @@ class ChatUI:
                 print(f"      {m.description}{tags_str}")
 
             print()
+            print("  [0] Özel model (custom) — kendi model adını gir")
+            print()
             while True:
                 try:
                     choice = _input(
-                        f"  Model numarası [1-{len(models)}, Enter={default_model or models[0].id}]: "
+                        f"  Model numarası [0=custom, 1-{len(models)}, Enter={default_model or models[0].id}]: "
                     ).strip()
                     if not choice:
                         self.model = default_model or models[0].id
                         break
+                    # ── Custom model ─────────────────────────────────────
+                    if choice in ("0", "c", "custom", "ozel", "özel"):
+                        custom = _input("  Özel model adını gir: ").strip()
+                        if custom:
+                            self.model = custom
+                            break
+                        print("  Model adı boş olamaz.")
+                        continue
                     idx = int(choice) - 1
                     if 0 <= idx < len(models):
                         self.model = models[idx].id
                         break
-                    print(f"  1-{len(models)} arası bir sayı girin.")
+                    print(f"  0-{len(models)} arası bir sayı girin.")
                 except ValueError:
-                    print(f"  1-{len(models)} arası bir sayı girin.")
+                    print(f"  0-{len(models)} arası bir sayı girin (0 = custom).")
                 except (KeyboardInterrupt, EOFError):
                     print("\n  Çıkış yapılıyor...")
                     sys.exit(0)
