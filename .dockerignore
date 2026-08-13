@@ -1,0 +1,48 @@
+# ── VCS / IDE ──────────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.agents
+.chainlit
+.claude
+.codex
+.continue
+.files
+.vscode
+
+# ── Python / build artifacts ───────────────────────────────────────────
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+htmlcov
+dist
+build
+*.egg-info
+eggs
+.eggs
+
+# ── Local runtime artifacts (must NOT enter the image) ─────────────────
+vaultcat-lab
+reports
+logs
+cache
+test-artifacts
+Lib
+Scripts
+fonts
+
+# ── Tests / docs (not needed at runtime) ───────────────────────────────
+tests
+docs
+
+# ── Env / secrets / misc ───────────────────────────────────────────────
+.env
+.env.example
+.pypirc
+staj_defteri_doldurulmus.docx
+CLAUDE.md
+SECURITY.md
