@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaultcat"
-version = "1.1.0"
+version = "1.1.1"
 description = "Full-lifecycle HashiCorp Vault penetration testing toolkit — recon, hijack, escalate, exfiltrate, pivot, and persist across CLI, AI chat, and MCP server modes."
 readme = "README.md"
 requires-python = ">=3.10"
