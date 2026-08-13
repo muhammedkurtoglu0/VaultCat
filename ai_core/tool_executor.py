@@ -44,6 +44,26 @@ _TOOLS_WITHOUT_TOKEN: set[str] = {
 }
 
 
+# ── Tools that change state or cause damage — blocked when the persistent
+#    safety lock (``vaultcat safety on``) is enabled.
+_SAFETY_BLOCKED_TOOLS: set[str] = {
+    "run_privilege_escalation",
+    "run_secret_exfiltration",
+    "run_database_credential_harvest",
+    "run_cloud_key_exfiltration",
+    "run_active_module",
+    "run_database_pivot",
+    "run_reverse_shell",
+    "run_approle_exploit",
+    "run_jwt_oidc_exploit",
+    "run_kubernetes_auth_exploit",
+    "run_raft_exploit",
+    "run_pki_exploit",
+    "run_transit_exploit",
+    "run_aws_auth_login",
+}
+
+
 async def invoke_mcp_handler(handler, params: dict) -> str:
     """Invoke an MCP handler with the given params, filtering to valid kwargs.
 
@@ -104,6 +124,22 @@ class ToolExecutor:
 
         Returns the tool result as a JSON string.
         """
+        # ── Persistent safety lock ──────────────────────────────────────
+        if tool_name in _SAFETY_BLOCKED_TOOLS:
+            from core.safety import is_safe_mode
+            if is_safe_mode():
+                return json.dumps(
+                    {
+                        "status": "blocked",
+                        "message": (
+                            f"SAFETY LOCK ON — '{tool_name}' is state-changing/"
+                            f"destructive and is blocked. Run 'vaultcat safety off' "
+                            f"(or /safe off) to disable."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
         # ── Inject vault_addr ──────────────────────────────────────────
         if "vault_addr" not in params and self.vault_addr:
             params["vault_addr"] = self.vault_addr

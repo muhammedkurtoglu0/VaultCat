@@ -20,7 +20,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # We insert "scan" when the first argument is missing or starts with "-"
 # (i.e. it looks like a flag, not a subcommand).
 
-_KNOWN_COMMANDS = frozenset({"scan", "hijack", "chat", "cleanup", "mcp"})
+_KNOWN_COMMANDS = frozenset({"scan", "hijack", "chat", "cleanup", "mcp", "safety"})
 
 
 def _apply_shim() -> None:

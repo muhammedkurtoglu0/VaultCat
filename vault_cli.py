@@ -39,6 +39,7 @@ from core.report import (
     print_report,
     set_report_min_severity,
 )
+from core.safety import is_safe_mode, set_safe_mode
 from credential_hijacking.hijack_analyzer import run_hijack_scan
 from credential_hijacking.validators import validate_approle_credentials
 from reconnaissance.auth_surface_scanner import scan_auth_surface
@@ -492,6 +493,12 @@ def scan(
     """
     clear_findings()
 
+    # ── Persistent safety lock ──────────────────────────────────────────
+    if is_safe_mode():
+        active_max_risk = RiskLevel.READ_ONLY.value
+        confirm_active = False
+        print("[!] SAFETY LOCK ON — scan hard-pinned to read_only (no state-changing/destructive). Run `vaultcat safety off` to disable.")
+
     # Register user token in global session for dynamic escalation
     if token:
         global_store.add_user_token(token)
@@ -779,6 +786,11 @@ def chat(
     """Start AI-powered pentest chat agent."""
     resolved_target = target or addr
 
+    # ── Persistent safety lock ──────────────────────────────────────────
+    if is_safe_mode():
+        auto_max_risk = "read_only"
+        print("[!] SAFETY LOCK ON — chat hard-pinned to read_only. Run `vaultcat safety off` to disable.")
+
     # Auto mode requires a target
     if auto and not resolved_target:
         print("❌ --auto mode requires --target <url>. Nothing to do.")
@@ -911,6 +923,30 @@ def mcp(
         print("[*] TLS certificate verification disabled")
     from ai_core.mcp_server import start_mcp_service
     start_mcp_service(transport=transport)
+
+
+@app.command()
+def safety(
+    state: str = typer.Argument(..., help="on | off | status"),
+) -> None:
+    """Toggle the persistent read-only safety lock.
+
+    When ON, `scan` and `chat` are hard-pinned to the read_only risk level —
+    no state-changing or destructive module can run, even with
+    --confirm-active or --active-max-risk/--auto-max-risk.
+    """
+    state = state.lower()
+    if state in ("on", "true", "1"):
+        set_safe_mode(True)
+        typer.echo("SAFETY LOCK: ON  — scan/chat hard-pinned to read_only")
+    elif state in ("off", "false", "0"):
+        set_safe_mode(False)
+        typer.echo("SAFETY LOCK: OFF — state-changing/destructive modules allowed")
+    elif state in ("status", "stat", "?"):
+        typer.echo(f"SAFETY LOCK: {'ON (read_only)' if is_safe_mode() else 'OFF'}")
+    else:
+        typer.echo("Usage: vaultcat safety [on|off|status]")
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------

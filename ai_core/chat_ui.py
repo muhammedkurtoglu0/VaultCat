@@ -237,6 +237,22 @@ class ChatUI:
                         print("\n  Stealth HTTP: ON (jitter 1-5s, backoff, rate-limit evasion)")
                     continue
 
+                if cmd in ("safe", "safety") or cmd.startswith(("safe ", "safety ")):
+                    from core.safety import is_safe_mode, set_safe_mode
+                    parts = user_input.split(maxsplit=1)
+                    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+                    if arg in ("on", "1", "true", "ac", "aç"):
+                        set_safe_mode(True)
+                    elif arg in ("off", "0", "false", "kapat", "kapa"):
+                        set_safe_mode(False)
+                    else:
+                        set_safe_mode(not is_safe_mode())
+                    if is_safe_mode():
+                        print("\n  SAFETY LOCK: ON (read_only) — state-changing/destructive tools blocked")
+                    else:
+                        print("\n  SAFETY LOCK: OFF — state-changing/destructive tools allowed")
+                    continue
+
                 if cmd in ("mutate", "mutasyon", "branch"):
                     self._show_mutation()
                     continue
@@ -826,6 +842,7 @@ class ChatUI:
     status      -> Show current target, token, provider, model, session
     auto        -> Run fully autonomous pentest + PDF report
     pilot       -> Toggle auto-pilot mode (auto-execute web PoC chains)
+    safe        -> Toggle safety lock (block state-changing/destructive)
     walk        -> Walk the attack tree (sequential, risk-ordered branches)
     orchestrate -> Run attack plan in PARALLEL via domain specialists
     smart       -> Same as orchestrate, but each specialist uses LLM ReAct

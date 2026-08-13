@@ -200,6 +200,18 @@ class PentestGUI(ctk.CTk):
         )
         self._pilot_btn.pack(side="right", padx=8)
 
+        # Safety lock toggle
+        from core.safety import is_safe_mode as _safety_on
+        self._safety_var = ctk.BooleanVar(value=_safety_on())
+        self._safety_btn = ctk.CTkSwitch(
+            bar,
+            text="Safe Mode",
+            variable=self._safety_var,
+            command=self._toggle_safety,
+            width=40,
+        )
+        self._safety_btn.pack(side="right", padx=8)
+
         # Settings button
         self._settings_btn = ctk.CTkButton(
             bar, text="⚙ Settings", width=80, command=self._open_settings
@@ -771,6 +783,14 @@ class PentestGUI(ctk.CTk):
             self.agent._auto_pilot = self.auto_pilot
         state = "ON" if self.auto_pilot else "OFF"
         self._append_chat(f"🛩 Auto-Pilot: {state}\n", "system")
+        self._refresh_status()
+
+    def _toggle_safety(self) -> None:
+        from core.safety import set_safe_mode
+        on = self._safety_var.get()
+        set_safe_mode(on)
+        state = "ON (read_only)" if on else "OFF"
+        self._append_chat(f"SAFETY LOCK: {state}\n", "system")
         self._refresh_status()
 
     # ──────────────────────────────────────────────────────────────────
